@@ -1,0 +1,10 @@
+// Copyright (C) 2022 Storx Labs, Inc.
+// See LICENSE for copying information.
+
+import { inject } from 'vue';
+
+import { Notificator } from '@/utils/plugins/notificator';
+
+export function useNotify() {
+    return inject('notify') as Notificator;
+}

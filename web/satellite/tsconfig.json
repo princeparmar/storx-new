@@ -1,0 +1,48 @@
+{
+  "compilerOptions": {
+    "target": "esnext",
+    "module": "esnext",
+    "strict": true,
+    "noImplicitAny": false,
+    "jsx": "preserve",
+    "importHelpers": true,
+    "moduleResolution": "node",
+    "experimentalDecorators": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "sourceMap": true,
+    "baseUrl": ".",
+    "strictPropertyInitialization": false,
+    "resolveJsonModule": true,
+    "useUnknownInCatchVariables": false, // TODO: reenable it later
+    "types": [
+      "vuetify",
+      "filesystem"
+    ],
+    "paths": {
+      "@/*": [
+        "src/*"
+      ],
+      "@poc/*": [
+        "vuetify-poc/src/*"
+      ]
+    },
+    "lib": [
+      "esnext",
+      "dom",
+      "dom.iterable",
+      "scripthost"
+    ]
+  },
+  "include": [
+    "vuetify-poc/src/**/*.ts",
+    "vuetify-poc/src/**/*.vue",
+    "src/**/*.ts",
+    "src/**/*.vue",
+    "src/types/*.d.ts",
+    "tests/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules"
+  ]
+}
