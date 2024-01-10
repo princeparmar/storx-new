@@ -15,10 +15,13 @@ import (
 	"github.com/zeebo/errs"
 	"go.uber.org/zap"
 
+	"storj.io/common/storj"
+	"storj.io/common/testrand"
 	"storj.io/common/uuid"
 	"storj.io/storj/private/post"
 	"storj.io/storj/private/web"
 	"storj.io/storj/satellite/analytics"
+	"storj.io/storj/satellite/buckets"
 	"storj.io/storj/satellite/console"
 	"storj.io/storj/satellite/console/consoleweb/consoleapi/utils"
 	"storj.io/storj/satellite/console/consoleweb/consolewebauth"
@@ -366,6 +369,81 @@ func (a *Auth) Register(w http.ResponseWriter, r *http.Request) {
 			Origin:         a.ExternalAddress,
 		},
 	)
+
+	// Create Default Project - Munjal - 1/Oct/2023
+	tokenInfo, err := a.service.GenerateSessionToken(ctx, user.ID, user.Email, "", "")
+	//require.NoError(t, err)
+	a.log.Error("Token Info:")
+	a.log.Error(tokenInfo.Token.String())
+
+	// Set up a test project and bucket
+
+	authed := console.WithUser(ctx, user)
+
+	project, err := a.service.CreateProject(authed, console.UpsertProjectInfo{
+		Name: "My Project",
+	})
+	//require.NoError(t, err)
+	if err != nil {
+		a.log.Error("Error in Default Project:")
+		a.log.Error(err.Error())
+		a.serveJSONError(ctx, w, err)
+	}
+
+	a.log.Error("Default Project Name: " + project.Name)
+	//a.log.Error(project.Name)
+	/*
+		bucketID, err := uuid.New()
+		//require.NoError(t, err)
+		if err != nil {
+			a.log.Error("Error in uuid:")
+			a.log.Error(err.Error())
+			a.serveJSONError(ctx, w, err)
+			return
+		}
+
+		a.log.Error("Default Bucket ID: " + bucketID.String())
+		//a.log.Error(bucketID.String())
+
+		b := buckets.Service{}
+
+		bucket, err := b.CreateBucket(authed, buckets.Bucket{
+			ID:        bucketID,
+			Name:      "default",
+			ProjectID: project.ID,
+		})
+
+		if err != nil {
+			a.log.Error("Bucket Creation Error: " + err.Error())
+			a.serveJSONError(ctx, w, err)
+			return
+		}
+		a.log.Error("Default Bucket Creation:" + bucket.Name)
+		//a.log.Error(bucket.Name)
+	*/
+}
+
+func newTestBucket(name string, projectID uuid.UUID) buckets.Bucket {
+	return buckets.Bucket{
+		ID:                  testrand.UUID(),
+		Name:                name,
+		ProjectID:           projectID,
+		PathCipher:          storj.EncAESGCM,
+		DefaultSegmentsSize: 65536,
+		DefaultRedundancyScheme: storj.RedundancyScheme{
+			Algorithm:      storj.ReedSolomon,
+			ShareSize:      9,
+			RequiredShares: 10,
+			RepairShares:   11,
+			OptimalShares:  12,
+			TotalShares:    13,
+		},
+		DefaultEncryptionParameters: storj.EncryptionParameters{
+			CipherSuite: storj.EncAESGCM,
+			BlockSize:   9 * 10,
+		},
+		Placement: storj.EU,
+	}
 }
 
 // loadSession looks for a cookie for the session id.
