@@ -87,6 +87,27 @@ func (users *users) GetByEmailWithUnverified(ctx context.Context, email string) 
 	return verified, unverified, errors.Err()
 }
 
+func (users *users) GetByEmailWithUnverified_google(ctx context.Context, email string) (verified *console.User, unverified []console.User, err error) {
+	defer mon.Task()(&ctx)(&err)
+	usersDbx, err := users.db.All_User_By_NormalizedEmail(ctx, dbx.User_NormalizedEmail(normalizeEmail(email)))
+
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var errors errs.Group
+	for _, userDbx := range usersDbx {
+		u, err := userFromDBX(ctx, userDbx)
+		if err != nil {
+			errors.Add(err)
+			continue
+		}
+		verified = u
+	}
+
+	return verified, unverified, errors.Err()
+}
+
 // GetByEmail is a method for querying user by verified email from the database.
 func (users *users) GetByEmail(ctx context.Context, email string) (_ *console.User, err error) {
 	defer mon.Task()(&ctx)(&err)

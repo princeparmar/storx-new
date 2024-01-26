@@ -296,6 +296,17 @@ func NewServer(logger *zap.Logger, config Config, service *console.Service, oidc
 	authController := consoleapi.NewAuth(logger, service, accountFreezeService, mailService, server.cookieAuth, server.analytics, config.SatelliteName, server.config.ExternalAddress, config.LetUsKnowURL, config.TermsAndConditionsURL, config.ContactInfoURL, config.GeneralRequestURL)
 	authRouter := router.PathPrefix("/api/v0/auth").Subrouter()
 	authRouter.Use(server.withCORS)
+
+	router.HandleFunc("/registerbutton_facebook", authController.InitFacebookRegister)
+	router.HandleFunc("/facebook_register", authController.HandleFacebookRegister)
+	router.HandleFunc("/loginbutton_facebook", authController.InitFacebookLogin)
+	router.HandleFunc("/facebook_login", authController.HandleFacebookLogin)
+
+	router.HandleFunc("/registerbutton_linkedin", authController.InitLinkedInRegister)
+	router.HandleFunc("/linkedin_register", authController.HandleLinkedInRegister)
+	router.HandleFunc("/loginbutton_linkedin", authController.InitLinkedInLogin)
+	router.HandleFunc("/linkedin_login", authController.HandleLinkedInLogin)
+
 	authRouter.Handle("/account", server.withAuth(http.HandlerFunc(authController.GetAccount))).Methods(http.MethodGet, http.MethodOptions)
 	authRouter.Handle("/account", server.withAuth(http.HandlerFunc(authController.UpdateAccount))).Methods(http.MethodPatch, http.MethodOptions)
 	authRouter.Handle("/account/change-email", server.withAuth(http.HandlerFunc(authController.ChangeEmail))).Methods(http.MethodPost, http.MethodOptions)
@@ -311,8 +322,17 @@ func NewServer(logger *zap.Logger, config Config, service *console.Service, oidc
 	authRouter.Handle("/mfa/generate-recovery-codes", server.withAuth(http.HandlerFunc(authController.GenerateMFARecoveryCodes))).Methods(http.MethodPost, http.MethodOptions)
 	authRouter.Handle("/logout", server.withAuth(http.HandlerFunc(authController.Logout))).Methods(http.MethodPost, http.MethodOptions)
 	authRouter.Handle("/token", server.ipRateLimiter.Limit(http.HandlerFunc(authController.Token))).Methods(http.MethodPost, http.MethodOptions)
+	authRouter.Handle("/token_google", server.ipRateLimiter.Limit(http.HandlerFunc(authController.TokenGoogleWrapper))).Methods(http.MethodPost, http.MethodOptions)
 	authRouter.Handle("/token-by-api-key", server.ipRateLimiter.Limit(http.HandlerFunc(authController.TokenByAPIKey))).Methods(http.MethodPost, http.MethodOptions)
 	authRouter.Handle("/register", server.ipRateLimiter.Limit(http.HandlerFunc(authController.Register))).Methods(http.MethodPost, http.MethodOptions)
+	authRouter.Handle("/register-google", server.ipRateLimiter.Limit(http.HandlerFunc(authController.RegisterGoogle))).Methods(http.MethodGet, http.MethodOptions)
+	authRouter.Handle("/login-google", server.ipRateLimiter.Limit(http.HandlerFunc(authController.LoginUserConfirm))).Methods(http.MethodGet, http.MethodOptions)
+
+	// authRouter.Handle("/register_facebook", server.ipRateLimiter.Limit(http.HandlerFunc(authController.InitFacebookRegister))).Methods(http.MethodPost, http.MethodOptions)
+	// authRouter.Handle("/facebook_register", server.ipRateLimiter.Limit(http.HandlerFunc(authController.HandleFacebookRegister))).Methods(http.MethodGet, http.MethodOptions)
+	// authRouter.Handle("/login_facebook", server.ipRateLimiter.Limit(http.HandlerFunc(authController.InitFacebookLogin))).Methods(http.MethodPost, http.MethodOptions)
+	// authRouter.Handle("/facebook_login", server.ipRateLimiter.Limit(http.HandlerFunc(authController.HandleFacebookLogin))).Methods(http.MethodPost, http.MethodOptions)
+
 	authRouter.Handle("/forgot-password", server.ipRateLimiter.Limit(http.HandlerFunc(authController.ForgotPassword))).Methods(http.MethodPost, http.MethodOptions)
 	authRouter.Handle("/resend-email/{email}", server.ipRateLimiter.Limit(http.HandlerFunc(authController.ResendEmail))).Methods(http.MethodPost, http.MethodOptions)
 	authRouter.Handle("/reset-password", server.ipRateLimiter.Limit(http.HandlerFunc(authController.ResetPassword))).Methods(http.MethodPost, http.MethodOptions)
@@ -512,6 +532,7 @@ func NewFrontendServer(logger *zap.Logger, config Config, listener net.Listener,
 	router.HandleFunc("/robots.txt", server.seoHandler)
 	router.PathPrefix("/static/").Handler(server.brotliMiddleware(http.StripPrefix("/static", fs)))
 	router.HandleFunc("/config", server.frontendConfigHandler)
+
 	if server.config.UseVuetifyProject {
 		router.PathPrefix("/vuetifypoc").Handler(http.HandlerFunc(server.vuetifyAppHandler))
 	}

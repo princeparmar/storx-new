@@ -30,6 +30,8 @@ type Users interface {
 	UpdateFailedLoginCountAndExpiration(ctx context.Context, failedLoginPenalty *float64, id uuid.UUID) error
 	// GetByEmailWithUnverified is a method for querying users by email from the database.
 	GetByEmailWithUnverified(ctx context.Context, email string) (*User, []User, error)
+	//boris
+	GetByEmailWithUnverified_google(ctx context.Context, email string) (*User, []User, error)
 	// GetByEmail is a method for querying user by verified email from the database.
 	GetByEmail(ctx context.Context, email string) (*User, error)
 	// Insert is a method for inserting user into the database.
@@ -82,6 +84,7 @@ type CreateUser struct {
 	Email            string `json:"email"`
 	UserAgent        []byte `json:"userAgent"`
 	Password         string `json:"password"`
+	Status           int    `json:"status"`
 	IsProfessional   bool   `json:"isProfessional"`
 	Position         string `json:"position"`
 	CompanyName      string `json:"companyName"`

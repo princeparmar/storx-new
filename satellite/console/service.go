@@ -735,7 +735,7 @@ func (s *Service) checkRegistrationSecret(ctx context.Context, tokenSecret Regis
 }
 
 // CreateUser gets password hash value and creates new inactive User.
-func (s *Service) CreateUser(ctx context.Context, user CreateUser, tokenSecret RegistrationSecret) (u *User, err error) {
+func (s *Service) CreateUser(ctx context.Context, user CreateUser, tokenSecret RegistrationSecret, socialsign bool) (u *User, err error) {
 	defer mon.Task()(&ctx)(&err)
 
 	var captchaScore *float64
@@ -755,10 +755,11 @@ func (s *Service) CreateUser(ctx context.Context, user CreateUser, tokenSecret R
 		}
 		captchaScore = score
 	}
-
-	if err := user.IsValid(); err != nil {
-		// NOTE: error is already wrapped with an appropriated class.
-		return nil, err
+	if !socialsign {
+		if err := user.IsValid(); err != nil {
+			// NOTE: error is already wrapped with an appropriated class.
+			return nil, err
+		}
 	}
 
 	registrationToken, err := s.checkRegistrationSecret(ctx, tokenSecret)
@@ -766,21 +767,50 @@ func (s *Service) CreateUser(ctx context.Context, user CreateUser, tokenSecret R
 		return nil, ErrRegToken.Wrap(err)
 	}
 
-	verified, unverified, err := s.store.Users().GetByEmailWithUnverified(ctx, user.Email)
-	if err != nil {
-		return nil, Error.Wrap(err)
-	}
-	if verified != nil {
-		mon.Counter("create_user_duplicate_verified").Inc(1) //mon:locked
-		return nil, ErrEmailUsed.New(emailUsedErrMsg)
-	} else if len(unverified) != 0 {
-		mon.Counter("create_user_duplicate_unverified").Inc(1) //mon:locked
-		return nil, ErrEmailUsed.New(emailUsedErrMsg)
+	// verified, unverified, err := s.store.Users().GetByEmailWithUnverified(ctx, user.Email)
+	if !socialsign {
+		verified, unverified, err := s.store.Users().GetByEmailWithUnverified(ctx, user.Email)
+		if err != nil {
+			return nil, Error.Wrap(err)
+		}
+		if verified != nil {
+			mon.Counter("create_user_duplicate_verified").Inc(1) //mon:locked
+			return nil, ErrEmailUsed.New(emailUsedErrMsg)
+		} else if len(unverified) != 0 {
+			mon.Counter("create_user_duplicate_unverified").Inc(1) //mon:locked
+			return nil, ErrEmailUsed.New(emailUsedErrMsg)
+		}
+	} else {
+		verified, unverified, err := s.store.Users().GetByEmailWithUnverified_google(ctx, user.Email)
+		if err != nil {
+			return nil, Error.Wrap(err)
+		}
+		if verified != nil {
+			mon.Counter("create_user_duplicate_verified").Inc(1) //mon:locked
+			return nil, ErrEmailUsed.New(emailUsedErrMsg)
+		} else if len(unverified) != 0 {
+			mon.Counter("create_user_duplicate_unverified").Inc(1) //mon:locked
+			return nil, ErrEmailUsed.New(emailUsedErrMsg)
+		}
 	}
 
+	// if err != nil {
+	// 	return nil, Error.Wrap(err)
+	// }
+
+	// if verified != nil {
+	// 	mon.Counter("create_user_duplicate_verified").Inc(1) //mon:locked
+	// 	return nil, ErrEmailUsed.New(emailUsedErrMsg)
+	// } else if len(unverified) != 0 {
+	// 	mon.Counter("create_user_duplicate_unverified").Inc(1) //mon:locked
+	// 	return nil, ErrEmailUsed.New(emailUsedErrMsg)
+	// }
+
 	hash, err := bcrypt.GenerateFromPassword([]byte(user.Password), s.config.PasswordCost)
-	if err != nil {
-		return nil, Error.Wrap(err)
+	if !socialsign {
+		if err != nil {
+			return nil, Error.Wrap(err)
+		}
 	}
 
 	// store data
@@ -1097,6 +1127,7 @@ func (s *Service) Token(ctx context.Context, request AuthUser) (response *TokenI
 	}
 
 	user, unverified, err := s.store.Users().GetByEmailWithUnverified(ctx, request.Email)
+
 	if user == nil {
 		if len(unverified) > 0 {
 			mon.Counter("login_email_unverified").Inc(1) //mon:locked
@@ -1235,6 +1266,54 @@ func (s *Service) Token(ctx context.Context, request AuthUser) (response *TokenI
 	return response, nil
 }
 
+func (s *Service) Token_google(ctx context.Context, request AuthUser) (response *TokenInfo, err error) {
+	defer mon.Task()(&ctx)(&err)
+
+	mon.Counter("login_attempt").Inc(1) //mon:locked
+
+	user, unverified, err := s.store.Users().GetByEmailWithUnverified_google(ctx, request.Email)
+
+	if user == nil {
+		if len(unverified) > 0 {
+			mon.Counter("login_email_unverified").Inc(1) //mon:locked
+			s.auditLog(ctx, "login: failed email unverified", nil, request.Email)
+		} else {
+			mon.Counter("login_email_invalid").Inc(1) //mon:locked
+			s.auditLog(ctx, "login: failed invalid email", nil, request.Email)
+		}
+		return nil, ErrLoginCredentials.New(credentialsErrMsg)
+	}
+
+	now := time.Now()
+
+	if user.LoginLockoutExpiration.After(now) {
+		mon.Counter("login_locked_out").Inc(1) //mon:locked
+		s.auditLog(ctx, "login: failed account locked out", &user.ID, request.Email)
+		return nil, ErrLoginCredentials.New(credentialsErrMsg)
+	}
+
+	if user.FailedLoginCount != 0 {
+		user.FailedLoginCount = 0
+		loginLockoutExpirationPtr := &time.Time{}
+		err = s.store.Users().Update(ctx, user.ID, UpdateUserRequest{
+			FailedLoginCount:       &user.FailedLoginCount,
+			LoginLockoutExpiration: &loginLockoutExpirationPtr,
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	response, err = s.GenerateSessionToken(ctx, user.ID, user.Email, request.IP, request.UserAgent)
+	if err != nil {
+		return nil, err
+	}
+
+	mon.Counter("login_success").Inc(1) //mon:locked
+
+	return response, nil
+}
+
 // TokenByAPIKey authenticates User by API Key and returns session token.
 func (s *Service) TokenByAPIKey(ctx context.Context, userAgent string, ip string, apiKey string) (response *TokenInfo, err error) {
 	defer mon.Task()(&ctx)(&err)
@@ -1346,6 +1425,20 @@ func (s *Service) GetUserByEmailWithUnverified(ctx context.Context, email string
 	defer mon.Task()(&ctx)(&err)
 
 	verified, unverified, err = s.store.Users().GetByEmailWithUnverified(ctx, email)
+	if err != nil {
+		return verified, unverified, err
+	}
+
+	if verified == nil && len(unverified) == 0 {
+		err = ErrEmailNotFound.New(emailNotFoundErrMsg)
+	}
+
+	return verified, unverified, err
+}
+func (s *Service) GetUserByEmailWithUnverified_google(ctx context.Context, email string) (verified *User, unverified []User, err error) {
+	defer mon.Task()(&ctx)(&err)
+
+	verified, unverified, err = s.store.Users().GetByEmailWithUnverified_google(ctx, email)
 	if err != nil {
 		return verified, unverified, err
 	}
@@ -1558,6 +1651,24 @@ func (s *Service) GetUsersProjects(ctx context.Context) (ps []Project, err error
 	}
 
 	return
+}
+
+// GetMinimalProject returns a ProjectInfo copy of a project.
+func (s *Service) GetMinimalProject(project *Project) ProjectInfo {
+	info := ProjectInfo{
+		ID:          project.PublicID,
+		Name:        project.Name,
+		OwnerID:     project.OwnerID,
+		Description: project.Description,
+		MemberCount: project.MemberCount,
+		CreatedAt:   project.CreatedAt,
+	}
+
+	// if edgeURLs, ok := s.config.PlacementEdgeURLOverrides.Get(project.DefaultPlacement); ok {
+	// 	info.EdgeURLOverrides = &edgeURLs
+	// }
+
+	return info
 }
 
 // GenGetUsersProjects is a method for querying all projects for generated api.
@@ -3009,10 +3120,9 @@ func (s *Service) authorize(ctx context.Context, userID uuid.UUID, expiration ti
 	if err != nil {
 		return nil, Error.New("authorization failed. no user with id: %s", userID.String())
 	}
-
-	if user.Status != Active {
-		return nil, Error.New("authorization failed. no active user with id: %s", userID.String())
-	}
+	// if user.Status != Active {
+	// 	return nil, Error.New("authorization failed. no active user with id: %s", userID.String())
+	// }
 	return WithUser(ctx, user), nil
 }
 
