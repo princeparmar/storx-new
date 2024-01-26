@@ -70,6 +70,10 @@ type Config struct {
 	FrontendEnable      bool   `help:"feature flag to toggle whether console back-end server should also serve front-end endpoints" default:"true"`
 	BackendReverseProxy string `help:"the target URL of console back-end reverse proxy for local development when running a UI server" default:""`
 
+	ZohoClientID     string `help:"client id for zoho oauth" default:""`
+	ZohoClientSecret string `help:"client secret for zoho oauth" default:""`
+	ZohoRefreshToken string `help:"refresh token for zoho oauth" default:""`
+
 	StaticDir string `help:"path to static resources" default:""`
 	Watch     bool   `help:"whether to load templates on each request" default:"false" devDefault:"true"`
 
@@ -293,6 +297,8 @@ func NewServer(logger *zap.Logger, config Config, service *console.Service, oidc
 	projectsRouter.Handle("/usage-limits", http.HandlerFunc(usageLimitsController.TotalUsageLimits)).Methods(http.MethodGet, http.MethodOptions)
 	projectsRouter.Handle("/{id}/daily-usage", http.HandlerFunc(usageLimitsController.DailyUsage)).Methods(http.MethodGet, http.MethodOptions)
 
+	// starting zoho refresh token goroutine
+	go consoleapi.ZohoRefreshTokenInit(context.Background(), config.ZohoClientID, config.ZohoClientSecret, config.ZohoRefreshToken, logger)
 	authController := consoleapi.NewAuth(logger, service, accountFreezeService, mailService, server.cookieAuth, server.analytics, config.SatelliteName, server.config.ExternalAddress, config.LetUsKnowURL, config.TermsAndConditionsURL, config.ContactInfoURL, config.GeneralRequestURL)
 	authRouter := router.PathPrefix("/api/v0/auth").Subrouter()
 	authRouter.Use(server.withCORS)
