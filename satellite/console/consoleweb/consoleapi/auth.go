@@ -4,7 +4,6 @@
 package consoleapi
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -12,28 +11,23 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt"
 	"github.com/gorilla/mux"
-	"github.com/spf13/viper"
 	"github.com/zeebo/errs"
 	"go.uber.org/zap"
-	"golang.org/x/oauth2"
 
 	"storj.io/common/uuid"
 	"storj.io/storj/private/post"
 	"storj.io/storj/private/web"
 	"storj.io/storj/satellite/analytics"
 	"storj.io/storj/satellite/console"
+	"storj.io/storj/satellite/console/consoleweb/consoleapi/socialmedia"
 	"storj.io/storj/satellite/console/consoleweb/consoleapi/utils"
 	"storj.io/storj/satellite/console/consoleweb/consolewebauth"
 	"storj.io/storj/satellite/mailservice"
-
-	facebookOAuth "golang.org/x/oauth2/facebook"
-	linkedinOAuth "golang.org/x/oauth2/linkedin"
 )
 
 var (
@@ -45,7 +39,6 @@ var (
 	errNotImplemented = errs.New("not implemented")
 )
 
-var userGmail string
 var mainPageURL string = "/project-dashboard"
 var signupPageURL string = "/signup"
 var signupSuccessURL string = "/signup-success"
@@ -94,24 +87,6 @@ type UserDetails struct {
 	Name     string
 	Email    string
 	Password string
-}
-
-// FacebookUserDetails is struct used for user details
-type FacebookUserDetails struct {
-	ID    string
-	Name  string
-	Email string
-}
-
-type LinkedinUserDetails struct {
-	Sub        string `json:"sub"`
-	Name       string `json:"name"`
-	GivenName  string `json:"given_name"`
-	FamilyName string `json:"family_name"`
-	Picture    string `json:"picture"`
-	// Locale     string `json:"locale"`
-	Email string `json:"email"`
-	// EmailVerified bool   `json:"email_verified"`
 }
 
 // NewAuth is a constructor for api auth controller.
@@ -459,170 +434,6 @@ func (a *Auth) Register(w http.ResponseWriter, r *http.Request) {
 	a.log.Error("Default Project Name: " + project.Name)
 }
 
-type GoogleOauthToken struct {
-	Access_token string
-	Id_token     string
-}
-type GoogleUserResult struct {
-	Id             string
-	Email          string
-	Verified_email bool
-	Name           string
-	Given_name     string
-	Family_name    string
-	Picture        string
-	Locale         string
-}
-type Config struct {
-	DBUri    string `mapstructure:"MONGODB_LOCAL_URI"`
-	RedisUri string `mapstructure:"REDIS_URL"`
-	Port     string `mapstructure:"PORT"`
-
-	ClientOrigin string `mapstructure:"CLIENT_ORIGIN"`
-
-	AccessTokenPrivateKey  string        `mapstructure:"ACCESS_TOKEN_PRIVATE_KEY"`
-	AccessTokenPublicKey   string        `mapstructure:"ACCESS_TOKEN_PUBLIC_KEY"`
-	RefreshTokenPrivateKey string        `mapstructure:"REFRESH_TOKEN_PRIVATE_KEY"`
-	RefreshTokenPublicKey  string        `mapstructure:"REFRESH_TOKEN_PUBLIC_KEY"`
-	AccessTokenExpiresIn   time.Duration `mapstructure:"ACCESS_TOKEN_EXPIRED_IN"`
-	RefreshTokenExpiresIn  time.Duration `mapstructure:"REFRESH_TOKEN_EXPIRED_IN"`
-	AccessTokenMaxAge      int           `mapstructure:"ACCESS_TOKEN_MAXAGE"`
-	RefreshTokenMaxAge     int           `mapstructure:"REFRESH_TOKEN_MAXAGE"`
-
-	GoogleClientID                  string `mapstructure:"GOOGLE_OAUTH_CLIENT_ID"`
-	GoogleClientSecret              string `mapstructure:"GOOGLE_OAUTH_CLIENT_SECRET"`
-	GoogleOAuthRedirectUrl_register string `mapstructure:"GOOGLE_OAUTH_REDIRECT_URL_REGISTER"`
-	GoogleOAuthRedirectUrl_login    string `mapstructure:"GOOGLE_OAUTH_REDIRECT_URL_LOGIN"`
-
-	FacebookClientID                  string `mapstructure:"FACEBOOK_CLIENT_ID"`
-	FacebookClientSecret              string `mapstructure:"FACEBOOK_CLIENT_SECRET"`
-	FacebookOAuthRedirectUrl_register string `mapstructure:"FACEBOOK_REDIRECT_URL_REGISTER"`
-	FacebookOAuthRedirectUrl_login    string `mapstructure:"FACEBOOK_REDIRECT_URL_LOGIN"`
-
-	LinkedinClientID                  string `mapstructure:"LINKEDIN_CLIENT_ID"`
-	LinkedinClientSecret              string `mapstructure:"LINKEDIN_CLIENT_SECRET"`
-	LinkedinOAuthRedirectUrl_register string `mapstructure:"LINKEDIN_REDIRECT_URL_REGISTER"`
-	LinkedinOAuthRedirectUrl_login    string `mapstructure:"LINKEDIN_REDIRECT_URL_LOGIN"`
-}
-
-func LoadConfig(path string) (config Config, err error) {
-	viper.AddConfigPath(path)
-	viper.SetConfigType("env")
-	viper.SetConfigName("app")
-	viper.AutomaticEnv()
-
-	err = viper.ReadInConfig()
-	if err != nil {
-		return
-	}
-	err = viper.Unmarshal(&config)
-	return
-}
-
-func GetGoogleOauthToken(code string, mode string) (*GoogleOauthToken, error) {
-
-	const rootURl = "https://oauth2.googleapis.com/token"
-
-	config, _ := LoadConfig(".")
-
-	values := url.Values{}
-	values.Add("grant_type", "authorization_code")
-	values.Add("code", code)
-	values.Add("client_id", config.GoogleClientID)
-	values.Add("client_secret", config.GoogleClientSecret)
-	if mode == "signup" {
-		values.Add("redirect_uri", config.GoogleOAuthRedirectUrl_register)
-	} else if mode == "signin" {
-		values.Add("redirect_uri", config.GoogleOAuthRedirectUrl_login)
-	}
-
-	query := values.Encode()
-
-	req, err := http.NewRequest("POST", rootURl, bytes.NewBufferString(query))
-	if err != nil {
-		return nil, err
-	}
-
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	client := http.Client{
-		Timeout: time.Second * 30,
-	}
-
-	res, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-
-	if res.StatusCode != http.StatusOK {
-		return nil, errors.New("could not retrieve token")
-	}
-
-	resBody, err := io.ReadAll(res.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	var GoogleOauthTokenRes map[string]interface{}
-
-	if err := json.Unmarshal(resBody, &GoogleOauthTokenRes); err != nil {
-		return nil, err
-	}
-
-	tokenBody := &GoogleOauthToken{
-		Access_token: GoogleOauthTokenRes["access_token"].(string),
-		Id_token:     GoogleOauthTokenRes["id_token"].(string),
-	}
-
-	return tokenBody, nil
-}
-
-func GetGoogleUser(access_token string, id_token string) (*GoogleUserResult, error) {
-	rootUrl := fmt.Sprintf("https://www.googleapis.com/oauth2/v1/userinfo?alt=json&access_token=%s", access_token)
-
-	req, err := http.NewRequest("GET", rootUrl, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", id_token))
-
-	client := http.Client{
-		Timeout: time.Second * 30,
-	}
-
-	res, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-
-	if res.StatusCode != http.StatusOK {
-		return nil, errors.New("could not retrieve user")
-	}
-
-	resBody, err := io.ReadAll(res.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	var GoogleUserRes map[string]interface{}
-
-	if err := json.Unmarshal(resBody, &GoogleUserRes); err != nil {
-		return nil, err
-	}
-
-	userBody := &GoogleUserResult{
-		Id:             GoogleUserRes["id"].(string),
-		Email:          GoogleUserRes["email"].(string),
-		Verified_email: GoogleUserRes["verified_email"].(bool),
-		Name:           GoogleUserRes["name"].(string),
-		Given_name:     GoogleUserRes["given_name"].(string),
-		Picture:        GoogleUserRes["picture"].(string),
-		Locale:         GoogleUserRes["locale"].(string),
-	}
-
-	return userBody, nil
-}
-
 func CreateToken(ttl time.Duration, payload interface{}, privateKey string) (string, error) {
 	decodedPrivateKey, err := base64.StdEncoding.DecodeString(privateKey)
 	if err != nil {
@@ -687,13 +498,13 @@ func (a *Auth) RegisterGoogle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Use the code to get the id and access tokens
-	tokenRes, err := GetGoogleOauthToken(code, mode)
+	tokenRes, err := socialmedia.GetGoogleOauthToken(code, mode)
 	if err != nil {
 		a.serveJSONError(ctx, w, err)
 		return
 	}
 
-	googleuser, err := GetGoogleUser(tokenRes.Access_token, tokenRes.Id_token)
+	googleuser, err := socialmedia.GetGoogleUser(tokenRes.Access_token, tokenRes.Id_token)
 	if err != nil {
 		a.serveJSONError(ctx, w, err)
 		return
@@ -726,7 +537,6 @@ func (a *Auth) RegisterGoogle(w http.ResponseWriter, r *http.Request) {
 		if len(unverified) > 0 {
 			user = &unverified[0]
 		} else {
-			user = user
 			secret, err := console.RegistrationSecretFromBase64(registerData.SecretInput)
 			if err != nil {
 				a.serveJSONError(ctx, w, err)
@@ -822,9 +632,7 @@ func (a *Auth) RegisterGoogle(w http.ResponseWriter, r *http.Request) {
 
 	a.log.Error("Default Project Name Google Signup: " + project.Name)
 
-	config, _ := LoadConfig(".")
-
-	http.Redirect(w, r, fmt.Sprint(config.ClientOrigin, signupSuccessURL), http.StatusTemporaryRedirect)
+	http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, signupSuccessURL), http.StatusTemporaryRedirect)
 }
 
 func (a *Auth) LoginUserConfirm(w http.ResponseWriter, r *http.Request) {
@@ -841,14 +649,14 @@ func (a *Auth) LoginUserConfirm(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Use the code to get the id and access tokens
-	tokenRes, err := GetGoogleOauthToken(code, mode)
+	tokenRes, err := socialmedia.GetGoogleOauthToken(code, mode)
 
 	if err != nil {
 		a.serveJSONError(ctx, w, err)
 		return
 	}
 
-	googleuser, err := GetGoogleUser(tokenRes.Access_token, tokenRes.Id_token)
+	googleuser, err := socialmedia.GetGoogleUser(tokenRes.Access_token, tokenRes.Id_token)
 
 	verified, unverified, err := a.service.GetUserByEmailWithUnverified_google(ctx, googleuser.Email)
 	if err != nil && !console.ErrEmailNotFound.Has(err) {
@@ -857,24 +665,26 @@ func (a *Auth) LoginUserConfirm(w http.ResponseWriter, r *http.Request) {
 	}
 	fmt.Println(verified, unverified, err)
 
-	config, _ := LoadConfig(".")
-	if verified != nil {
-		userGmail = googleuser.Email
-	} else {
-		userGmail = ""
-		http.Redirect(w, r, fmt.Sprint(config.ClientOrigin, signupPageURL), http.StatusTemporaryRedirect)
+	if verified == nil {
+		http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, signupPageURL), http.StatusTemporaryRedirect)
 		return
 	}
-	a.TokenGoogleWrapper(w, r)
+	a.TokenGoogleWrapper(r.Context(), googleuser.Email, w, r)
 
-	http.Redirect(w, r, fmt.Sprint(config.ClientOrigin, mainPageURL), http.StatusTemporaryRedirect)
+	http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, mainPageURL), http.StatusTemporaryRedirect)
 }
 
-func (a *Auth) TokenGoogleWrapper(w http.ResponseWriter, r *http.Request) {
-
+func (a *Auth) TokenGoogleWrapperHandler(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	var err error
 	defer mon.Task()(&ctx)(&err)
+
+	a.TokenGoogleWrapper(ctx, "userGmail", w, r)
+}
+
+func (a *Auth) TokenGoogleWrapper(ctx context.Context, userGmail string, w http.ResponseWriter, r *http.Request) {
+
+	var err error
 
 	tokenRequest := console.AuthUser{}
 	tokenRequest.Email = userGmail
@@ -901,61 +711,15 @@ func (a *Auth) TokenGoogleWrapper(w http.ResponseWriter, r *http.Request) {
 	a.cookieAuth.SetTokenCookie(w, *tokenInfo)
 }
 
-// **** Facebook ****//
-func GetFacebookOAuthConfig_Register() *oauth2.Config {
-	config, _ := LoadConfig(".")
-	return &oauth2.Config{
-		ClientID:     config.FacebookClientID,
-		ClientSecret: config.FacebookClientSecret,
-		RedirectURL:  config.FacebookOAuthRedirectUrl_register,
-		Endpoint:     facebookOAuth.Endpoint,
-		Scopes:       []string{"email"},
-	}
-}
-func GetFacebookOAuthConfig_Login() *oauth2.Config {
-	config, _ := LoadConfig(".")
-	return &oauth2.Config{
-		ClientID:     config.FacebookClientID,
-		ClientSecret: config.FacebookClientSecret,
-		RedirectURL:  config.FacebookOAuthRedirectUrl_login,
-		Endpoint:     facebookOAuth.Endpoint,
-		Scopes:       []string{"email"},
-	}
-}
-
-func GetRandomOAuthStateString() string {
-	return "SomeRandomStringAlgorithmForMoreSecurity"
-}
-
-func GetUserInfoFromFacebook(token string) (FacebookUserDetails, error) {
-	var fbUserDetails FacebookUserDetails
-	facebookUserDetailsRequest, _ := http.NewRequest("GET", "https://graph.facebook.com/me?fields=id,name,email&access_token="+token, nil)
-	facebookUserDetailsResponse, facebookUserDetailsResponseError := http.DefaultClient.Do(facebookUserDetailsRequest)
-
-	if facebookUserDetailsResponseError != nil {
-		return FacebookUserDetails{}, errors.New("Error occurred while getting information from Facebook")
-	}
-
-	decoder := json.NewDecoder(facebookUserDetailsResponse.Body)
-	decoderErr := decoder.Decode(&fbUserDetails)
-	defer facebookUserDetailsResponse.Body.Close()
-
-	if decoderErr != nil {
-		return FacebookUserDetails{}, errors.New("Error occurred while getting information from Facebook")
-	}
-
-	return fbUserDetails, nil
-}
-
 func (a *Auth) InitFacebookRegister(w http.ResponseWriter, r *http.Request) {
-	var OAuth2Config = GetFacebookOAuthConfig_Register()
-	url := OAuth2Config.AuthCodeURL(GetRandomOAuthStateString())
+	var OAuth2Config = socialmedia.GetFacebookOAuthConfig_Register()
+	url := OAuth2Config.AuthCodeURL(socialmedia.GetRandomOAuthStateString())
 	http.Redirect(w, r, url, http.StatusTemporaryRedirect)
 }
 
 func (a *Auth) InitFacebookLogin(w http.ResponseWriter, r *http.Request) {
-	var OAuth2Config = GetFacebookOAuthConfig_Login()
-	url := OAuth2Config.AuthCodeURL(GetRandomOAuthStateString())
+	var OAuth2Config = socialmedia.GetFacebookOAuthConfig_Login()
+	url := OAuth2Config.AuthCodeURL(socialmedia.GetRandomOAuthStateString())
 	http.Redirect(w, r, url, http.StatusTemporaryRedirect)
 }
 
@@ -987,14 +751,14 @@ func (a *Auth) HandleFacebookRegister(w http.ResponseWriter, r *http.Request) {
 
 	var code = r.FormValue("code")
 
-	var OAuth2Config = GetFacebookOAuthConfig_Register()
+	var OAuth2Config = socialmedia.GetFacebookOAuthConfig_Register()
 
 	token, err := OAuth2Config.Exchange(context.TODO(), code)
 
 	if err != nil || token == nil {
 		a.serveJSONError(ctx, w, err)
 	}
-	fbUserDetails, fbUserDetailsError := GetUserInfoFromFacebook(token.AccessToken)
+	fbUserDetails, fbUserDetailsError := socialmedia.GetUserInfoFromFacebook(token.AccessToken)
 
 	if fbUserDetailsError != nil {
 		a.serveJSONError(ctx, w, err)
@@ -1027,7 +791,6 @@ func (a *Auth) HandleFacebookRegister(w http.ResponseWriter, r *http.Request) {
 		if len(unverified) > 0 {
 			user = &unverified[0]
 		} else {
-			user = user
 			secret, err := console.RegistrationSecretFromBase64(registerData.SecretInput)
 			if err != nil {
 				a.serveJSONError(ctx, w, err)
@@ -1124,8 +887,7 @@ func (a *Auth) HandleFacebookRegister(w http.ResponseWriter, r *http.Request) {
 
 	a.log.Error("Default Project Name: " + project.Name)
 
-	config, _ := LoadConfig(".")
-	http.Redirect(w, r, fmt.Sprint(config.ClientOrigin, signupSuccessURL), http.StatusTemporaryRedirect)
+	http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, signupSuccessURL), http.StatusTemporaryRedirect)
 }
 
 func (a *Auth) HandleFacebookLogin(w http.ResponseWriter, r *http.Request) {
@@ -1136,11 +898,11 @@ func (a *Auth) HandleFacebookLogin(w http.ResponseWriter, r *http.Request) {
 	var state = r.FormValue("state")
 	var code = r.FormValue("code")
 
-	if state != GetRandomOAuthStateString() {
+	if state != socialmedia.GetRandomOAuthStateString() {
 		a.serveJSONError(ctx, w, err)
 	}
 
-	var OAuth2Config = GetFacebookOAuthConfig_Login()
+	var OAuth2Config = socialmedia.GetFacebookOAuthConfig_Login()
 
 	token, err := OAuth2Config.Exchange(context.TODO(), code)
 
@@ -1149,7 +911,7 @@ func (a *Auth) HandleFacebookLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fbUserDetails, fbUserDetailsError := GetUserInfoFromFacebook(token.AccessToken)
+	fbUserDetails, fbUserDetailsError := socialmedia.GetUserInfoFromFacebook(token.AccessToken)
 
 	if fbUserDetailsError != nil {
 		a.serveJSONError(ctx, w, err)
@@ -1163,50 +925,24 @@ func (a *Auth) HandleFacebookLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	fmt.Println(verified, unverified, err)
 
-	config, _ := LoadConfig(".")
-	if verified != nil {
-		userGmail = fbUserDetails.Email
-	} else {
-		userGmail = ""
-		http.Redirect(w, r, fmt.Sprint(config.ClientOrigin, signupPageURL), http.StatusTemporaryRedirect)
+	if verified == nil {
+		http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, signupPageURL), http.StatusTemporaryRedirect)
 		return
 	}
-	a.TokenGoogleWrapper(w, r)
+	a.TokenGoogleWrapper(ctx, verified.Email, w, r)
 
-	http.Redirect(w, r, fmt.Sprint(config.ClientOrigin, mainPageURL), http.StatusTemporaryRedirect)
-}
-
-// **** LinkedIn ****//
-func GetLinkedinOAuthConfig_Register() *oauth2.Config {
-	config, _ := LoadConfig(".")
-	return &oauth2.Config{
-		ClientID:     config.LinkedinClientID,
-		ClientSecret: config.LinkedinClientSecret,
-		RedirectURL:  config.LinkedinOAuthRedirectUrl_register,
-		Endpoint:     linkedinOAuth.Endpoint,
-		Scopes:       []string{"openid", "profile", "email"},
-	}
-}
-func GetLinkedinOAuthConfig_Login() *oauth2.Config {
-	config, _ := LoadConfig(".")
-	return &oauth2.Config{
-		ClientID:     config.LinkedinClientID,
-		ClientSecret: config.LinkedinClientSecret,
-		RedirectURL:  config.LinkedinOAuthRedirectUrl_login,
-		Endpoint:     linkedinOAuth.Endpoint,
-		Scopes:       []string{"openid", "profile", "email"},
-	}
+	http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, mainPageURL), http.StatusTemporaryRedirect)
 }
 
 func (a *Auth) InitLinkedInRegister(w http.ResponseWriter, r *http.Request) {
-	var OAuth2Config = GetLinkedinOAuthConfig_Register()
-	url := OAuth2Config.AuthCodeURL(GetRandomOAuthStateString())
+	var OAuth2Config = socialmedia.GetLinkedinOAuthConfig_Register()
+	url := OAuth2Config.AuthCodeURL(socialmedia.GetRandomOAuthStateString())
 	http.Redirect(w, r, url, http.StatusTemporaryRedirect)
 }
 
 func (a *Auth) InitLinkedInLogin(w http.ResponseWriter, r *http.Request) {
-	var OAuth2Config = GetLinkedinOAuthConfig_Login()
-	url := OAuth2Config.AuthCodeURL(GetRandomOAuthStateString())
+	var OAuth2Config = socialmedia.GetLinkedinOAuthConfig_Login()
+	url := OAuth2Config.AuthCodeURL(socialmedia.GetRandomOAuthStateString())
 	http.Redirect(w, r, url, http.StatusTemporaryRedirect)
 }
 
@@ -1238,7 +974,7 @@ func (a *Auth) HandleLinkedInRegister(w http.ResponseWriter, r *http.Request) {
 
 	var code = r.FormValue("code")
 
-	var OAuth2Config = GetLinkedinOAuthConfig_Register()
+	var OAuth2Config = socialmedia.GetLinkedinOAuthConfig_Register()
 
 	token, err := OAuth2Config.Exchange(context.TODO(), code)
 
@@ -1267,7 +1003,7 @@ func (a *Auth) HandleLinkedInRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var LinkedinUserDetails LinkedinUserDetails
+	var LinkedinUserDetails socialmedia.LinkedinUserDetails
 	err = json.Unmarshal(str, &LinkedinUserDetails)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -1301,7 +1037,6 @@ func (a *Auth) HandleLinkedInRegister(w http.ResponseWriter, r *http.Request) {
 		if len(unverified) > 0 {
 			user = &unverified[0]
 		} else {
-			user = user
 			secret, err := console.RegistrationSecretFromBase64(registerData.SecretInput)
 			if err != nil {
 				a.serveJSONError(ctx, w, err)
@@ -1397,8 +1132,7 @@ func (a *Auth) HandleLinkedInRegister(w http.ResponseWriter, r *http.Request) {
 
 	a.log.Error("Default Project Name: " + project.Name)
 
-	config, _ := LoadConfig(".")
-	http.Redirect(w, r, fmt.Sprint(config.ClientOrigin, signupSuccessURL), http.StatusTemporaryRedirect)
+	http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, signupSuccessURL), http.StatusTemporaryRedirect)
 }
 func (a *Auth) HandleLinkedInLogin(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -1408,12 +1142,12 @@ func (a *Auth) HandleLinkedInLogin(w http.ResponseWriter, r *http.Request) {
 	var state = r.FormValue("state")
 	var code = r.FormValue("code")
 
-	if state != GetRandomOAuthStateString() {
+	if state != socialmedia.GetRandomOAuthStateString() {
 		a.serveJSONError(ctx, w, err)
 
 	}
 
-	var OAuth2Config = GetLinkedinOAuthConfig_Login()
+	var OAuth2Config = socialmedia.GetLinkedinOAuthConfig_Login()
 	token, err := OAuth2Config.Exchange(context.TODO(), code)
 
 	if err != nil || token == nil {
@@ -1441,7 +1175,7 @@ func (a *Auth) HandleLinkedInLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var LinkedinUserDetails LinkedinUserDetails
+	var LinkedinUserDetails socialmedia.LinkedinUserDetails
 	err = json.Unmarshal(str, &LinkedinUserDetails)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -1455,17 +1189,13 @@ func (a *Auth) HandleLinkedInLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	fmt.Println(verified, unverified)
 
-	config, _ := LoadConfig(".")
-	if verified != nil {
-		userGmail = LinkedinUserDetails.Email
-	} else {
-		userGmail = ""
-		http.Redirect(w, r, fmt.Sprint(config.ClientOrigin, signupPageURL), http.StatusTemporaryRedirect)
+	if verified == nil {
+		http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, signupPageURL), http.StatusTemporaryRedirect)
 		return
 	}
-	a.TokenGoogleWrapper(w, r)
+	a.TokenGoogleWrapper(ctx, LinkedinUserDetails.Email, w, r)
 
-	http.Redirect(w, r, fmt.Sprint(config.ClientOrigin, mainPageURL), http.StatusTemporaryRedirect)
+	http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, mainPageURL), http.StatusTemporaryRedirect)
 }
 
 // loadSession looks for a cookie for the session id.
@@ -2181,6 +1911,6 @@ func (a *Auth) getUserErrorMessage(err error) string {
 	case errors.As(err, &maxBytesError):
 		return "Request body is too large"
 	default:
-		return "There was an error processing your request"
+		return "There was an error processing your request" + err.Error()
 	}
 }
