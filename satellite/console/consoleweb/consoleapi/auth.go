@@ -757,6 +757,7 @@ func (a *Auth) HandleFacebookRegister(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil || token == nil {
 		a.serveJSONError(ctx, w, err)
+		return
 	}
 	fbUserDetails, fbUserDetailsError := socialmedia.GetUserInfoFromFacebook(token.AccessToken)
 
@@ -883,6 +884,7 @@ func (a *Auth) HandleFacebookRegister(w http.ResponseWriter, r *http.Request) {
 		a.log.Error("Error in Default Project:")
 		a.log.Error(err.Error())
 		a.serveJSONError(ctx, w, err)
+		return
 	}
 
 	a.log.Error("Default Project Name: " + project.Name)
@@ -900,6 +902,7 @@ func (a *Auth) HandleFacebookLogin(w http.ResponseWriter, r *http.Request) {
 
 	if state != socialmedia.GetRandomOAuthStateString() {
 		a.serveJSONError(ctx, w, err)
+		return
 	}
 
 	var OAuth2Config = socialmedia.GetFacebookOAuthConfig_Login()
@@ -980,6 +983,7 @@ func (a *Auth) HandleLinkedInRegister(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil || token == nil {
 		a.serveJSONError(ctx, w, err)
+		return
 	}
 
 	client := OAuth2Config.Client(context.TODO(), token)
@@ -1128,6 +1132,7 @@ func (a *Auth) HandleLinkedInRegister(w http.ResponseWriter, r *http.Request) {
 		a.log.Error("Error in Default Project:")
 		a.log.Error(err.Error())
 		a.serveJSONError(ctx, w, err)
+		return
 	}
 
 	a.log.Error("Default Project Name: " + project.Name)
@@ -1144,7 +1149,7 @@ func (a *Auth) HandleLinkedInLogin(w http.ResponseWriter, r *http.Request) {
 
 	if state != socialmedia.GetRandomOAuthStateString() {
 		a.serveJSONError(ctx, w, err)
-
+		return
 	}
 
 	var OAuth2Config = socialmedia.GetLinkedinOAuthConfig_Login()
@@ -1152,6 +1157,7 @@ func (a *Auth) HandleLinkedInLogin(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil || token == nil {
 		a.serveJSONError(ctx, w, err)
+		return
 	}
 
 	client := OAuth2Config.Client(context.TODO(), token)
