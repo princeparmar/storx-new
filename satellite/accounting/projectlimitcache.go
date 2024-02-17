@@ -5,6 +5,7 @@ package accounting
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/zeebo/errs"
@@ -73,6 +74,7 @@ func (c *ProjectLimitCache) GetLimits(ctx context.Context, projectID uuid.UUID) 
 	if err != nil {
 		return ProjectLimits{}, ErrGetProjectLimitCache.Wrap(err)
 	}
+	fmt.Println("&&&&&&&&&&&&&&&& GetLimits", limits)
 	return limits, nil
 }
 
@@ -107,6 +109,7 @@ func (c *ProjectLimitCache) getProjectLimits(ctx context.Context, projectID uuid
 	defer mon.Task()(&ctx, projectID)(&err)
 
 	projectLimits, err := c.projectLimitDB.GetProjectLimits(ctx, projectID)
+	fmt.Println("################projectLimits_1::: ", projectLimits)
 	if err != nil {
 		return ProjectLimits{}, ErrGetProjectLimit.Wrap(err)
 	}
@@ -117,11 +120,16 @@ func (c *ProjectLimitCache) getProjectLimits(ctx context.Context, projectID uuid
 	if projectLimits.Usage == nil {
 		defaultUsage := c.defaultMaxUsage.Int64()
 		projectLimits.Usage = &defaultUsage
+
+		fmt.Println("################   defaultUsage::: ", defaultUsage)
+		fmt.Println("################   projectLimits.Usage::: ", projectLimits.Usage)
 	}
 	if projectLimits.Segments == nil {
 		defaultSegments := c.defaultMaxSegments
 		projectLimits.Segments = &defaultSegments
 	}
-
+	fmt.Println("################projectLimits_2::: ", *projectLimits.Bandwidth)
+	fmt.Println("################projectLimits_3::: ", *projectLimits.Usage)
+	fmt.Println("################projectLimits_4::: ", *projectLimits.Segments)
 	return projectLimits, nil
 }

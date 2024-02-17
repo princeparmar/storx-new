@@ -2090,11 +2090,12 @@ func (db *satelliteDB) ProductionMigration() *migrate.Migration {
 			},
 			{
 				DB:          &db.migrationDB,
-				Description: "Add user_specified_usage_limit and user_specified_bandwidth_limit columns",
+				Description: "Add user_specified_usage_limit and user_specified_bandwidth_limit columns and prevDays_UntilExpiration",
 				Version:     212,
 				Action: migrate.SQL{
 					`ALTER TABLE projects ADD COLUMN user_specified_usage_limit bigint;`,
 					`ALTER TABLE projects ADD COLUMN user_specified_bandwidth_limit bigint;`,
+					`ALTER TABLE projects ADD COLUMN prevDays_UntilExpiration int;`,
 				},
 			},
 			{
