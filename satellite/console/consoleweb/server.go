@@ -41,6 +41,7 @@ import (
 	"storj.io/storj/satellite/analytics"
 	"storj.io/storj/satellite/console"
 	"storj.io/storj/satellite/console/consoleweb/consoleapi"
+	"storj.io/storj/satellite/console/consoleweb/consoleapi/socialmedia"
 	"storj.io/storj/satellite/console/consoleweb/consoleql"
 	"storj.io/storj/satellite/console/consoleweb/consolewebauth"
 	"storj.io/storj/satellite/mailservice"
@@ -69,6 +70,27 @@ type Config struct {
 	ExternalAddress     string `help:"external endpoint of the satellite if hosted" default:""`
 	FrontendEnable      bool   `help:"feature flag to toggle whether console back-end server should also serve front-end endpoints" default:"true"`
 	BackendReverseProxy string `help:"the target URL of console back-end reverse proxy for local development when running a UI server" default:""`
+
+	ZohoClientID     string `help:"client id for zoho oauth" default:""`
+	ZohoClientSecret string `help:"client secret for zoho oauth" default:""`
+	ZohoRefreshToken string `help:"refresh token for zoho oauth" default:""`
+
+	ClientOrigin string `help:"client origin for redirection URLs" default:""`
+
+	GoogleClientID               string `help:"client id for google oauth" default:""`
+	GoogleClientSecret           string `help:"client secret for google oauth" default:""`
+	GoogleSigupRedirectURLstring string `help:"redirect url for google oauth" default:""`
+	GoggleLoginRedirectURLstring string `help:"redirect url for google oauth" default:""`
+
+	FacebookClientID               string `help:"client id for facebook oauth" default:""`
+	FacebookClientSecret           string `help:"client secret for facebook oauth" default:""`
+	FacebookSigupRedirectURLstring string `help:"redirect url for facebook oauth" default:""`
+	FacebookLoginRedirectURLstring string `help:"redirect url for facebook oauth" default:""`
+
+	LinkedinClientID               string `help:"client id for linkedin oauth" default:""`
+	LinkedinClientSecret           string `help:"client secret for linkedin oauth" default:""`
+	LinkedinSigupRedirectURLstring string `help:"redirect url for linkedin oauth" default:""`
+	LinkedinLoginRedirectURLstring string `help:"redirect url for linkedin oauth" default:""`
 
 	StaticDir string `help:"path to static resources" default:""`
 	Watch     bool   `help:"whether to load templates on each request" default:"false" devDefault:"true"`
@@ -300,6 +322,15 @@ func NewServer(logger *zap.Logger, config Config, service *console.Service, oidc
 	projectsRouter.Handle("/usage-limits", http.HandlerFunc(usageLimitsController.TotalUsageLimits)).Methods(http.MethodGet, http.MethodOptions)
 	projectsRouter.Handle("/{id}/daily-usage", http.HandlerFunc(usageLimitsController.DailyUsage)).Methods(http.MethodGet, http.MethodOptions)
 
+	// starting zoho refresh token goroutine
+	go consoleapi.ZohoRefreshTokenInit(context.Background(), config.ZohoClientID, config.ZohoClientSecret, config.ZohoRefreshToken, logger)
+
+	// set social media config
+	socialmedia.SetClientOrigin(config.ClientOrigin)
+	socialmedia.SetGoogleSocialMediaConfig(config.GoogleClientID, config.GoogleClientSecret, config.GoogleSigupRedirectURLstring, config.GoggleLoginRedirectURLstring)
+	socialmedia.SetFacebookSocialMediaConfig(config.FacebookClientID, config.FacebookClientSecret, config.FacebookSigupRedirectURLstring, config.FacebookLoginRedirectURLstring)
+	socialmedia.SetLinkedinSocialMediaConfig(config.LinkedinClientID, config.LinkedinClientSecret, config.LinkedinSigupRedirectURLstring, config.LinkedinLoginRedirectURLstring)
+
 	authController := consoleapi.NewAuth(logger, service, accountFreezeService, mailService, server.cookieAuth, server.analytics, config.SatelliteName, server.config.ExternalAddress, config.LetUsKnowURL, config.TermsAndConditionsURL, config.ContactInfoURL, config.GeneralRequestURL)
 	authRouter := router.PathPrefix("/api/v0/auth").Subrouter()
 	authRouter.Use(server.withCORS)
@@ -328,7 +359,7 @@ func NewServer(logger *zap.Logger, config Config, service *console.Service, oidc
 	authRouter.Handle("/mfa/generate-recovery-codes", server.withAuth(http.HandlerFunc(authController.GenerateMFARecoveryCodes))).Methods(http.MethodPost, http.MethodOptions)
 	authRouter.Handle("/logout", server.withAuth(http.HandlerFunc(authController.Logout))).Methods(http.MethodPost, http.MethodOptions)
 	authRouter.Handle("/token", server.ipRateLimiter.Limit(http.HandlerFunc(authController.Token))).Methods(http.MethodPost, http.MethodOptions)
-	authRouter.Handle("/token_google", server.ipRateLimiter.Limit(http.HandlerFunc(authController.TokenGoogleWrapper))).Methods(http.MethodPost, http.MethodOptions)
+	authRouter.Handle("/token_google", server.ipRateLimiter.Limit(http.HandlerFunc(authController.TokenGoogleWrapperHandler))).Methods(http.MethodPost, http.MethodOptions)
 	authRouter.Handle("/token-by-api-key", server.ipRateLimiter.Limit(http.HandlerFunc(authController.TokenByAPIKey))).Methods(http.MethodPost, http.MethodOptions)
 	authRouter.Handle("/register", server.ipRateLimiter.Limit(http.HandlerFunc(authController.Register))).Methods(http.MethodPost, http.MethodOptions)
 	authRouter.Handle("/register-google", server.ipRateLimiter.Limit(http.HandlerFunc(authController.RegisterGoogle))).Methods(http.MethodGet, http.MethodOptions)

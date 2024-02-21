@@ -7,7 +7,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -423,7 +422,6 @@ func (p *Projects) InviteUsers(w http.ResponseWriter, r *http.Request) {
 		data.Emails[i] = strings.TrimSpace(email)
 	}
 
-	fmt.Println("@@@@@@@@@@@@@@@@@@@@@@@ Invited users:", data.Emails)
 	_, err = p.service.InviteProjectMembers(ctx, id, data.Emails)
 	if err != nil {
 		p.serveJSONError(ctx, w, http.StatusInternalServerError, err)

@@ -7,7 +7,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
-	"fmt"
 	"time"
 
 	"github.com/zeebo/errs"
@@ -223,7 +222,6 @@ func (projects *projects) Update(ctx context.Context, project *console.Project) 
 	updateFields.CreatedAt = dbx.Project_CreatedAt(project.CreatedAt)
 	updateFields.PrevDaysUntilExpiration = dbx.Project_PrevDays_UntilExpiration(project.PrevDaysUntilExpiration)
 
-	fmt.Println("################################################################", project.StorageLimit)
 	if project.StorageLimit != nil {
 		updateFields.UsageLimit = dbx.Project_UsageLimit(project.StorageLimit.Int64())
 	}
@@ -231,7 +229,6 @@ func (projects *projects) Update(ctx context.Context, project *console.Project) 
 		updateFields.UserSpecifiedUsageLimit = dbx.Project_UserSpecifiedUsageLimit(int64(*project.UserSpecifiedStorageLimit))
 	}
 	if project.BandwidthLimit != nil {
-		fmt.Println("################################################################", project.BandwidthLimit)
 		updateFields.BandwidthLimit = dbx.Project_BandwidthLimit(project.BandwidthLimit.Int64())
 	}
 	if project.UserSpecifiedBandwidthLimit != nil {
