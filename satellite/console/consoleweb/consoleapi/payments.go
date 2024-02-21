@@ -1091,10 +1091,10 @@ func (p *Payments) MonitorUserProjects(ctx context.Context) (err error) {
 			}
 
 			if project.StorageLimit.GB() > 2 {
-				daysUntilExpiration_Temp := now.Sub(project.CreatedAt).Minutes() / 1
+				daysUntilExpiration_Temp := now.Sub(project.CreatedAt).Hours() / 24
 				daysUntilExpiration := int(daysUntilExpiration_Temp)
 
-				if daysUntilExpiration >= 3 && daysUntilExpiration < 10 {
+				if daysUntilExpiration >= 23 && daysUntilExpiration < 30 {
 					if daysUntilExpiration > project.PrevDaysUntilExpiration {
 
 						updateProjectInfo := console.UpsertProjectInfo{
@@ -1112,7 +1112,7 @@ func (p *Payments) MonitorUserProjects(ctx context.Context) (err error) {
 						sendEmail(user.Email, fmt.Sprintf(" Your upgrade will expire on %s.\n Please upgrade your Pricing Plan.\n StorX Support Team", expirationDate.Format("2006-01-02")))
 					}
 				}
-				if daysUntilExpiration >= 10 && project.PrevDaysUntilExpiration < 10 {
+				if daysUntilExpiration >= 30 && project.PrevDaysUntilExpiration < 30 {
 					sendEmail(user.Email, " Your upgrade expired.\n Please upgrade your Pricing Plan.\n StorX Support Team")
 					p.updateLimits(ctx, user.Email, "2", "2")
 					err = p.service.GetUsers().UpdatePaidTiers(ctx, user.ID, false)
@@ -1159,8 +1159,8 @@ func (p *Payments) StartMonitoringUserProjects(ctx context.Context) {
 				if err != nil {
 					p.log.Error("Error occurred while monitoring user projects", zap.Error(err))
 				}
-				time.Sleep(1 * time.Minute)
-				// time.Sleep(24 * time.Hour)
+				// time.Sleep(1 * time.Minute)
+				time.Sleep(24 * time.Hour)
 			}
 		}
 	}()
