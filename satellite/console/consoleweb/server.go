@@ -47,6 +47,7 @@ import (
 	"storj.io/storj/satellite/mailservice"
 	"storj.io/storj/satellite/oidc"
 	"storj.io/storj/satellite/payments/paymentsconfig"
+	"storj.io/storj/satellite/payments/stripe"
 )
 
 const (
@@ -238,9 +239,9 @@ func (a *apiAuth) RemoveAuthCookie(w http.ResponseWriter) {
 }
 
 // NewServer creates new instance of console server.
-func NewServer(logger *zap.Logger, config Config, service *console.Service, oidcService *oidc.Service, mailService *mailservice.Service, analytics *analytics.Service, abTesting *abtesting.Service, accountFreezeService *console.AccountFreezeService, listener net.Listener, stripePublicKey string, neededTokenPaymentConfirmations int, nodeURL storj.NodeURL, packagePlans paymentsconfig.PackagePlans) *Server {
+func NewServer(logger *zap.Logger, config Config, service *console.Service, oidcService *oidc.Service, mailService *mailservice.Service, analytics *analytics.Service, abTesting *abtesting.Service, accountFreezeService *console.AccountFreezeService, listener net.Listener, stripePublicKey string, neededTokenPaymentConfirmations int, nodeURL storj.NodeURL, packagePlans paymentsconfig.PackagePlans, stripe *stripe.Service) *Server {
 
-	paymentMonitor := consoleapi.NewPayments(logger, service, accountFreezeService, packagePlans)
+	paymentMonitor := consoleapi.NewPayments(logger, service, accountFreezeService, packagePlans, stripe)
 
 	server := Server{
 		log:                             logger,
@@ -379,7 +380,7 @@ func NewServer(logger *zap.Logger, config Config, service *console.Service, oidc
 		abRouter.Handle("/hit/{action}", http.HandlerFunc(abController.SendHit)).Methods(http.MethodPost, http.MethodOptions)
 	}
 
-	paymentController := consoleapi.NewPayments(logger, service, accountFreezeService, packagePlans)
+	paymentController := consoleapi.NewPayments(logger, service, accountFreezeService, packagePlans, stripe)
 	paymentsRouter := router.PathPrefix("/api/v0/payments").Subrouter()
 	paymentsRouter.Use(server.withCORS)
 	paymentsRouter.Use(server.withAuth)
@@ -404,6 +405,7 @@ func NewServer(logger *zap.Logger, config Config, service *console.Service, oidc
 	}
 	//boris
 	paymentsRouter.HandleFunc("/upgradingModule", paymentController.UpgradingModuleReq).Methods(http.MethodPost, http.MethodOptions)
+	paymentsRouter.HandleFunc("/invoice-history", paymentController.BillingTransactionHistory).Methods(http.MethodGet, http.MethodOptions)
 
 	bucketsController := consoleapi.NewBuckets(logger, service)
 	bucketsRouter := router.PathPrefix("/api/v0/buckets").Subrouter()
@@ -503,7 +505,6 @@ func (server *Server) Run(ctx context.Context) (err error) {
 
 	// paymentMonitor should be not nil before calling its methods
 	if server.paymentMonitor != nil {
-		fmt.Println("******************** erererereration")
 		server.paymentMonitor.StartMonitoringUserProjects(ctx)
 	}
 

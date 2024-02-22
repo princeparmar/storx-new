@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+
 	"github.com/spacemonkeygo/monkit/v3"
 	"github.com/spf13/viper"
 	"github.com/zeebo/errs"
@@ -30,6 +31,7 @@ import (
 	"storj.io/storj/satellite/payments"
 	"storj.io/storj/satellite/payments/billing"
 	"storj.io/storj/satellite/payments/paymentsconfig"
+	"storj.io/storj/satellite/payments/stripe"
 )
 
 var (
@@ -48,6 +50,7 @@ type Payments struct {
 	service              *console.Service
 	accountFreezeService *console.AccountFreezeService
 	packagePlans         paymentsconfig.PackagePlans
+	stripe               *stripe.Service
 }
 
 // boris
@@ -113,7 +116,9 @@ type PaymentErrResponse struct {
 	Status     bool   `json:"status"`
 	StatusCode int    `json:"statusCode"`
 }
-
+type RequestUser struct {
+	Email string `json:"userEmail"`
+}
 type GatewayConfig struct {
 	ClientOrigin                           string `mapstructure:"CLIENT_ORIGIN"`
 	PaymentGateway_APIKey                  string `mapstructure:"PAYMENTGATEWAY_API_KEY"`
@@ -144,12 +149,13 @@ func LoadConfig_Gateway(path string) (config GatewayConfig, err error) {
 /*********** boris define end ***************/
 
 // NewPayments is a constructor for api payments controller.
-func NewPayments(log *zap.Logger, service *console.Service, accountFreezeService *console.AccountFreezeService, packagePlans paymentsconfig.PackagePlans) *Payments {
+func NewPayments(log *zap.Logger, service *console.Service, accountFreezeService *console.AccountFreezeService, packagePlans paymentsconfig.PackagePlans, stripe *stripe.Service) *Payments {
 	return &Payments{
 		log:                  log,
 		service:              service,
 		accountFreezeService: accountFreezeService,
 		packagePlans:         packagePlans,
+		stripe:               stripe,
 	}
 }
 
@@ -758,14 +764,11 @@ func (p *Payments) UpgradingModuleReq(w http.ResponseWriter, r *http.Request) {
 		"fiatCurrency": upgradingRequest.FiatCurrency,
 	}
 
-	fmt.Println("************************requestData: ", requestData)
-
 	requestBody, err := json.Marshal(requestData)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to marshal request data: %v", err), http.StatusInternalServerError)
 		return
 	}
-	fmt.Println("************************requestBody: ", requestBody)
 
 	stringPayload := base64.StdEncoding.EncodeToString(requestBody)
 
@@ -787,7 +790,6 @@ func (p *Payments) UpgradingModuleReq(w http.ResponseWriter, r *http.Request) {
 		fmt.Println("********************Error creating request:", err)
 		return
 	}
-	fmt.Println("************************req: ", req)
 
 	for key, value := range headers {
 		req.Header.Set(key, value)
@@ -805,7 +807,6 @@ func (p *Payments) UpgradingModuleReq(w http.ResponseWriter, r *http.Request) {
 		fmt.Println("****************Error reading response body:", err)
 		return
 	}
-	fmt.Println("**************************Response:", string(respBody))
 
 	// Decode the JSON response
 	var upgradingResponse UpgradingResponse
@@ -815,7 +816,7 @@ func (p *Payments) UpgradingModuleReq(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("Failed to decode response body: %v", err), http.StatusInternalServerError)
 		return
 	}
-
+	user, err := p.service.GetUsers().GetByEmail(ctx, userEmail)
 	// Handle the response from the Payment gateway
 	if upgradingResponse.Status {
 		fmt.Printf("Received successful response:\nMessage: %s\nStatus: %t\nStatusCode: %d\nData: %+v\n",
@@ -850,14 +851,20 @@ func (p *Payments) UpgradingModuleReq(w http.ResponseWriter, r *http.Request) {
 			for {
 				time.Sleep(30 * time.Second)
 				paymentStatus := getPaymentdetail(paymentID)
+				// if paymentStatus == "COMPLETED" {
 				if paymentStatus == "COMPLETED" {
 					newCtx := context.Background()
 					p.updateLimits(newCtx, userEmail, upgradingRequest.GBsize, upgradingRequest.Bandwidth)
 					sendEmail(userEmail, sendBody)
+					p.stripe.CreateTokenPaymentBillingTransaction(newCtx, user, planPrice)
 					return
 				}
 			}
 		}(upgradingResponse.Data.PaymentID)
+
+		// p.updateLimits(ctx, userEmail, upgradingRequest.GBsize, upgradingRequest.Bandwidth)
+		// sendEmail(userEmail, sendBody)
+		// p.stripe.CreateTokenPaymentBillingTransaction(ctx, user, planPrice)
 	} else {
 		fmt.Printf("Received error response:\nError: %s\nStatus: %t\nStatusCode: %d\n",
 			upgradingErrResponse.Error, upgradingErrResponse.Status, upgradingErrResponse.StatusCode)
@@ -885,7 +892,6 @@ func sendEmail(recipientGmail string, body string) {
 	}
 }
 
-// func getPaymentdetail(paidNonce string, paidPaymentID string) (paymentStatus bool) {
 func getPaymentdetail(paidPaymentID string) (paymentStatus string) {
 	config, _ := LoadConfig_Gateway(".")
 	PaymentGateway_Pay_StatusUrl := config.PaymentGateway_Pay_StatusUrl
@@ -906,14 +912,11 @@ func getPaymentdetail(paidPaymentID string) (paymentStatus string) {
 		"paymentId":  paymentStatusRequest.PaymentId,
 	}
 
-	fmt.Println("************************requestData: ", requestData)
-
 	requestBody, err := json.Marshal(requestData)
 	if err != nil {
 		fmt.Println("requestBody Marshal Error: ", err)
 		return
 	}
-	fmt.Println("************************requestBody: ", requestBody)
 
 	stringPayload := base64.StdEncoding.EncodeToString(requestBody)
 
@@ -932,10 +935,8 @@ func getPaymentdetail(paidPaymentID string) (paymentStatus string) {
 	client := &http.Client{}
 	req, err := http.NewRequest("POST", PaymentGateway_Pay_StatusUrl, bytes.NewBuffer(requestBody))
 	if err != nil {
-		fmt.Println("********************Error creating request:", err)
 		return
 	}
-	fmt.Println("************************req: ", req)
 
 	for key, value := range headers {
 		req.Header.Set(key, value)
@@ -1028,9 +1029,8 @@ func (p *Payments) updateLimits(ctx context.Context, userEmail string, storageTe
 	}
 
 	userProjects, err := p.service.GetProjects().GetOwn(ctx, user.ID)
-	fmt.Println("***************************** userProjects:", userProjects)
+
 	if err != nil {
-		fmt.Println("********************************** failed to get user's projects", err)
 		return
 	}
 
@@ -1147,8 +1147,6 @@ func (p *Payments) GetAllUsers(ctx context.Context) ([]console.User, error) {
 
 // StartMonitoringUserProjects starts monitoring user projects as a goroutine.
 func (p *Payments) StartMonitoringUserProjects(ctx context.Context) {
-	fmt.Println("************** StartMonitoringUserProjects **************")
-	fmt.Println("************** CTX_start **************", ctx)
 	go func() {
 		for {
 			select {
@@ -1164,4 +1162,99 @@ func (p *Payments) StartMonitoringUserProjects(ctx context.Context) {
 			}
 		}
 	}()
+}
+
+// payment history request and response
+func (p *Payments) BillingTransactionHistory(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	var err error
+	defer mon.Task()(&ctx)(&err)
+
+	w.Header().Set("Content-Type", "application/json")
+
+	// Parse query parameters
+	query := r.URL.Query()
+	limitStr := query.Get("limit")
+	startingAfterStr := query.Get("starting_after")
+	endingBeforeStr := query.Get("ending_before")
+	var limit int
+	var startingAfter int64
+	var endingBefore int64
+
+	// Convert string parameters to appropriate types
+
+	if limitStr != "" {
+		limit, _ = strconv.Atoi(limitStr)
+	}
+
+	if startingAfterStr != "" {
+		startingAfter, _ = strconv.ParseInt(startingAfterStr, 10, 64)
+	}
+
+	if endingBeforeStr != "" {
+		endingBefore, _ = strconv.ParseInt(endingBeforeStr, 10, 64)
+	}
+
+	user, err := p.service.GetUserAndAuditLog(ctx, "get billing history")
+	if err != nil {
+		fmt.Println("GetUserAndAuditLog err: ", err)
+		return
+	}
+
+	billingHistory, err := p.stripe.GetBillingHistory(ctx, user.ID)
+	if err != nil {
+		fmt.Println("billingHistory err: ", err)
+		return
+	}
+
+	if billingHistory == nil {
+		_, err = w.Write([]byte("[]"))
+	} else {
+		if limit >= len(billingHistory) {
+			err = json.NewEncoder(w).Encode(billingHistory)
+		} else {
+			if startingAfter > 0 {
+				index := -1
+				for i, item := range billingHistory {
+					if item.ID == startingAfter {
+						index = i
+						break
+					}
+				}
+				if index == -1 || index == len(billingHistory)-1 {
+					_, err = w.Write([]byte("[]"))
+				} else {
+					endIndex := index + limit + 1
+					if endIndex >= len(billingHistory) {
+						endIndex = len(billingHistory)
+					}
+					err = json.NewEncoder(w).Encode(billingHistory[index+1 : endIndex])
+				}
+			} else if endingBefore > 0 {
+				index := -1
+				for i, item := range billingHistory {
+					if item.ID == endingBefore {
+						index = i
+						break
+					}
+				}
+
+				if index == -1 || index == 0 {
+					err = json.NewEncoder(w).Encode(billingHistory[:limit])
+				} else {
+					startIndex := index - limit
+					if startIndex < 0 {
+						startIndex = 0
+					}
+					err = json.NewEncoder(w).Encode(billingHistory[startIndex:index])
+				}
+			} else {
+				err = json.NewEncoder(w).Encode(billingHistory[:limit])
+			}
+		}
+	}
+
+	if err != nil {
+		p.log.Error("failed to write json billing history response", zap.Error(ErrPaymentsAPI.Wrap(err)))
+	}
 }

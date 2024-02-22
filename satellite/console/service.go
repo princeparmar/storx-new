@@ -352,6 +352,25 @@ func (s *Service) getUserAndAuditLog(ctx context.Context, operation string, extr
 	return user, nil
 }
 
+// boris
+func (s *Service) GetUserAndAuditLog(ctx context.Context, operation string, extra ...zap.Field) (*User, error) {
+	user, err := GetUser(ctx)
+	if err != nil {
+		sourceIP, forwardedForIP := getRequestingIP(ctx)
+		s.auditLogger.Info("console activity unauthorized",
+			append(append(
+				make([]zap.Field, 0, len(extra)+4),
+				zap.String("operation", operation),
+				zap.Error(err),
+				zap.String("source-ip", sourceIP),
+				zap.String("forwarded-for-ip", forwardedForIP),
+			), extra...)...)
+		return nil, err
+	}
+	s.auditLog(ctx, operation, &user.ID, user.Email, extra...)
+	return user, nil
+}
+
 // Payments separates all payment related functionality.
 func (s *Service) Payments() Payments {
 	return Payments{service: s}
