@@ -257,7 +257,6 @@ CREATE TABLE projects (
                           salt bytea,
                           created_at timestamp with time zone NOT NULL,
                           default_placement integer,
-                          prevDays_UntilExpiration integer,
                           PRIMARY KEY ( id )
 );
 CREATE TABLE project_bandwidth_daily_rollups (

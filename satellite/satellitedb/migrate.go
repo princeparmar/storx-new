@@ -2090,12 +2090,11 @@ func (db *satelliteDB) ProductionMigration() *migrate.Migration {
 			},
 			{
 				DB:          &db.migrationDB,
-				Description: "Add user_specified_usage_limit and user_specified_bandwidth_limit columns and prevDays_UntilExpiration",
+				Description: "Add user_specified_usage_limit and user_specified_bandwidth_limit columns",
 				Version:     212,
 				Action: migrate.SQL{
 					`ALTER TABLE projects ADD COLUMN user_specified_usage_limit bigint;`,
 					`ALTER TABLE projects ADD COLUMN user_specified_bandwidth_limit bigint;`,
-					`ALTER TABLE projects ADD COLUMN prevDays_UntilExpiration int;`,
 				},
 			},
 			{
@@ -2421,6 +2420,14 @@ func (db *satelliteDB) ProductionMigration() *migrate.Migration {
 						signed_at timestamp with time zone NOT NULL,
 						signer bytea NOT NULL,
 						PRIMARY KEY ( node_id, name, signer ));`,
+				},
+			},
+			{
+				DB:          &db.migrationDB,
+				Description: "add new column prevDays_UntilExpiration in projects table",
+				Version:     242,
+				Action: migrate.SQL{
+					`ALTER TABLE projects ADD COLUMN prevDays_UntilExpiration int;`,
 				},
 			},
 			// NB: after updating testdata in `testdata`, run
