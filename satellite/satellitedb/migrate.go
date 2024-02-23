@@ -2427,7 +2427,7 @@ func (db *satelliteDB) ProductionMigration() *migrate.Migration {
 				Description: "add new column prevDays_UntilExpiration in projects table",
 				Version:     242,
 				Action: migrate.SQL{
-					`ALTER TABLE projects ADD COLUMN prevDays_UntilExpiration int;`,
+					`ALTER TABLE projects ADD COLUMN prevDays_UntilExpiration int NOT NULL DEFAULT 0;`,
 				},
 			},
 			// NB: after updating testdata in `testdata`, run
