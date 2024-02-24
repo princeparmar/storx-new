@@ -853,8 +853,8 @@ func (p *Payments) UpgradingModuleReq(w http.ResponseWriter, r *http.Request) {
 						&console.UpgradeSuccessfullEmail{
 							UserName:  user.ShortName,
 							Signature: "Storx Team",
-							// GBsize:    gbsize,
-							// Bandwidth: bandwidth,
+							GBsize:    gbsize,
+							Bandwidth: bandwidth,
 						},
 					)
 					p.stripe.CreateTokenPaymentBillingTransaction(newCtx, user, planPrice)
@@ -1081,12 +1081,12 @@ func (p *Payments) MonitorUserProjects(ctx context.Context) error {
 							continue
 						}
 						// Send warning email
-						// expirationDate := project.CreatedAt.AddDate(0, 0, 30)
+						expirationDate := project.CreatedAt.AddDate(0, 0, 30)
 						p.mailService.SendRenderedAsync(ctx, []post.Address{{Address: user.Email}},
 							&console.UpgradeExpiringEmail{
 								UserName:  user.ShortName,
 								Signature: "Storx Team",
-								// On: expirationDate.Format("2006-01-02"),
+								ExpireOn:  expirationDate.Format("2006-01-02"),
 							})
 					}
 				}

@@ -149,6 +149,7 @@ func (*UpgradeExpiredEmail) Subject() string {
 type UpgradeExpiringEmail struct {
 	UserName  string
 	Signature string
+	ExpireOn  string
 }
 
 // Template returns email template name.
@@ -162,8 +163,8 @@ func (*UpgradeExpiringEmail) Subject() string {
 type UpgradeSuccessfullEmail struct {
 	UserName  string
 	Signature string
-	// GBsize    string
-	// Bandwidth string
+	GBsize    string
+	Bandwidth string
 }
 
 // Template returns email template name.
