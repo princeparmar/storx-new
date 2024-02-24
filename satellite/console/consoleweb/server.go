@@ -388,7 +388,7 @@ func NewServer(logger *zap.Logger, config Config, service *console.Service, oidc
 		config.PaymentGateway_Pay_ReqUrl, config.PaymentGateway_Pay_StatusUrl, config.PaymentGateway_Pay_Success_RedirectUrl,
 		config.PaymentGateway_Pay_Failed_RedirectUrl)
 
-	paymentController := consoleapi.NewPayments(logger, service, accountFreezeService, packagePlans, stripe, gatewayConfig)
+	paymentController := consoleapi.NewPayments(logger, service, accountFreezeService, packagePlans, stripe, gatewayConfig, mailService)
 	server.paymentMonitor = paymentController
 
 	paymentsRouter := router.PathPrefix("/api/v0/payments").Subrouter()

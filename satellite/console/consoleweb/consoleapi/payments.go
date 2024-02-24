@@ -22,11 +22,11 @@ import (
 	"github.com/zeebo/errs"
 	"go.uber.org/zap"
 
-	"net/smtp"
-
 	"storj.io/common/memory"
+	"storj.io/storj/private/post"
 	"storj.io/storj/private/web"
 	"storj.io/storj/satellite/console"
+	"storj.io/storj/satellite/mailservice"
 	"storj.io/storj/satellite/payments"
 	"storj.io/storj/satellite/payments/billing"
 	"storj.io/storj/satellite/payments/paymentsconfig"
@@ -46,6 +46,8 @@ type Payments struct {
 	accountFreezeService *console.AccountFreezeService
 	packagePlans         paymentsconfig.PackagePlans
 	stripe               *stripe.Service
+
+	mailService *mailservice.Service
 
 	gatewayConfig GatewayConfig
 }
@@ -141,7 +143,7 @@ type RequestUser struct {
 
 // NewPayments is a constructor for api payments controller.
 func NewPayments(log *zap.Logger, service *console.Service, accountFreezeService *console.AccountFreezeService,
-	packagePlans paymentsconfig.PackagePlans, stripe *stripe.Service, config GatewayConfig) *Payments {
+	packagePlans paymentsconfig.PackagePlans, stripe *stripe.Service, config GatewayConfig, mailService *mailservice.Service) *Payments {
 	return &Payments{
 		log:                  log,
 		service:              service,
@@ -149,6 +151,7 @@ func NewPayments(log *zap.Logger, service *console.Service, accountFreezeService
 		packagePlans:         packagePlans,
 		stripe:               stripe,
 		gatewayConfig:        config,
+		mailService:          mailService,
 	}
 }
 
@@ -815,9 +818,6 @@ func (p *Payments) UpgradingModuleReq(w http.ResponseWriter, r *http.Request) {
 			upgradingResponse.Message, upgradingResponse.Status, upgradingResponse.StatusCode, upgradingResponse.Data)
 		fmt.Printf("Redirect URL: %s\nPayment ID: %s\n", upgradingResponse.Data.RedirectURL, upgradingResponse.Data.PaymentID)
 
-		sendBody := fmt.Sprintf("Your upgrading was successful.\nStorage limit: %sGB, Bandwidth limit: %sGB\nThank you for choosing our service!\nStorX Support Team",
-			upgradingRequest.GBsize, upgradingRequest.Bandwidth)
-
 		// Send the RedirectURL to the frontend
 		responseToFrontend := map[string]interface{}{
 			"redirectURL": upgradingResponse.Data.RedirectURL,
@@ -839,20 +839,29 @@ func (p *Payments) UpgradingModuleReq(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Periodically check the payment status
-		go func(paymentID string) {
+		go func(paymentID, gbsize, bandwidth, planPrice string, user *console.User) {
 			for {
 				time.Sleep(30 * time.Second)
 				paymentStatus := p.getPaymentdetail(paymentID)
 				// if paymentStatus == "COMPLETED" {
 				if paymentStatus == "COMPLETED" {
 					newCtx := context.Background()
-					p.updateLimits(newCtx, userEmail, upgradingRequest.GBsize, upgradingRequest.Bandwidth)
-					sendEmail(userEmail, sendBody)
+					p.updateLimits(newCtx, user.Email, gbsize, bandwidth)
+					p.mailService.SendRenderedAsync(
+						newCtx,
+						[]post.Address{{Address: user.Email}},
+						&console.UpgradeSuccessfullEmail{
+							UserName:  user.ShortName,
+							Signature: "Storx Team",
+							// GBsize:    gbsize,
+							// Bandwidth: bandwidth,
+						},
+					)
 					p.stripe.CreateTokenPaymentBillingTransaction(newCtx, user, planPrice)
 					return
 				}
 			}
-		}(upgradingResponse.Data.PaymentID)
+		}(upgradingResponse.Data.PaymentID, upgradingRequest.GBsize, upgradingRequest.Bandwidth, planPrice, user)
 
 		// p.updateLimits(ctx, userEmail, upgradingRequest.GBsize, upgradingRequest.Bandwidth)
 		// sendEmail(userEmail, sendBody)
@@ -860,27 +869,6 @@ func (p *Payments) UpgradingModuleReq(w http.ResponseWriter, r *http.Request) {
 	} else {
 		fmt.Printf("Received error response:\nError: %s\nStatus: %t\nStatusCode: %d\n",
 			upgradingErrResponse.Error, upgradingErrResponse.Status, upgradingErrResponse.StatusCode)
-	}
-}
-
-func sendEmail(recipientGmail string, body string) {
-	from := "ivanchikivanovv99@gmail.com"
-	// from := "test@storx.io"
-	pass := "azmc kphp kvhm lskt"
-	to := recipientGmail
-
-	msg := "From: " + from + "\n" +
-		"To: " + to + "\n" +
-		"Subject: Welcome to StorX\n\n" +
-		body
-
-	err := smtp.SendMail("smtp.gmail.com:587",
-		smtp.PlainAuth("", from, pass, "smtp.gmail.com"),
-		from, []string{to}, []byte(msg))
-
-	if err != nil {
-		fmt.Printf("***********************smtp error: %s\n\n", err)
-		return
 	}
 }
 
@@ -1093,12 +1081,21 @@ func (p *Payments) MonitorUserProjects(ctx context.Context) error {
 							continue
 						}
 						// Send warning email
-						expirationDate := project.CreatedAt.AddDate(0, 0, 30)
-						sendEmail(user.Email, fmt.Sprintf(" Your upgrade will expire on %s.\n Please upgrade your Pricing Plan.\n StorX Support Team", expirationDate.Format("2006-01-02")))
+						// expirationDate := project.CreatedAt.AddDate(0, 0, 30)
+						p.mailService.SendRenderedAsync(ctx, []post.Address{{Address: user.Email}},
+							&console.UpgradeExpiringEmail{
+								UserName:  user.ShortName,
+								Signature: "Storx Team",
+								// On: expirationDate.Format("2006-01-02"),
+							})
 					}
 				}
 				if daysUntilExpiration >= 30 && project.PrevDaysUntilExpiration < 30 {
-					sendEmail(user.Email, " Your upgrade expired.\n Please upgrade your Pricing Plan.\n StorX Support Team")
+					p.mailService.SendRenderedAsync(ctx, []post.Address{{Address: user.Email}}, &console.UpgradeExpiredEmail{
+						Signature: "Storx Team",
+						UserName:  user.ShortName,
+					})
+
 					p.updateLimits(ctx, user.Email, "2", "2")
 					err = p.service.GetUsers().UpdatePaidTiers(ctx, user.ID, false)
 					if err != nil {
