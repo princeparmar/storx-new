@@ -19,7 +19,6 @@ import (
 	"github.com/gorilla/mux"
 
 	"github.com/spacemonkeygo/monkit/v3"
-	"github.com/spf13/viper"
 	"github.com/zeebo/errs"
 	"go.uber.org/zap"
 
@@ -40,10 +39,6 @@ var (
 	mon            = monkit.Package()
 )
 
-// current payment detail status
-var paymentDetailStatusCode int
-var paymentCompleted bool
-
 // Payments is an api controller that exposes all payment related functionality.
 type Payments struct {
 	log                  *zap.Logger
@@ -51,6 +46,28 @@ type Payments struct {
 	accountFreezeService *console.AccountFreezeService
 	packagePlans         paymentsconfig.PackagePlans
 	stripe               *stripe.Service
+
+	gatewayConfig GatewayConfig
+}
+
+type GatewayConfig struct {
+	APIKey                  string
+	APISecret               string
+	Pay_ReqUrl              string
+	Pay_StatusUrl           string
+	Pay_Success_RedirectUrl string
+	Pay_Failed_RedirectUrl  string
+}
+
+func NewGatewayConfig(apiKey, apiSecret, payReqUrl, payStatusUrl, paySuccessRedirectUrl, payFailedRedirectUrl string) GatewayConfig {
+	return GatewayConfig{
+		APIKey:                  apiKey,
+		APISecret:               apiSecret,
+		Pay_ReqUrl:              payReqUrl,
+		Pay_StatusUrl:           payStatusUrl,
+		Pay_Success_RedirectUrl: paySuccessRedirectUrl,
+		Pay_Failed_RedirectUrl:  payFailedRedirectUrl,
+	}
 }
 
 // boris
@@ -119,43 +136,19 @@ type PaymentErrResponse struct {
 type RequestUser struct {
 	Email string `json:"userEmail"`
 }
-type GatewayConfig struct {
-	ClientOrigin                           string `mapstructure:"CLIENT_ORIGIN"`
-	PaymentGateway_APIKey                  string `mapstructure:"PAYMENTGATEWAY_API_KEY"`
-	PaymentGateway_APISecret               string `mapstructure:"PAYMENTGATEWAY_API_SECRET"`
-	PaymentGateway_Pay_ReqUrl              string `mapstructure:"PAYMENTGATEWAY_PAY_REQUEST_URL"`
-	PaymentGateway_Pay_StatusUrl           string `mapstructure:"PAYMENTGATEWAY_PAY_STATUS_URL"`
-	PaymentGateway_Pay_Success_RedirectUrl string `mapstructure:"PAYMENTGATEWAY_PAY_SUCCESS_REDIRECT_URL"`
-	PaymentGateway_Pay_Failed_RedirectUrl  string `mapstructure:"PAYMENTGATEWAY_PAY_FAILED_REDIRECT_URL"`
-
-	GoogleClientID     string `mapstructure:"GOOGLE_OAUTH_CLIENT_ID"`
-	GoogleClientSecret string `mapstructure:"GOOGLE_OAUTH_CLIENT_SECRET"`
-}
-
-func LoadConfig_Gateway(path string) (config GatewayConfig, err error) {
-	viper.AddConfigPath(path)
-	viper.SetConfigType("env")
-	viper.SetConfigName("app")
-	viper.AutomaticEnv()
-
-	err = viper.ReadInConfig()
-	if err != nil {
-		return
-	}
-	err = viper.Unmarshal(&config)
-	return
-}
 
 /*********** boris define end ***************/
 
 // NewPayments is a constructor for api payments controller.
-func NewPayments(log *zap.Logger, service *console.Service, accountFreezeService *console.AccountFreezeService, packagePlans paymentsconfig.PackagePlans, stripe *stripe.Service) *Payments {
+func NewPayments(log *zap.Logger, service *console.Service, accountFreezeService *console.AccountFreezeService,
+	packagePlans paymentsconfig.PackagePlans, stripe *stripe.Service, config GatewayConfig) *Payments {
 	return &Payments{
 		log:                  log,
 		service:              service,
 		accountFreezeService: accountFreezeService,
 		packagePlans:         packagePlans,
 		stripe:               stripe,
+		gatewayConfig:        config,
 	}
 }
 
@@ -717,8 +710,7 @@ func (p *Payments) UpgradingModuleReq(w http.ResponseWriter, r *http.Request) {
 	var err error
 	defer mon.Task()(&ctx)(&err)
 
-	config, _ := LoadConfig_Gateway(".")
-	PaymentGateway_PayReqUrl := config.PaymentGateway_Pay_ReqUrl
+	PaymentGateway_PayReqUrl := p.gatewayConfig.Pay_ReqUrl
 
 	// Decode the JSON payload from the request body
 	var upgradingRequest UpgradingRequest
@@ -746,8 +738,8 @@ func (p *Payments) UpgradingModuleReq(w http.ResponseWriter, r *http.Request) {
 	timestamp := strconv.FormatInt(time.Now().UnixNano()/1000000, 10)
 	upgradingRequest.Nonce = timestamp
 	upgradingRequest.RequestURL = "/api/payment"
-	upgradingRequest.SuccessURL = config.PaymentGateway_Pay_Success_RedirectUrl
-	upgradingRequest.FailureURL = config.PaymentGateway_Pay_Failed_RedirectUrl
+	upgradingRequest.SuccessURL = p.gatewayConfig.Pay_Success_RedirectUrl
+	upgradingRequest.FailureURL = p.gatewayConfig.Pay_Failed_RedirectUrl
 	upgradingRequest.Description = "payment is for the new transfer"
 	upgradingRequest.FiatCurrency = "usd"
 
@@ -772,14 +764,14 @@ func (p *Payments) UpgradingModuleReq(w http.ResponseWriter, r *http.Request) {
 
 	stringPayload := base64.StdEncoding.EncodeToString(requestBody)
 
-	secretKey := []byte(config.PaymentGateway_APISecret)
+	secretKey := []byte(p.gatewayConfig.APISecret)
 	h := hmac.New(sha256.New, secretKey)
 	h.Write([]byte(stringPayload)) // Use the base64 encoded string
 	signature := fmt.Sprintf("%x", h.Sum(nil))
 
 	headers := map[string]string{
 		"Content-Type":  "application/json",
-		"wlc-apikey":    config.PaymentGateway_APIKey,
+		"wlc-apikey":    p.gatewayConfig.APIKey,
 		"wlc-signature": signature,
 		"wlc-payload":   stringPayload,
 	}
@@ -850,7 +842,7 @@ func (p *Payments) UpgradingModuleReq(w http.ResponseWriter, r *http.Request) {
 		go func(paymentID string) {
 			for {
 				time.Sleep(30 * time.Second)
-				paymentStatus := getPaymentdetail(paymentID)
+				paymentStatus := p.getPaymentdetail(paymentID)
 				// if paymentStatus == "COMPLETED" {
 				if paymentStatus == "COMPLETED" {
 					newCtx := context.Background()
@@ -892,9 +884,8 @@ func sendEmail(recipientGmail string, body string) {
 	}
 }
 
-func getPaymentdetail(paidPaymentID string) (paymentStatus string) {
-	config, _ := LoadConfig_Gateway(".")
-	PaymentGateway_Pay_StatusUrl := config.PaymentGateway_Pay_StatusUrl
+func (p *Payments) getPaymentdetail(paidPaymentID string) (paymentStatus string) {
+	PaymentGateway_Pay_StatusUrl := p.gatewayConfig.Pay_StatusUrl
 	// Decode the JSON payload from the request body
 	var paymentStatusRequest PaymentStatusRequest
 
@@ -920,14 +911,14 @@ func getPaymentdetail(paidPaymentID string) (paymentStatus string) {
 
 	stringPayload := base64.StdEncoding.EncodeToString(requestBody)
 
-	secretKey := []byte(config.PaymentGateway_APISecret)
+	secretKey := []byte(p.gatewayConfig.APISecret)
 	h := hmac.New(sha256.New, secretKey)
 	h.Write([]byte(stringPayload)) // Use the base64 encoded string
 	signature := fmt.Sprintf("%x", h.Sum(nil))
 
 	headers := map[string]string{
 		"Content-Type":  "application/json",
-		"wlc-apikey":    config.PaymentGateway_APIKey,
+		"wlc-apikey":    p.gatewayConfig.APIKey,
 		"wlc-signature": signature,
 		"wlc-payload":   stringPayload,
 	}
@@ -970,7 +961,6 @@ func getPaymentdetail(paidPaymentID string) (paymentStatus string) {
 			getPaymentStatusResponse.Message, getPaymentStatusResponse.Status, getPaymentStatusResponse.StatusCode, getPaymentStatusResponse.Data)
 		fmt.Printf("*******PaymentStatus: %s\n*******Payment ID: %s\n", getPaymentStatusResponse.Data.Status, getPaymentStatusResponse.Data.PaymentID)
 
-		paymentDetailStatusCode = getPaymentStatusResponse.StatusCode
 		if getPaymentStatusResponse.Data.Status == "COMPLETED" {
 			paymentStatus = "COMPLETED"
 		} else if getPaymentStatusResponse.Data.Status == "PENDING" {
@@ -1004,9 +994,9 @@ func (p *Payments) updateLimits(ctx context.Context, userEmail string, storageTe
 	bandwidth := int64(bandwidthInt) * 1000000000
 
 	user, err := p.service.GetUsers().GetByEmail(ctx, userEmail)
-
 	if err != nil {
 		fmt.Println("***************************** user get fail: ", err)
+		return
 	}
 
 	newLimits := console.UsageLimits{
@@ -1029,8 +1019,8 @@ func (p *Payments) updateLimits(ctx context.Context, userEmail string, storageTe
 	}
 
 	userProjects, err := p.service.GetProjects().GetOwn(ctx, user.ID)
-
 	if err != nil {
+		fmt.Println("********************************** failed to get user projects: ", err)
 		return
 	}
 
@@ -1042,10 +1032,6 @@ func (p *Payments) updateLimits(ctx context.Context, userEmail string, storageTe
 	}
 
 	for _, project := range userProjects {
-		if err != nil {
-			fmt.Println("********************************** failed to get userProject: ", err)
-		}
-
 		updateProjectInfo := console.UpsertProjectInfo{
 			Name:                    project.Name,
 			Description:             project.Description,
@@ -1068,12 +1054,11 @@ func (p *Payments) updateLimits(ctx context.Context, userEmail string, storageTe
 }
 
 // MonitorUserProjects function
-func (p *Payments) MonitorUserProjects(ctx context.Context) (err error) {
+func (p *Payments) MonitorUserProjects(ctx context.Context) error {
 
 	now := time.Now()
 	users, err := p.GetAllUsers(ctx)
 	if err != nil {
-		fmt.Println("*****************************MonitorUserProjects users get fail: ", err)
 		return err
 	}
 
@@ -1081,14 +1066,10 @@ func (p *Payments) MonitorUserProjects(ctx context.Context) (err error) {
 	for _, user := range users {
 		userProjects, err := p.service.GetProjects().GetOwn(ctx, user.ID)
 		if err != nil {
-			fmt.Println("*****************************MonitorUserProjects userProjects get fail: ", err)
 			return err
 		}
 
 		for _, project := range userProjects {
-			if err != nil {
-				fmt.Println("********************************** failed to get userProject: ", err)
-			}
 
 			if project.StorageLimit.GB() > 2 {
 				daysUntilExpiration_Temp := now.Sub(project.CreatedAt).Hours() / 24
@@ -1107,6 +1088,10 @@ func (p *Payments) MonitorUserProjects(ctx context.Context) (err error) {
 						}
 						updateProjectInfo.PrevDaysUntilExpiration = daysUntilExpiration
 						_, err = p.service.UpdatingProjects(ctx, user, project.ID, updateProjectInfo)
+						if err != nil {
+							fmt.Println("failed to update project:", err)
+							continue
+						}
 						// Send warning email
 						expirationDate := project.CreatedAt.AddDate(0, 0, 30)
 						sendEmail(user.Email, fmt.Sprintf(" Your upgrade will expire on %s.\n Please upgrade your Pricing Plan.\n StorX Support Team", expirationDate.Format("2006-01-02")))
@@ -1133,7 +1118,6 @@ func (p *Payments) GetAllUsers(ctx context.Context) ([]console.User, error) {
 	usersFromDB, err := p.service.GetUsers().GetAllUsers(ctx)
 
 	if err != nil {
-		fmt.Println("***************************** user get fail: ", err)
 		return nil, err
 	}
 

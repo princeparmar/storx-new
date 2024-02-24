@@ -72,6 +72,13 @@ type Config struct {
 	FrontendEnable      bool   `help:"feature flag to toggle whether console back-end server should also serve front-end endpoints" default:"true"`
 	BackendReverseProxy string `help:"the target URL of console back-end reverse proxy for local development when running a UI server" default:""`
 
+	PaymentGateway_APIKey                  string `help:"api key for payment gateway" default:""`
+	PaymentGateway_APISecret               string `help:"api secret for payment gateway" default:""`
+	PaymentGateway_Pay_ReqUrl              string `help:"url for payment gateway request" default:""`
+	PaymentGateway_Pay_StatusUrl           string `help:"url for payment gateway status" default:""`
+	PaymentGateway_Pay_Success_RedirectUrl string `help:"url for payment gateway success redirect" default:""`
+	PaymentGateway_Pay_Failed_RedirectUrl  string `help:"url for payment gateway failed redirect" default:""`
+
 	ZohoClientID     string `help:"client id for zoho oauth" default:""`
 	ZohoClientSecret string `help:"client secret for zoho oauth" default:""`
 	ZohoRefreshToken string `help:"refresh token for zoho oauth" default:""`
@@ -241,8 +248,6 @@ func (a *apiAuth) RemoveAuthCookie(w http.ResponseWriter) {
 // NewServer creates new instance of console server.
 func NewServer(logger *zap.Logger, config Config, service *console.Service, oidcService *oidc.Service, mailService *mailservice.Service, analytics *analytics.Service, abTesting *abtesting.Service, accountFreezeService *console.AccountFreezeService, listener net.Listener, stripePublicKey string, neededTokenPaymentConfirmations int, nodeURL storj.NodeURL, packagePlans paymentsconfig.PackagePlans, stripe *stripe.Service) *Server {
 
-	paymentMonitor := consoleapi.NewPayments(logger, service, accountFreezeService, packagePlans, stripe)
-
 	server := Server{
 		log:                             logger,
 		config:                          config,
@@ -257,7 +262,6 @@ func NewServer(logger *zap.Logger, config Config, service *console.Service, oidc
 		userIDRateLimiter:               NewUserIDRateLimiter(config.RateLimit, logger),
 		nodeURL:                         nodeURL,
 		packagePlans:                    packagePlans,
-		paymentMonitor:                  paymentMonitor,
 	}
 
 	logger.Debug("Starting Satellite Console server.", zap.Stringer("Address", server.listener.Addr()))
@@ -380,7 +384,13 @@ func NewServer(logger *zap.Logger, config Config, service *console.Service, oidc
 		abRouter.Handle("/hit/{action}", http.HandlerFunc(abController.SendHit)).Methods(http.MethodPost, http.MethodOptions)
 	}
 
-	paymentController := consoleapi.NewPayments(logger, service, accountFreezeService, packagePlans, stripe)
+	gatewayConfig := consoleapi.NewGatewayConfig(config.PaymentGateway_APIKey, config.PaymentGateway_APISecret,
+		config.PaymentGateway_Pay_ReqUrl, config.PaymentGateway_Pay_StatusUrl, config.PaymentGateway_Pay_Success_RedirectUrl,
+		config.PaymentGateway_Pay_Failed_RedirectUrl)
+
+	paymentController := consoleapi.NewPayments(logger, service, accountFreezeService, packagePlans, stripe, gatewayConfig)
+	server.paymentMonitor = paymentController
+
 	paymentsRouter := router.PathPrefix("/api/v0/payments").Subrouter()
 	paymentsRouter.Use(server.withCORS)
 	paymentsRouter.Use(server.withAuth)
