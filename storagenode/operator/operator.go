@@ -23,6 +23,8 @@ type Config struct {
 
 // Verify verifies whether operator config is valid.
 func (c Config) Verify(log *zap.Logger) error {
+	fmt.Println("c.Email: ", c.Email)
+
 	if err := isOperatorEmailValid(log, c.Email); err != nil {
 		return err
 	}
