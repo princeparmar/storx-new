@@ -16,7 +16,8 @@ RUN update-ca-certificates
 FROM --platform=amd64 golang:1.19.4 AS storx-node-setup
 WORKDIR /app
 COPY . .
-RUN go build -o /go/bin/storagenode ./cmd/storagenode
+RUN cd web/storagenode && npm install && npm run build
+RUN cd /app && go build -o /go/bin/storagenode ./cmd/storagenode
 
 FROM amd64/debian:bullseye-slim
 
