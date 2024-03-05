@@ -32,5 +32,8 @@ COPY --from=storx-node-setup /go/bin/storagenode /usr/local/bin/storagenode
 RUN chmod +x /usr/local/bin/storagenode
 
 COPY cmd/storagenode/entrypoint /entrypoint
+RUN chown root:root /entrypoint
 RUN chmod +x /entrypoint
+
+
 ENTRYPOINT ["tail", "-f", "/dev/null"]
