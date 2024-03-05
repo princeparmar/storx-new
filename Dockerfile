@@ -33,4 +33,4 @@ RUN chmod +x /usr/local/bin/storagenode
 
 COPY cmd/storagenode/entrypoint /entrypoint
 RUN chmod +x /entrypoint
-ENTRYPOINT ["tail", "-f", "/dev/null"]
+ENTRYPOINT ["/entrypoint"]
