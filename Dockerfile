@@ -16,7 +16,7 @@ RUN update-ca-certificates
 FROM --platform=amd64 golang:1.19.4 AS storx-node-setup
 WORKDIR /app
 COPY . .
-COPY --from=ui /app/dist /app/web/storagenode
+COPY --from=ui /app/dist /app/web/storagenode/dist
 RUN go build -o /go/bin/storagenode ./cmd/storagenode
 
 FROM amd64/debian:bullseye-slim
@@ -33,4 +33,4 @@ RUN chmod +x /usr/local/bin/storagenode
 
 COPY cmd/storagenode/entrypoint /entrypoint
 RUN chmod +x /entrypoint
-ENTRYPOINT ["/entrypoint"]
+ENTRYPOINT ["tail", "-f", "/dev/null"]
