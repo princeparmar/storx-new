@@ -1,0 +1,76 @@
+#!/bin/bash
+set -euo pipefail
+
+SUPERVISOR_SERVER=unix
+
+RUN_PARAMS="${RUN_PARAMS:-} --config-dir config"
+RUN_PARAMS="${RUN_PARAMS} --identity-dir identity"
+RUN_PARAMS="${RUN_PARAMS} --console.static-dir /web --healthcheck.details false --healthcheck.enabled true --metrics.app-suffix sim"
+# remove this after testing
+RUN_PARAMS="${RUN_PARAMS} --storage2.monitor.minimum-disk-space 1GB --storage2.trust.sources 1GCvUAvrhbGSmLNGsg8KNRDFBCCCzwnWFeSdVU5HREPyj4zTvz@78.129.184.69:10000 --version.server-address https://storxtest.indsoft.info/"
+
+
+: ${STORJ_CONSOLE_ADDRESS:=0.0.0.0:14002}
+export STORJ_CONSOLE_ADDRESS
+SNO_RUN_PARAMS="${RUN_PARAMS}"
+if [ -n "${STORAGE:-}" ]; then
+  SNO_RUN_PARAMS="${SNO_RUN_PARAMS} --storage.allocated-disk-space=${STORAGE}"
+fi
+
+if [ -n "${ADDRESS:-}" ]; then
+  SNO_RUN_PARAMS="${SNO_RUN_PARAMS} --contact.external-address=${ADDRESS}"
+fi
+
+if [ -n "${EMAIL:-}" ]; then
+  SNO_RUN_PARAMS="${SNO_RUN_PARAMS} --operator.email=${EMAIL}"
+fi
+
+if [ -n "${WALLET:-}" ]; then
+  SNO_RUN_PARAMS="${SNO_RUN_PARAMS} --operator.wallet=${WALLET}"
+fi
+
+if [ -n "${LOG_LEVEL:-}" ]; then
+  SNO_RUN_PARAMS="${SNO_RUN_PARAMS} --log.level=${LOG_LEVEL}"
+fi
+
+if [ "${SETUP:-}" = "true" ]; then
+  echo "Running storagenode setup $SNO_RUN_PARAMS ${*}"
+  exec storagenode setup ${SNO_RUN_PARAMS} ${*}
+else
+  sed -i \
+  "s#^command=/app/storagenode\$#command=/app/storagenode run ${SNO_RUN_PARAMS} ${*}#" \
+  /etc/supervisor/supervisord.conf
+
+  # remove explicit user flag when container is run as non-root
+  if [ $EUID != "0" ]; then
+     sed -i "s#^user=root##" /etc/supervisor/supervisord.conf
+  fi
+
+  #
+  case ${SUPERVISOR_SERVER} in
+  	unix) # default
+  	;;
+  	public_port)
+  	  # replace unix_http_server section to inet_http_server
+  		sed -i "s#^\[unix_http_server\]\$#\[inet_http_server\]#" /etc/supervisor/supervisord.conf
+  		# replace unix socket file with tcp public port
+      sed -i "s#^file=/etc/supervisor/supervisor.sock\$#port=*:9001#" /etc/supervisor/supervisord.conf
+      # set server url to http server address
+      sed -i "s#^serverurl=unix:///etc/supervisor/supervisor.sock\$#serverurl=http://127.0.0.1:9001#" /etc/supervisor/supervisord.conf
+  	;;
+  	private_port)
+  	  # replace unix_http_server section to inet_http_server
+  		sed -i "s#^\[unix_http_server\]\$#\[inet_http_server\]#" /etc/supervisor/supervisord.conf
+  		# replace unix socket file with tcp private port .i.e. listens on only localhost
+      sed -i "s#^file=/etc/supervisor/supervisor.sock\$#port=127.0.0.1:9001#" /etc/supervisor/supervisord.conf
+       # set server url to http server address
+      sed -i "s#^serverurl=unix:///etc/supervisor/supervisor.sock\$#serverurl=http://127.0.0.1:9001#" /etc/supervisor/supervisord.conf
+  	;;
+  	*)
+  		echo "Invalid value '${SUPERVISOR_SERVER}' for SUPERVISOR_SERVER. Expected 'unix', 'public_port' or 'private_port'"
+  		exit 1
+  	;;
+  esac
+
+  exec /usr/bin/supervisord -c /etc/supervisor/supervisord.conf
+fi

@@ -1,0 +1,39 @@
+ARG DOCKER_ARCH
+# Satellite UI static asset generation
+FROM node:18.17.0 as ui
+WORKDIR /app
+COPY web/storagenode /app
+# Need to clean up (or ignore) local folders like node_modules, etc...
+RUN npm install
+RUN npm run build
+
+# Fetch ca-certificates file for arch independent builds below
+FROM debian:buster-slim as ca-cert
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
+RUN update-ca-certificates
+
+# Install storagenode helper (for local/dev runs)
+FROM --platform=amd64 golang:1.19.4 AS storx-node-setup
+WORKDIR /app
+COPY . .
+COPY --from=ui /app/dist /app/web/storagenode/dist
+RUN go build -o /go/bin/storagenode ./cmd/storagenode
+
+FROM amd64/debian:buster-slim
+ENV PATH=$PATH:/app
+WORKDIR /app
+
+COPY --from=ui /app/static /web/static
+COPY --from=ui /app/dist /web/dist
+COPY --from=ca-cert /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=storx-node-setup /go/bin/storagenode /usr/local/bin/storagenode
+RUN chmod +x /usr/local/bin/storagenode
+
+COPY cmd/storagenode/entrypoint /entrypoint
+RUN chown root:root /entrypoint
+RUN chmod +x /entrypoint
+
+EXPOSE 28967
+EXPOSE 14002
+
+ENTRYPOINT ["/entrypoint"]
