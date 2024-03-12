@@ -218,6 +218,10 @@ func (projects *projects) Update(ctx context.Context, project *console.Project) 
 		RateLimit:   dbx.Project_RateLimit_Raw(project.RateLimit),
 		BurstLimit:  dbx.Project_BurstLimit_Raw(project.BurstLimit),
 	}
+	//boris
+	updateFields.CreatedAt = dbx.Project_CreatedAt(project.CreatedAt)
+	updateFields.PrevDaysUntilExpiration = dbx.Project_PrevDays_UntilExpiration(project.PrevDaysUntilExpiration)
+
 	if project.StorageLimit != nil {
 		updateFields.UsageLimit = dbx.Project_UsageLimit(project.StorageLimit.Int64())
 	}
@@ -447,20 +451,21 @@ func projectFromDBX(ctx context.Context, project *dbx.Project) (_ *console.Proje
 	}
 
 	return &console.Project{
-		ID:               id,
-		PublicID:         publicID,
-		Name:             project.Name,
-		Description:      project.Description,
-		UserAgent:        userAgent,
-		OwnerID:          ownerID,
-		RateLimit:        project.RateLimit,
-		BurstLimit:       project.BurstLimit,
-		MaxBuckets:       project.MaxBuckets,
-		CreatedAt:        project.CreatedAt,
-		StorageLimit:     (*memory.Size)(project.UsageLimit),
-		BandwidthLimit:   (*memory.Size)(project.BandwidthLimit),
-		SegmentLimit:     project.SegmentLimit,
-		DefaultPlacement: placement,
+		ID:                      id,
+		PublicID:                publicID,
+		Name:                    project.Name,
+		Description:             project.Description,
+		UserAgent:               userAgent,
+		OwnerID:                 ownerID,
+		RateLimit:               project.RateLimit,
+		BurstLimit:              project.BurstLimit,
+		MaxBuckets:              project.MaxBuckets,
+		CreatedAt:               project.CreatedAt,
+		StorageLimit:            (*memory.Size)(project.UsageLimit),
+		BandwidthLimit:          (*memory.Size)(project.BandwidthLimit),
+		SegmentLimit:            project.SegmentLimit,
+		DefaultPlacement:        placement,
+		PrevDaysUntilExpiration: project.PrevDaysUntilExpiration,
 	}, nil
 }
 

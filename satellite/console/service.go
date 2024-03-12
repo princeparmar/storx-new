@@ -19,6 +19,7 @@ import (
 	"github.com/spacemonkeygo/monkit/v3"
 	"github.com/spf13/pflag"
 	"github.com/stripe/stripe-go/v72"
+
 	"github.com/zeebo/errs"
 	"go.uber.org/zap"
 	"golang.org/x/crypto/bcrypt"
@@ -175,6 +176,24 @@ type Service struct {
 	nowFn func() time.Time
 }
 
+// boris
+func (s *Service) GetUsers() Users {
+	return s.store.Users()
+}
+
+// boris
+func (s *Service) GetProjects() Projects {
+	return s.store.Projects()
+}
+
+// boris
+func (s *Service) IsProjectOwner(ctx context.Context, userID uuid.UUID, projectID uuid.UUID) (isOwner bool, project *Project, err error) {
+	return s.isProjectOwner(ctx, userID, projectID)
+}
+func (s *Service) UpdatingProjects(ctx context.Context, user User, projectID uuid.UUID, updatedProject UpsertProjectInfo) (p *Project, err error) {
+	return s.UpdatingProject(ctx, user, projectID, updatedProject)
+}
+
 func init() {
 	var c Config
 	cfgstruct.Bind(pflag.NewFlagSet("", pflag.PanicOnError), &c, cfgstruct.UseTestDefaults())
@@ -316,6 +335,25 @@ func (s *Service) auditLog(ctx context.Context, operation string, userID *uuid.U
 }
 
 func (s *Service) getUserAndAuditLog(ctx context.Context, operation string, extra ...zap.Field) (*User, error) {
+	user, err := GetUser(ctx)
+	if err != nil {
+		sourceIP, forwardedForIP := getRequestingIP(ctx)
+		s.auditLogger.Info("console activity unauthorized",
+			append(append(
+				make([]zap.Field, 0, len(extra)+4),
+				zap.String("operation", operation),
+				zap.Error(err),
+				zap.String("source-ip", sourceIP),
+				zap.String("forwarded-for-ip", forwardedForIP),
+			), extra...)...)
+		return nil, err
+	}
+	s.auditLog(ctx, operation, &user.ID, user.Email, extra...)
+	return user, nil
+}
+
+// boris
+func (s *Service) GetUserAndAuditLog(ctx context.Context, operation string, extra ...zap.Field) (*User, error) {
 	user, err := GetUser(ctx)
 	if err != nil {
 		sourceIP, forwardedForIP := getRequestingIP(ctx)
@@ -826,7 +864,7 @@ func (s *Service) CreateUser(ctx context.Context, user CreateUser, tokenSecret R
 			FullName:         user.FullName,
 			ShortName:        user.ShortName,
 			PasswordHash:     hash,
-			Status:           Inactive,
+			Status:           Active,
 			IsProfessional:   user.IsProfessional,
 			Position:         user.Position,
 			CompanyName:      user.CompanyName,
@@ -1741,14 +1779,15 @@ func (s *Service) CreateProject(ctx context.Context, projectInfo UpsertProjectIn
 		bandwidthLimit := memory.Size(newProjectLimits.Bandwidth)
 		p, err = tx.Projects().Insert(ctx,
 			&Project{
-				Description:      projectInfo.Description,
-				Name:             projectInfo.Name,
-				OwnerID:          user.ID,
-				UserAgent:        user.UserAgent,
-				StorageLimit:     &storageLimit,
-				BandwidthLimit:   &bandwidthLimit,
-				SegmentLimit:     &newProjectLimits.Segment,
-				DefaultPlacement: user.DefaultPlacement,
+				Description:             projectInfo.Description,
+				Name:                    projectInfo.Name,
+				OwnerID:                 user.ID,
+				UserAgent:               user.UserAgent,
+				StorageLimit:            &storageLimit,
+				BandwidthLimit:          &bandwidthLimit,
+				SegmentLimit:            &newProjectLimits.Segment,
+				DefaultPlacement:        user.DefaultPlacement,
+				PrevDaysUntilExpiration: 0,
 			},
 		)
 		if err != nil {
@@ -1809,14 +1848,15 @@ func (s *Service) GenCreateProject(ctx context.Context, projectInfo UpsertProjec
 		bandwidthLimit := memory.Size(newProjectLimits.Bandwidth)
 		p, err = tx.Projects().Insert(ctx,
 			&Project{
-				Description:      projectInfo.Description,
-				Name:             projectInfo.Name,
-				OwnerID:          user.ID,
-				UserAgent:        user.UserAgent,
-				StorageLimit:     &storageLimit,
-				BandwidthLimit:   &bandwidthLimit,
-				SegmentLimit:     &newProjectLimits.Segment,
-				DefaultPlacement: user.DefaultPlacement,
+				Description:             projectInfo.Description,
+				Name:                    projectInfo.Name,
+				OwnerID:                 user.ID,
+				UserAgent:               user.UserAgent,
+				StorageLimit:            &storageLimit,
+				BandwidthLimit:          &bandwidthLimit,
+				SegmentLimit:            &newProjectLimits.Segment,
+				DefaultPlacement:        user.DefaultPlacement,
+				PrevDaysUntilExpiration: 0,
 			},
 		)
 		if err != nil {
@@ -1920,6 +1960,93 @@ func (s *Service) GenDeleteProject(ctx context.Context, projectID uuid.UUID) (ht
 
 // UpdateProject is a method for updating project name and description by id.
 // projectID here may be project.PublicID or project.ID.
+
+// boris --userID added as parameter.
+func (s *Service) UpdatingProject(ctx context.Context, user User, projectID uuid.UUID, updatedProject UpsertProjectInfo) (p *Project, err error) {
+	defer mon.Task()(&ctx)(&err)
+
+	err = ValidateNameAndDescription(updatedProject.Name, updatedProject.Description)
+	if err != nil {
+		return nil, Error.Wrap(err)
+	}
+
+	_, project, err := s.isProjectOwner(ctx, user.ID, projectID)
+	if err != nil {
+		return nil, Error.Wrap(err)
+	}
+
+	if updatedProject.Name != project.Name {
+		passesNameCheck, err := s.checkProjectName(ctx, updatedProject, user.ID)
+		if err != nil || !passesNameCheck {
+			return nil, ErrProjName.Wrap(err)
+		}
+	}
+	project.Name = updatedProject.Name
+	project.Description = updatedProject.Description
+	//boris
+	project.CreatedAt = updatedProject.CreatedAt
+	project.PrevDaysUntilExpiration = updatedProject.PrevDaysUntilExpiration
+
+	if project.BandwidthLimit != nil && *project.BandwidthLimit == 0 {
+		return nil, Error.New("current bandwidth limit for project is set to 0 (updating disabled)")
+	}
+	if project.StorageLimit != nil && *project.StorageLimit == 0 {
+		return nil, Error.New("current storage limit for project is set to 0 (updating disabled)")
+	}
+	if updatedProject.StorageLimit <= 0 || updatedProject.BandwidthLimit <= 0 {
+		return nil, Error.New("project limits must be greater than 0")
+	}
+
+	if updatedProject.StorageLimit > s.config.UsageLimits.Storage.Paid && updatedProject.StorageLimit > *project.StorageLimit {
+		return nil, Error.New("specified storage limit exceeds allowed maximum for current tier")
+	}
+
+	if updatedProject.BandwidthLimit > s.config.UsageLimits.Bandwidth.Paid && updatedProject.BandwidthLimit > *project.BandwidthLimit {
+		return nil, Error.New("specified bandwidth limit exceeds allowed maximum for current tier")
+	}
+
+	storageUsed, err := s.projectUsage.GetProjectStorageTotals(ctx, project.ID)
+	if err != nil {
+		return nil, Error.Wrap(err)
+	}
+	if updatedProject.StorageLimit.Int64() < storageUsed {
+		return nil, Error.New("cannot set storage limit below current usage")
+	}
+
+	bandwidthUsed, err := s.projectUsage.GetProjectBandwidthTotals(ctx, project.ID)
+	if err != nil {
+		return nil, Error.Wrap(err)
+	}
+	if updatedProject.BandwidthLimit.Int64() < bandwidthUsed {
+		return nil, Error.New("cannot set bandwidth limit below current usage")
+	}
+	/*
+		The purpose of userSpecifiedBandwidthLimit and userSpecifiedStorageLimit is to know if a user has set a bandwidth
+		or storage limit in the UI (to ensure their limits are not unintentionally modified by the satellite admin),
+		the BandwidthLimit and StorageLimit is still used for verifying limits during uploads and downloads.
+	*/
+	if project.StorageLimit != nil && updatedProject.StorageLimit != *project.StorageLimit {
+		project.UserSpecifiedStorageLimit = new(memory.Size)
+		*project.UserSpecifiedStorageLimit = updatedProject.StorageLimit
+	}
+	if project.BandwidthLimit != nil && updatedProject.BandwidthLimit != *project.BandwidthLimit {
+		project.UserSpecifiedBandwidthLimit = new(memory.Size)
+		*project.UserSpecifiedBandwidthLimit = updatedProject.BandwidthLimit
+	}
+
+	project.StorageLimit = new(memory.Size)
+	*project.StorageLimit = updatedProject.StorageLimit
+	project.BandwidthLimit = new(memory.Size)
+	*project.BandwidthLimit = updatedProject.BandwidthLimit
+
+	err = s.store.Projects().Update(ctx, project)
+	if err != nil {
+		return nil, Error.Wrap(err)
+	}
+
+	return project, nil
+}
+
 func (s *Service) UpdateProject(ctx context.Context, projectID uuid.UUID, updatedProject UpsertProjectInfo) (p *Project, err error) {
 	defer mon.Task()(&ctx)(&err)
 
@@ -1946,7 +2073,9 @@ func (s *Service) UpdateProject(ctx context.Context, projectID uuid.UUID, update
 	}
 	project.Name = updatedProject.Name
 	project.Description = updatedProject.Description
-
+	//boris
+	project.CreatedAt = updatedProject.CreatedAt
+	project.PrevDaysUntilExpiration = updatedProject.PrevDaysUntilExpiration
 	if user.PaidTier {
 		if project.BandwidthLimit != nil && *project.BandwidthLimit == 0 {
 			return nil, Error.New("current bandwidth limit for project is set to 0 (updating disabled)")

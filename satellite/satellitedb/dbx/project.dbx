@@ -51,6 +51,8 @@ model project (
 
     // placement to be used for every new bucket.
     field default_placement int (nullable, updatable)
+    //boris compare current day and prevDay_UntilExpired
+    field prevDays_UntilExpiration           int       ( nullable, updatable )
 )
 
 create project ( )
@@ -85,6 +87,11 @@ read one (
     select project.user_specified_bandwidth_limit
     where  project.id = ?
 )
+read one (
+    select project.prevDays_UntilExpiration
+    where  project.id = ?
+)
+
 read one (
     select project.segment_limit
     where  project.id = ?

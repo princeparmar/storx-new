@@ -47,6 +47,7 @@ import (
 	"storj.io/storj/satellite/mailservice"
 	"storj.io/storj/satellite/oidc"
 	"storj.io/storj/satellite/payments/paymentsconfig"
+	"storj.io/storj/satellite/payments/stripe"
 )
 
 const (
@@ -70,6 +71,13 @@ type Config struct {
 	ExternalAddress     string `help:"external endpoint of the satellite if hosted" default:""`
 	FrontendEnable      bool   `help:"feature flag to toggle whether console back-end server should also serve front-end endpoints" default:"true"`
 	BackendReverseProxy string `help:"the target URL of console back-end reverse proxy for local development when running a UI server" default:""`
+
+	PaymentGateway_APIKey                  string `help:"api key for payment gateway" default:""`
+	PaymentGateway_APISecret               string `help:"api secret for payment gateway" default:""`
+	PaymentGateway_Pay_ReqUrl              string `help:"url for payment gateway request" default:""`
+	PaymentGateway_Pay_StatusUrl           string `help:"url for payment gateway status" default:""`
+	PaymentGateway_Pay_Success_RedirectUrl string `help:"url for payment gateway success redirect" default:""`
+	PaymentGateway_Pay_Failed_RedirectUrl  string `help:"url for payment gateway failed redirect" default:""`
 
 	ZohoClientID     string `help:"client id for zoho oauth" default:""`
 	ZohoClientSecret string `help:"client secret for zoho oauth" default:""`
@@ -176,6 +184,9 @@ type Server struct {
 	schema graphql.Schema
 
 	errorTemplate *template.Template
+
+	//boris
+	paymentMonitor *consoleapi.Payments
 }
 
 // apiAuth exposes methods to control authentication process for each generated API endpoint.
@@ -235,7 +246,8 @@ func (a *apiAuth) RemoveAuthCookie(w http.ResponseWriter) {
 }
 
 // NewServer creates new instance of console server.
-func NewServer(logger *zap.Logger, config Config, service *console.Service, oidcService *oidc.Service, mailService *mailservice.Service, analytics *analytics.Service, abTesting *abtesting.Service, accountFreezeService *console.AccountFreezeService, listener net.Listener, stripePublicKey string, neededTokenPaymentConfirmations int, nodeURL storj.NodeURL, packagePlans paymentsconfig.PackagePlans) *Server {
+func NewServer(logger *zap.Logger, config Config, service *console.Service, oidcService *oidc.Service, mailService *mailservice.Service, analytics *analytics.Service, abTesting *abtesting.Service, accountFreezeService *console.AccountFreezeService, listener net.Listener, stripePublicKey string, neededTokenPaymentConfirmations int, nodeURL storj.NodeURL, packagePlans paymentsconfig.PackagePlans, stripe *stripe.Service) *Server {
+
 	server := Server{
 		log:                             logger,
 		config:                          config,
@@ -327,7 +339,6 @@ func NewServer(logger *zap.Logger, config Config, service *console.Service, oidc
 	authController := consoleapi.NewAuth(logger, service, accountFreezeService, mailService, server.cookieAuth, server.analytics, config.SatelliteName, server.config.ExternalAddress, config.LetUsKnowURL, config.TermsAndConditionsURL, config.ContactInfoURL, config.GeneralRequestURL)
 	authRouter := router.PathPrefix("/api/v0/auth").Subrouter()
 	authRouter.Use(server.withCORS)
-
 	router.HandleFunc("/registerbutton_facebook", authController.InitFacebookRegister)
 	router.HandleFunc("/facebook_register", authController.HandleFacebookRegister)
 	router.HandleFunc("/loginbutton_facebook", authController.InitFacebookLogin)
@@ -359,11 +370,6 @@ func NewServer(logger *zap.Logger, config Config, service *console.Service, oidc
 	authRouter.Handle("/register-google", server.ipRateLimiter.Limit(http.HandlerFunc(authController.RegisterGoogle))).Methods(http.MethodGet, http.MethodOptions)
 	authRouter.Handle("/login-google", server.ipRateLimiter.Limit(http.HandlerFunc(authController.LoginUserConfirm))).Methods(http.MethodGet, http.MethodOptions)
 
-	// authRouter.Handle("/register_facebook", server.ipRateLimiter.Limit(http.HandlerFunc(authController.InitFacebookRegister))).Methods(http.MethodPost, http.MethodOptions)
-	// authRouter.Handle("/facebook_register", server.ipRateLimiter.Limit(http.HandlerFunc(authController.HandleFacebookRegister))).Methods(http.MethodGet, http.MethodOptions)
-	// authRouter.Handle("/login_facebook", server.ipRateLimiter.Limit(http.HandlerFunc(authController.InitFacebookLogin))).Methods(http.MethodPost, http.MethodOptions)
-	// authRouter.Handle("/facebook_login", server.ipRateLimiter.Limit(http.HandlerFunc(authController.HandleFacebookLogin))).Methods(http.MethodPost, http.MethodOptions)
-
 	authRouter.Handle("/forgot-password", server.ipRateLimiter.Limit(http.HandlerFunc(authController.ForgotPassword))).Methods(http.MethodPost, http.MethodOptions)
 	authRouter.Handle("/resend-email/{email}", server.ipRateLimiter.Limit(http.HandlerFunc(authController.ResendEmail))).Methods(http.MethodPost, http.MethodOptions)
 	authRouter.Handle("/reset-password", server.ipRateLimiter.Limit(http.HandlerFunc(authController.ResetPassword))).Methods(http.MethodPost, http.MethodOptions)
@@ -378,7 +384,13 @@ func NewServer(logger *zap.Logger, config Config, service *console.Service, oidc
 		abRouter.Handle("/hit/{action}", http.HandlerFunc(abController.SendHit)).Methods(http.MethodPost, http.MethodOptions)
 	}
 
-	paymentController := consoleapi.NewPayments(logger, service, accountFreezeService, packagePlans)
+	gatewayConfig := consoleapi.NewGatewayConfig(config.PaymentGateway_APIKey, config.PaymentGateway_APISecret,
+		config.PaymentGateway_Pay_ReqUrl, config.PaymentGateway_Pay_StatusUrl, config.PaymentGateway_Pay_Success_RedirectUrl,
+		config.PaymentGateway_Pay_Failed_RedirectUrl)
+
+	paymentController := consoleapi.NewPayments(logger, service, accountFreezeService, packagePlans, stripe, gatewayConfig, mailService)
+	server.paymentMonitor = paymentController
+
 	paymentsRouter := router.PathPrefix("/api/v0/payments").Subrouter()
 	paymentsRouter.Use(server.withCORS)
 	paymentsRouter.Use(server.withAuth)
@@ -401,6 +413,9 @@ func NewServer(logger *zap.Logger, config Config, service *console.Service, oidc
 		paymentsRouter.HandleFunc("/purchase-package", paymentController.PurchasePackage).Methods(http.MethodPost, http.MethodOptions)
 		paymentsRouter.HandleFunc("/package-available", paymentController.PackageAvailable).Methods(http.MethodGet, http.MethodOptions)
 	}
+	//boris
+	paymentsRouter.HandleFunc("/upgradingModule", paymentController.UpgradingModuleReq).Methods(http.MethodPost, http.MethodOptions)
+	paymentsRouter.HandleFunc("/invoice-history", paymentController.BillingTransactionHistory).Methods(http.MethodGet, http.MethodOptions)
 
 	bucketsController := consoleapi.NewBuckets(logger, service)
 	bucketsRouter := router.PathPrefix("/api/v0/buckets").Subrouter()
@@ -497,6 +512,11 @@ func (server *Server) Run(ctx context.Context) (err error) {
 		}
 		return err
 	})
+
+	// paymentMonitor should be not nil before calling its methods
+	if server.paymentMonitor != nil {
+		server.paymentMonitor.StartMonitoringUserProjects(ctx)
+	}
 
 	return group.Wait()
 }

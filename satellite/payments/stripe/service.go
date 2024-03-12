@@ -406,6 +406,39 @@ func (service *Service) createTokenPaymentBillingTransaction(ctx context.Context
 	return txIDs[0], nil
 }
 
+// boris
+func (service *Service) CreateTokenPaymentBillingTransaction(ctx context.Context, user *console.User, amountTemp string) (err error) {
+	defer mon.Task()(&ctx)(&err)
+
+	amount, err := strconv.ParseFloat(amountTemp, 64)
+
+	transaction := billing.Transactions{
+		UserID:      user.ID,
+		Amount:      amount,
+		Description: "Paid Stripe Invoice",
+		Source:      billing.StripeSource,
+		Status:      billing.TransactionStatusCompleted,
+		Type:        billing.TransactionTypeDebit,
+		Timestamp:   time.Now(),
+		CreatedAt:   time.Now(),
+	}
+
+	err = service.billingDB.Inserts(ctx, transaction)
+
+	if err != nil {
+		service.log.Warn("unable to add transaction to billing DB for user", zap.String("User ID", user.ID.String()))
+		return Error.Wrap(err)
+	}
+	return nil
+}
+
+// boris
+func (service *Service) GetBillingHistory(ctx context.Context, userID uuid.UUID) ([]billing.Transactions, error) {
+	billingRows, err := service.billingDB.Lists(ctx, userID)
+	return billingRows, err
+
+}
+
 // applyProjectRecords applies invoice intents as invoice line items to stripe customer.
 func (service *Service) applyProjectRecords(ctx context.Context, records []ProjectRecord) (skipCount int, err error) {
 	defer mon.Task()(&ctx)(&err)

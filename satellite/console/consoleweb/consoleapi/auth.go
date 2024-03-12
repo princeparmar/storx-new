@@ -141,6 +141,7 @@ func (a *Auth) Token(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+
 	a.cookieAuth.SetTokenCookie(w, *tokenInfo)
 
 	w.Header().Set("Content-Type", "application/json")
@@ -610,7 +611,7 @@ func (a *Auth) RegisterGoogle(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Create Default Project - Munjal - 19/Jan/2024
+	// Create Default Project
 	tokenInfo, err := a.service.GenerateSessionToken(ctx, user.ID, user.Email, "", "")
 	//require.NoError(t, err)
 	a.log.Error("Token Info:")
@@ -625,12 +626,12 @@ func (a *Auth) RegisterGoogle(w http.ResponseWriter, r *http.Request) {
 	})
 	//require.NoError(t, err)
 	if err != nil {
-		a.log.Error("Error in Default Project Google Signup:")
+		a.log.Error("Error in Default Project:")
 		a.log.Error(err.Error())
 		a.serveJSONError(ctx, w, err)
 	}
 
-	a.log.Error("Default Project Name Google Signup: " + project.Name)
+	a.log.Error("Default Project Name: " + project.Name)
 
 	http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, signupSuccessURL), http.StatusTemporaryRedirect)
 }

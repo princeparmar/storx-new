@@ -34,6 +34,10 @@ type Users interface {
 	GetByEmailWithUnverified_google(ctx context.Context, email string) (*User, []User, error)
 	// GetByEmail is a method for querying user by verified email from the database.
 	GetByEmail(ctx context.Context, email string) (*User, error)
+
+	//boris: GetAllUsers is a method for querying all users from the database.
+	GetAllUsers(ctx context.Context) ([]*User, error)
+
 	// Insert is a method for inserting user into the database.
 	Insert(ctx context.Context, user *User) (*User, error)
 	// Delete is a method for deleting user by ID from the database.
@@ -44,6 +48,8 @@ type Users interface {
 	Update(ctx context.Context, userID uuid.UUID, request UpdateUserRequest) error
 	// UpdatePaidTier sets whether the user is in the paid tier.
 	UpdatePaidTier(ctx context.Context, id uuid.UUID, paidTier bool, projectBandwidthLimit, projectStorageLimit memory.Size, projectSegmentLimit int64, projectLimit int) error
+	//boris
+	UpdatePaidTiers(ctx context.Context, id uuid.UUID, paidTier bool) error
 	// UpdateUserAgent is a method to update the user's user agent.
 	UpdateUserAgent(ctx context.Context, id uuid.UUID, userAgent []byte) error
 	// UpdateUserProjectLimits is a method to update the user's usage limits for new projects.

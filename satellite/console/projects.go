@@ -70,19 +70,19 @@ type UsageLimitsConfig struct {
 
 // StorageLimitConfig is a configuration struct for default storage per-project usage limits.
 type StorageLimitConfig struct {
-	Free memory.Size `help:"the default free-tier storage usage limit" default:"25.00GB" testDefault:"25.00 GB"`
+	Free memory.Size `help:"the default free-tier storage usage limit" default:"2.00GB" testDefault:"2.00 GB"`
 	Paid memory.Size `help:"the default paid-tier storage usage limit" default:"25.00TB" testDefault:"25.00 GB"`
 }
 
 // BandwidthLimitConfig is a configuration struct for default bandwidth per-project usage limits.
 type BandwidthLimitConfig struct {
-	Free memory.Size `help:"the default free-tier bandwidth usage limit" default:"25.00GB" testDefault:"25.00 GB"`
+	Free memory.Size `help:"the default free-tier bandwidth usage limit" default:"2.00GB" testDefault:"2.00 GB"`
 	Paid memory.Size `help:"the default paid-tier bandwidth usage limit" default:"100.00TB" testDefault:"25.00 GB"`
 }
 
 // SegmentLimitConfig is a configuration struct for default segments per-project usage limits.
 type SegmentLimitConfig struct {
-	Free int64 `help:"the default free-tier segment usage limit" default:"10000"`
+	Free int64 `help:"the default free-tier segment usage limit" default:"1000000"`
 	Paid int64 `help:"the default paid-tier segment usage limit" default:"100000000"`
 }
 
@@ -112,25 +112,28 @@ type Project struct {
 	UserSpecifiedBandwidthLimit *memory.Size              `json:"userSpecifiedBandwidthLimit"`
 	SegmentLimit                *int64                    `json:"segmentLimit"`
 	DefaultPlacement            storj.PlacementConstraint `json:"defaultPlacement"`
+	PrevDaysUntilExpiration     int                       `json:"prevDaysUntilExpiration"`
 }
 
 // UpsertProjectInfo holds data needed to create/update Project.
 type UpsertProjectInfo struct {
-	Name           string      `json:"name"`
-	Description    string      `json:"description"`
-	StorageLimit   memory.Size `json:"storageLimit"`
-	BandwidthLimit memory.Size `json:"bandwidthLimit"`
-	CreatedAt      time.Time   `json:"createdAt"`
+	Name                    string      `json:"name"`
+	Description             string      `json:"description"`
+	StorageLimit            memory.Size `json:"storageLimit"`
+	BandwidthLimit          memory.Size `json:"bandwidthLimit"`
+	CreatedAt               time.Time   `json:"createdAt"`
+	PrevDaysUntilExpiration int         `json:"prevDaysUntilExpiration"`
 }
 
 // ProjectInfo holds data sent via user facing http endpoints.
 type ProjectInfo struct {
-	ID          uuid.UUID `json:"id"`
-	Name        string    `json:"name"`
-	OwnerID     uuid.UUID `json:"ownerId"`
-	Description string    `json:"description"`
-	MemberCount int       `json:"memberCount"`
-	CreatedAt   time.Time `json:"createdAt"`
+	ID                      uuid.UUID `json:"id"`
+	Name                    string    `json:"name"`
+	OwnerID                 uuid.UUID `json:"ownerId"`
+	Description             string    `json:"description"`
+	MemberCount             int       `json:"memberCount"`
+	CreatedAt               time.Time `json:"createdAt"`
+	PrevDaysUntilExpiration int       `json:"prevDaysUntilExpiration"`
 }
 
 // ProjectsCursor holds info for project

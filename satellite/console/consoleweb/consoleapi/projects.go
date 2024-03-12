@@ -64,6 +64,7 @@ func NewProjects(log *zap.Logger, service *console.Service) *Projects {
 
 // GetUserProjects returns the user's projects.
 func (p *Projects) GetUserProjects(w http.ResponseWriter, r *http.Request) {
+
 	ctx := r.Context()
 	var err error
 	defer mon.Task()(&ctx)(&err)
@@ -200,6 +201,43 @@ func (p *Projects) UpdateProject(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		p.serveJSONError(ctx, w, http.StatusInternalServerError, err)
+	}
+}
+
+// CreateProject handles creating projects.
+func (p *Projects) CreateProject(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	var err error
+	defer mon.Task()(&ctx)(&err)
+
+	var payload console.UpsertProjectInfo
+
+	err = json.NewDecoder(r.Body).Decode(&payload)
+	if err != nil {
+		p.serveJSONError(ctx, w, http.StatusBadRequest, err)
+		return
+	}
+
+	if payload.Name == "" {
+		p.serveJSONError(ctx, w, http.StatusBadRequest, errs.New("project name cannot be empty"))
+		return
+	}
+
+	project, err := p.service.CreateProject(ctx, payload)
+	if err != nil {
+		if console.ErrUnauthorized.Has(err) {
+			p.serveJSONError(ctx, w, http.StatusUnauthorized, err)
+			return
+		}
+
+		p.serveJSONError(ctx, w, http.StatusInternalServerError, err)
+		return
+	}
+
+	w.WriteHeader(http.StatusCreated)
+	err = json.NewEncoder(w).Encode(p.service.GetMinimalProject(project))
+	if err != nil {
 		p.serveJSONError(ctx, w, http.StatusInternalServerError, err)
 	}
 }
@@ -360,7 +398,6 @@ func (p *Projects) InviteUsers(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	var err error
 	defer mon.Task()(&ctx)(&err)
-
 	idParam, ok := mux.Vars(r)["id"]
 	if !ok {
 		p.serveJSONError(ctx, w, http.StatusBadRequest, errs.New("missing project id route param"))
