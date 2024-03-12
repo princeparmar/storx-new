@@ -57,6 +57,8 @@ type TransactionsDB interface {
 	// but rather to provide an atomic commit of one or more _related_
 	// transactions.
 	Insert(ctx context.Context, primaryTx Transaction, supplementalTx ...Transaction) (txIDs []int64, err error)
+	//boris
+	Inserts(ctx context.Context, primaryTx Transactions) (err error)
 	// UpdateStatus updates the status of the transaction.
 	UpdateStatus(ctx context.Context, txID int64, status TransactionStatus) error
 	// UpdateMetadata updates the metadata of the transaction.
@@ -65,6 +67,8 @@ type TransactionsDB interface {
 	LastTransaction(ctx context.Context, txSource string, txType TransactionType) (time.Time, []byte, error)
 	// List returns all transactions for the specified user.
 	List(ctx context.Context, userID uuid.UUID) ([]Transaction, error)
+	//boris
+	Lists(ctx context.Context, userID uuid.UUID) ([]Transactions, error)
 	// ListSource returns all transactions for the specified user and source.
 	ListSource(ctx context.Context, userID uuid.UUID, txSource string) ([]Transaction, error)
 	// GetBalance returns the current usable balance for the specified user.
@@ -96,6 +100,20 @@ type Transaction struct {
 	ID          int64
 	UserID      uuid.UUID
 	Amount      currency.Amount
+	Description string
+	Source      string
+	Status      TransactionStatus
+	Type        TransactionType
+	Metadata    []byte
+	Timestamp   time.Time
+	CreatedAt   time.Time
+}
+
+// boris
+type Transactions struct {
+	ID          int64
+	UserID      uuid.UUID
+	Amount      float64
 	Description string
 	Source      string
 	Status      TransactionStatus

@@ -226,7 +226,7 @@ func (system *Satellite) AddUser(ctx context.Context, newUser console.CreateUser
 	}
 
 	newUser.Password = newUser.FullName
-	user, err := system.API.Console.Service.CreateUser(ctx, newUser, regToken.Secret)
+	user, err := system.API.Console.Service.CreateUser(ctx, newUser, regToken.Secret, false)
 	if err != nil {
 		return nil, errs.Wrap(err)
 	}

@@ -117,11 +117,11 @@ func (c *ProjectLimitCache) getProjectLimits(ctx context.Context, projectID uuid
 	if projectLimits.Usage == nil {
 		defaultUsage := c.defaultMaxUsage.Int64()
 		projectLimits.Usage = &defaultUsage
+
 	}
 	if projectLimits.Segments == nil {
 		defaultSegments := c.defaultMaxSegments
 		projectLimits.Segments = &defaultSegments
 	}
-
 	return projectLimits, nil
 }

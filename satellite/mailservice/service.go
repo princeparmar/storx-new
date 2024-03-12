@@ -6,7 +6,6 @@ package mailservice
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	htmltemplate "html/template"
 	"path/filepath"
 	"sync"
@@ -17,8 +16,6 @@ import (
 
 	"storj.io/common/context2"
 	"storj.io/storj/private/post"
-
-	gomail "gopkg.in/mail.v2"
 )
 
 // Config defines values needed by mailservice service.
@@ -131,7 +128,7 @@ func (service *Service) SendRendered(ctx context.Context, to []post.Address, msg
 	defer mon.Task()(&ctx)(&err)
 
 	var htmlBuffer bytes.Buffer
-	//var textBuffer bytes.Buffer
+	var textBuffer bytes.Buffer
 
 	// TODO(yar): prepare plain text version
 	// if err = service.text.ExecuteTemplate(&textBuffer, msg.Template() + ".txt", msg); err != nil {
@@ -141,49 +138,19 @@ func (service *Service) SendRendered(ctx context.Context, to []post.Address, msg
 	if err = service.html.ExecuteTemplate(&htmlBuffer, msg.Template()+".html", msg); err != nil {
 		return
 	}
-	/*
-		m := &post.Message{
-			From:      service.Sender.FromAddress(),
-			To:        to,
-			Subject:   msg.Subject(),
-			PlainText: textBuffer.String(),
-			Parts: []post.Part{
-				{
-					Type:    "text/html; charset=UTF-8",
-					Content: htmlBuffer.String(),
-				},
+
+	m := &post.Message{
+		From:      service.Sender.FromAddress(),
+		To:        to,
+		Subject:   msg.Subject(),
+		PlainText: textBuffer.String(),
+		Parts: []post.Part{
+			{
+				Type:    "text/html; charset=UTF-8",
+				Content: htmlBuffer.String(),
 			},
-		}
-	*/
-	m := gomail.NewMessage()
-
-	// Set E-Mail sender
-	m.SetHeader("From", service.Sender.FromAddress().Address)
-
-	// Set E-Mail receivers
-	for _, to := range to {
-		m.SetHeader("To", to.Address)
+		},
 	}
 
-	// Set E-Mail subject
-	m.SetHeader("Subject", msg.Subject())
-
-	// Set E-Mail body. You can set plain text or html with text/html
-	m.SetBody("text/html", htmlBuffer.String())
-	//host, port, _ := net.SplitHostPort(service.Sender.ServerAddress)
-	// Settings for SMTP server
-	d := gomail.NewDialer("mail.storx.io", 587, service.Sender.FromAddress().Address, "TEsSt@7865!")
-
-	// This is only needed when SSL/TLS certificate is not valid on server.
-	// In production this should be set to false.
-	d.TLSConfig = &tls.Config{InsecureSkipVerify: true}
-	service.log.Error("TLS Config Added")
-	// Now send E-Mail
-	if err = d.DialAndSend(m); err != nil {
-		service.log.Error(err.Error())
-		//panic(err)
-		return
-	}
-	return
-	//return service.Sender.SendEmail(ctx, m)
+	return service.Sender.SendEmail(ctx, m)
 }
