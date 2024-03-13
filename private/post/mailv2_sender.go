@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"net"
+	"strconv"
 
 	gomail "gopkg.in/mail.v2"
 )
@@ -40,9 +42,14 @@ func (m *MailV2) SendEmail(ctx context.Context, msg *Message) (err error) {
 	}
 
 	g.AttachReader("file.txt", bytes.NewReader(b))
-	//host, port, _ := net.SplitHostPort(service.Sender.ServerAddress)
+	host, port, _ := net.SplitHostPort(m.ServerAddress)
+	p, err := strconv.Atoi(port)
+	if err != nil {
+		return err
+	}
+
 	// Settings for SMTP server
-	d := gomail.NewDialer(m.Auth.Username, 587, m.FromAddress().Address, m.Auth.Password)
+	d := gomail.NewDialer(host, p, m.Auth.Username, m.Auth.Password)
 
 	// This is only needed when SSL/TLS certificate is not valid on server.
 	// In production this should be set to false.
