@@ -1,7 +1,6 @@
 package post
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
 	"net"
@@ -41,7 +40,7 @@ func (m *MailV2) SendEmail(ctx context.Context, msg *Message) (err error) {
 		return err
 	}
 
-	g.AttachReader("file.txt", bytes.NewReader(b))
+	g.SetBody("text/html", string(b))
 	host, port, _ := net.SplitHostPort(m.ServerAddress)
 	p, err := strconv.Atoi(port)
 	if err != nil {
