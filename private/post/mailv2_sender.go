@@ -35,12 +35,12 @@ func (m *MailV2) SendEmail(ctx context.Context, msg *Message) (err error) {
 	g.SetHeader("Subject", msg.Subject)
 
 	// Set E-Mail body. You can set plain text or html with text/html
-	b, err := msg.Bytes()
-	if err != nil {
-		return err
+	if len(msg.Parts) == 0 {
+		return nil
 	}
+	part := msg.Parts[0]
 
-	g.SetBody("text/html", string(b))
+	g.SetBody(part.Type, part.Content)
 	host, port, _ := net.SplitHostPort(m.ServerAddress)
 	p, err := strconv.Atoi(port)
 	if err != nil {
