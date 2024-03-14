@@ -316,7 +316,7 @@ func (a *Auth) Register(w http.ResponseWriter, r *http.Request) {
 			},
 		)
 
-		a.serveJSONError(ctx, w, console.ErrAlreadyMember.Wrap(errs.New("User with this email already exists.")))
+		a.serveJSONError(ctx, w, console.ErrAlreadyMember.Wrap(errs.New("The requested Email ID is already registered. Please try again using a different email address.")))
 		return
 	}
 
