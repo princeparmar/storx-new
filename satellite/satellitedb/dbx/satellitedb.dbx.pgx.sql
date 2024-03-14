@@ -156,7 +156,6 @@ CREATE TABLE nodes (
 	noise_proto integer,
 	noise_public_key bytea,
 	debounce_limit integer NOT NULL DEFAULT 0,
-	features integer NOT NULL DEFAULT 0,
 	PRIMARY KEY ( id )
 );
 CREATE TABLE node_api_versions (
@@ -175,14 +174,6 @@ CREATE TABLE node_events (
 	last_attempted timestamp with time zone,
 	email_sent timestamp with time zone,
 	PRIMARY KEY ( id )
-);
-CREATE TABLE node_tags (
-	node_id bytea NOT NULL,
-	name text NOT NULL,
-	value bytea NOT NULL,
-	signed_at timestamp with time zone NOT NULL,
-	signer bytea NOT NULL,
-	PRIMARY KEY ( node_id, name, signer )
 );
 CREATE TABLE oauth_clients (
 	id bytea NOT NULL,
@@ -240,8 +231,6 @@ CREATE TABLE projects (
 	owner_id bytea NOT NULL,
 	salt bytea,
 	created_at timestamp with time zone NOT NULL,
-	default_placement integer,
-	prevDays_UntilExpiration integer,
 	PRIMARY KEY ( id )
 );
 CREATE TABLE project_bandwidth_daily_rollups (
@@ -469,7 +458,6 @@ CREATE TABLE users (
 	failed_login_count integer,
 	login_lockout_expiration timestamp with time zone,
 	signup_captcha double precision,
-	default_placement integer,
 	PRIMARY KEY ( id )
 );
 CREATE TABLE user_settings (
@@ -592,4 +580,3 @@ CREATE INDEX users_email_status_index ON users ( normalized_email, status ) ;
 CREATE INDEX webapp_sessions_user_id_index ON webapp_sessions ( user_id ) ;
 CREATE INDEX project_invitations_project_id_index ON project_invitations ( project_id ) ;
 CREATE INDEX project_invitations_email_index ON project_invitations ( email ) ;
-CREATE INDEX project_members_project_id_index ON project_members ( project_id ) ;

@@ -61,7 +61,7 @@ export default class DiskStatChart extends Vue {
         return new DiskStatChartData([
             new DiskStatDataSet(
                 '',
-                ['#D6D6D6', '#b32006', '#8FA7C6', '#2582FF'],
+                ['#D6D6D6', '#0059D0', '#8FA7C6', '#2582FF'],
                 [
                     this.free,
                     this.diskSpace.used,
@@ -174,7 +174,7 @@ export default class DiskStatChart extends Vue {
     }
 
     .used {
-        background: #b32006;
+        background: #0059d0;
     }
 
     .free {

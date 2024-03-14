@@ -4,52 +4,43 @@
 package internalcmd
 
 import (
+	"context"
 	"encoding/json"
+	"io"
 	"runtime"
 
-	"github.com/spf13/cobra"
 	"github.com/zeebo/errs"
 	"go.uber.org/zap"
 
-	"storj.io/private/process"
 	"storj.io/storj/storagenode/iopriority"
 	"storj.io/storj/storagenode/pieces"
 	"storj.io/storj/storagenode/pieces/lazyfilewalker"
+	"storj.io/storj/storagenode/pieces/lazyfilewalker/execwrapper"
 	"storj.io/storj/storagenode/storagenodedb"
 )
 
-// NewUsedSpaceFilewalkerCmd creates a new cobra command for running used-space calculation filewalker.
-func NewUsedSpaceFilewalkerCmd() *LazyFilewalkerCmd {
-	var cfg FilewalkerCfg
-	var runOpts RunOptions
+// UsedSpaceLazyFileWalker is an execwrapper.Command for the used-space-filewalker.
+type UsedSpaceLazyFileWalker struct {
+	*RunOptions
+}
 
-	cmd := &cobra.Command{
-		Use:   lazyfilewalker.UsedSpaceFilewalkerCmdName,
-		Short: "An internal subcommand used to run used-space calculation filewalker as a separate subprocess with lower IO priority",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			runOpts.normalize(cmd)
-			runOpts.config = &cfg
+var _ execwrapper.Command = (*UsedSpaceLazyFileWalker)(nil)
 
-			return usedSpaceCmdRun(&runOpts)
-		},
-		FParseErrWhitelist: cobra.FParseErrWhitelist{
-			UnknownFlags: true,
-		},
-		Hidden: true,
-		Args:   cobra.ExactArgs(0),
-	}
+// NewUsedSpaceLazyFilewalker creates a new UsedSpaceLazyFileWalker instance.
+func NewUsedSpaceLazyFilewalker(ctx context.Context, logger *zap.Logger, config lazyfilewalker.Config) *UsedSpaceLazyFileWalker {
+	return NewUsedSpaceLazyFilewalkerWithConfig(ctx, logger, &FilewalkerCfg{config})
+}
 
-	process.Bind(cmd, &cfg)
-
-	return &LazyFilewalkerCmd{
-		Command:    cmd,
-		RunOptions: &runOpts,
+// NewUsedSpaceLazyFilewalkerWithConfig creates a new UsedSpaceLazyFileWalker instance with the given config.
+func NewUsedSpaceLazyFilewalkerWithConfig(ctx context.Context, logger *zap.Logger, config *FilewalkerCfg) *UsedSpaceLazyFileWalker {
+	return &UsedSpaceLazyFileWalker{
+		RunOptions: DefaultRunOpts(ctx, logger, config),
 	}
 }
 
 // Run runs the UsedSpaceLazyFileWalker.
-func usedSpaceCmdRun(opts *RunOptions) (err error) {
-	if opts.config.LowerIOPriority {
+func (u *UsedSpaceLazyFileWalker) Run() (err error) {
+	if u.Config.LowerIOPriority {
 		if runtime.GOOS == "linux" {
 			// Pin the current goroutine to the current OS thread, so we can set the IO priority
 			// for the current thread.
@@ -64,11 +55,11 @@ func usedSpaceCmdRun(opts *RunOptions) (err error) {
 			return err
 		}
 	}
-	log := opts.Logger
+	log := u.Logger
 
 	// Decode the data struct received from the main process
 	var req lazyfilewalker.UsedSpaceRequest
-	if err = json.NewDecoder(opts.stdin).Decode(&req); err != nil {
+	if err = json.NewDecoder(u.stdin).Decode(&req); err != nil {
 		return errs.New("Error decoding data from stdin: %v", err)
 	}
 
@@ -78,7 +69,7 @@ func usedSpaceCmdRun(opts *RunOptions) (err error) {
 
 	// We still need the DB in this case because we still have to deal with v0 pieces.
 	// Once we drop support for v0 pieces, we can remove this.
-	db, err := storagenodedb.OpenExisting(opts.Ctx, log.Named("db"), opts.config.DatabaseConfig())
+	db, err := storagenodedb.OpenExisting(u.Ctx, log.Named("db"), u.Config.DatabaseConfig())
 	if err != nil {
 		return errs.New("Error starting master database on storage node: %v", err)
 	}
@@ -90,7 +81,7 @@ func usedSpaceCmdRun(opts *RunOptions) (err error) {
 	log.Info("used-space-filewalker started")
 
 	filewalker := pieces.NewFileWalker(log, db.Pieces(), db.V0PieceInfo())
-	total, contentSize, err := filewalker.WalkAndComputeSpaceUsedBySatellite(opts.Ctx, req.SatelliteID)
+	total, contentSize, err := filewalker.WalkAndComputeSpaceUsedBySatellite(u.Ctx, req.SatelliteID)
 	if err != nil {
 		return err
 	}
@@ -99,5 +90,32 @@ func usedSpaceCmdRun(opts *RunOptions) (err error) {
 	log.Info("used-space-filewalker completed", zap.Int64("piecesTotal", total), zap.Int64("piecesContentSize", contentSize))
 
 	// encode the response struct and write it to stdout
-	return json.NewEncoder(opts.stdout).Encode(resp)
+	return json.NewEncoder(u.stdout).Encode(resp)
+}
+
+// Start starts the GCLazyFileWalker, assuming it behaves like the Start method on exec.Cmd.
+// This is a no-op and only exists to satisfy the execwrapper.Command interface.
+// Wait must be called to actually run the command.
+func (u *UsedSpaceLazyFileWalker) Start() error {
+	return nil
+}
+
+// Wait waits for the GCLazyFileWalker to finish, assuming it behaves like the Wait method on exec.Cmd.
+func (u *UsedSpaceLazyFileWalker) Wait() error {
+	return u.Run()
+}
+
+// SetIn sets the stdin of the UsedSpaceLazyFileWalker.
+func (u *UsedSpaceLazyFileWalker) SetIn(reader io.Reader) {
+	u.RunOptions.SetIn(reader)
+}
+
+// SetOut sets the stdout of the UsedSpaceLazyFileWalker.
+func (u *UsedSpaceLazyFileWalker) SetOut(writer io.Writer) {
+	u.RunOptions.SetOut(writer)
+}
+
+// SetErr sets the stderr of the UsedSpaceLazyFileWalker.
+func (u *UsedSpaceLazyFileWalker) SetErr(writer io.Writer) {
+	u.RunOptions.SetErr(writer)
 }

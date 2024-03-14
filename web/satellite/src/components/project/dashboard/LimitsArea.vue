@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Storx Labs, Inc.
+// Copyright (C) 2023 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -18,11 +18,11 @@
         />
         <LimitCard
             :icon="DownloadIcon"
-            title="Egress"
+            title="Download"
             color="#7b61ff"
             :used-value="bandwidthUsed"
             :used-title="`${usedOrLimitFormatted(limits.bandwidthUsed)} Used`"
-            :used-info="`Egress limit: ${usedOrLimitFormatted(limits.bandwidthLimit, true)} per month`"
+            :used-info="`Download limit: ${usedOrLimitFormatted(limits.bandwidthLimit, true)} per month`"
             :available-title="`${availableFormatted(limits.bandwidthLimit - limits.bandwidthUsed)} Available`"
             :action-title="usageActionTitle(bandwidthUsed)"
             :on-action="() => usageAction(LimitToChange.Bandwidth)"
@@ -34,9 +34,9 @@
             title="Segments"
             color="#003dc1"
             :used-value="segmentUsed"
-            :used-title="`${limits.segmentUsed.toLocaleString()} Used`"
-            :used-info="`Segment limit: ${limits.segmentLimit.toLocaleString()}`"
-            :available-title="`${segmentsAvailable.toLocaleString()} Available`"
+            :used-title="`${limits.segmentUsed} Used`"
+            :used-info="`Segment limit: ${limits.segmentLimit}`"
+            :available-title="`${segmentsAvailable} Available`"
             :action-title="usageActionTitle(segmentUsed, true)"
             :on-action="startUpgradeFlow"
             :is-loading="isLoading"
@@ -94,7 +94,7 @@ import { Size } from '@/utils/bytesSize';
 import { Coupon, ProjectCharges } from '@/types/payments';
 import { centsToDollars } from '@/utils/strings';
 import { MODALS } from '@/utils/constants/appStatePopUps';
-import { RouteConfig } from '@/types/router';
+import { RouteConfig } from '@/router';
 
 import LimitCard from '@/components/project/dashboard/LimitCard.vue';
 

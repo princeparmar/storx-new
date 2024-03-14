@@ -1,7 +1,19 @@
-// Copyright (C) 2021 Storx Labs, Inc.
+// Copyright (C) 2021 Storj Labs, Inc.
 // See LICENSE for copying information.
 
+import { Component } from 'vue';
+
 import EmailIcon from '../../static/images/objects/email.svg';
+
+/**
+ * Exposes all properties and methods present and available in the file/browser objects in Browser.
+ */
+export interface BrowserFile extends File {
+  Key: string;
+  LastModified: Date;
+  Size: number;
+  type: string;
+}
 
 export enum ShareOptions {
   Reddit = 'Reddit',
@@ -19,12 +31,6 @@ export class ShareButtonConfig {
       public label: ShareOptions = ShareOptions.Email,
       public color: string = 'white',
       public link: string = '',
-      public image: string = EmailIcon,
+      public image: Component = EmailIcon,
     ) {}
-}
-
-export enum ShareType {
-  File = 'File',
-  Folder = 'Folder',
-  Bucket = 'Bucket',
 }

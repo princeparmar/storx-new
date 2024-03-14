@@ -1,4 +1,4 @@
-// Copyright (C) 2019 Storx Labs, Inc.
+// Copyright (C) 2019 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -36,35 +36,28 @@
         <div class="team-header-container__divider" />
 
         <div class="team-header-container__wrapper">
-            <VSearch
+            <VSearchAlternateStyling
                 ref="searchInput"
                 class="team-header-container__wrapper__search"
+                placeholder="members"
                 :search="processSearchQuery"
             />
-            <div v-if="selectedEmailsLength" class="team-header-container__wrapper__right">
-                <span class="team-header-container__wrapper__right__selected-text">
-                    {{ selectedEmailsLength }} user{{ selectedEmailsLength !== 1 ? 's' : '' }} selected
-                </span>
-                <div class="team-header-container__wrapper__right__buttons">
+            <div>
+                <div v-if="areProjectMembersSelected" class="header-selected-members">
                     <VButton
-                        class="team-header-container__wrapper__right__buttons__button"
+                        class="button deletion"
                         label="Delete"
-                        border-radius="8px"
-                        font-size="12px"
-                        is-white
-                        icon="trash"
+                        width="122px"
+                        height="40px"
                         :on-press="toggleRemoveTeamMembersModal"
                     />
                     <VButton
-                        v-if="resendInvitesShown"
-                        class="team-header-container__wrapper__right__buttons__button"
-                        label="Resend invite"
-                        border-radius="8px"
-                        font-size="12px"
-                        is-white
-                        icon="upload"
-                        :on-press="resendInvites"
-                        :is-disabled="isLoading"
+                        class="button"
+                        label="Cancel"
+                        width="122px"
+                        height="40px"
+                        :is-transparent="true"
+                        :on-press="onClearSelection"
                     />
                 </div>
             </div>
@@ -75,39 +68,45 @@
 <script setup lang="ts">
 import { computed, onMounted, onBeforeUnmount, ref } from 'vue';
 
-import { AnalyticsErrorEventSource, AnalyticsEvent } from '@/utils/constants/analyticsEventNames';
+import { ProjectMemberHeaderState } from '@/types/projectMembers';
+import { AnalyticsHttpApi } from '@/api/analytics';
+import { AnalyticsErrorEventSource } from '@/utils/constants/analyticsEventNames';
 import { MODALS } from '@/utils/constants/appStatePopUps';
 import { useNotify } from '@/utils/hooks';
 import { useProjectMembersStore } from '@/store/modules/projectMembersStore';
 import { useAppStore } from '@/store/modules/appStore';
 import { useProjectsStore } from '@/store/modules/projectsStore';
 import { useConfigStore } from '@/store/modules/configStore';
-import { useLoading } from '@/composables/useLoading';
-import { useAnalyticsStore } from '@/store/modules/analyticsStore';
 
 import VInfo from '@/components/common/VInfo.vue';
 import VButton from '@/components/common/VButton.vue';
-import VSearch from '@/components/common/VSearch.vue';
+import VSearchAlternateStyling from '@/components/common/VSearchAlternateStyling.vue';
 
 import InfoIcon from '@/../static/images/team/infoTooltip.svg';
 
-const analyticsStore = useAnalyticsStore();
+interface ClearSearch {
+    clearSearch(): void;
+}
+
 const configStore = useConfigStore();
 const appStore = useAppStore();
 const pmStore = useProjectMembersStore();
 const projectsStore = useProjectsStore();
 const notify = useNotify();
-const { isLoading, withLoading } = useLoading();
 
 const props = withDefaults(defineProps<{
+    headerState: ProjectMemberHeaderState;
     isAddButtonDisabled: boolean;
 }>(), {
+    headerState: ProjectMemberHeaderState.DEFAULT,
     isAddButtonDisabled: false,
 });
 
 const FIRST_PAGE = 1;
+const analytics: AnalyticsHttpApi = new AnalyticsHttpApi();
 
-const searchInput = ref<InstanceType<typeof VSearch> | null>(null);
+const isDeleteClicked = ref<boolean>(false);
+const searchInput = ref<typeof VSearchAlternateStyling & ClearSearch>();
 
 /**
  * Returns the name of the selected project from store.
@@ -116,15 +115,8 @@ const projectName = computed((): string => {
     return projectsStore.state.selectedProject.name;
 });
 
-const selectedEmailsLength = computed((): number => {
-    return pmStore.state.selectedProjectMembersEmails.length;
-});
-
-const resendInvitesShown = computed((): boolean => {
-    const expired = pmStore.state.page.projectInvitations.filter(invite => invite.expired);
-    return pmStore.state.selectedProjectMembersEmails.every(email => {
-        return expired.some(invite => invite.email === email);
-    });
+const areProjectMembersSelected = computed((): boolean => {
+    return props.headerState === 1 && !isDeleteClicked.value;
 });
 
 /**
@@ -139,6 +131,14 @@ function toggleRemoveTeamMembersModal(): void {
 }
 
 /**
+ * Clears selection and returns area state to default.
+ */
+function onClearSelection(): void {
+    pmStore.clearProjectMemberSelection();
+    isDeleteClicked.value = false;
+}
+
+/**
  * Fetches team members of current project depends on search query.
  * @param search
  */
@@ -148,38 +148,10 @@ async function processSearchQuery(search: string): Promise<void> {
         pmStore.setSearchQuery(search);
     }
     try {
-        const id = projectsStore.state.selectedProject.id;
-        if (!id) {
-            return;
-        }
-        await pmStore.getProjectMembers(FIRST_PAGE, id);
+        await pmStore.getProjectMembers(FIRST_PAGE, projectsStore.state.selectedProject.id);
     } catch (error) {
         notify.error(`Unable to fetch project members. ${error.message}`, AnalyticsErrorEventSource.PROJECT_MEMBERS_HEADER);
     }
-}
-
-/**
- * resendInvites resends project member invitations.
- * It expects that all of the selected project member emails belong to expired invitations.
- */
-async function resendInvites(): Promise<void> {
-    await withLoading(async () => {
-        analyticsStore.eventTriggered(AnalyticsEvent.RESEND_INVITE_CLICKED);
-
-        try {
-            await pmStore.inviteMembers(pmStore.state.selectedProjectMembersEmails, projectsStore.state.selectedProject.id);
-            notify.success('Invites re-sent!');
-        } catch (error) {
-            error.message = `Unable to resend project invitations. ${error.message}`;
-            notify.notifyError(error, AnalyticsErrorEventSource.PROJECT_MEMBERS_HEADER);
-        }
-
-        try {
-            await pmStore.refresh();
-        } catch (error) {
-            notify.error(`Unable to fetch project members. ${error.message}`, AnalyticsErrorEventSource.PROJECT_MEMBERS_HEADER);
-        }
-    });
 }
 
 /**
@@ -201,9 +173,10 @@ onMounted((): void => {
 
 /**
  * Lifecycle hook before component destruction.
- * Clears search query for team members page.
+ * Clears selection and search query for team members page.
  */
 onBeforeUnmount((): void => {
+    onClearSelection();
     pmStore.setSearchQuery('');
 });
 </script>
@@ -253,6 +226,17 @@ onBeforeUnmount((): void => {
                     margin-left: 10px;
                     display: inline;
 
+                    &:hover {
+
+                        .team-header-svg-path {
+                            fill: #fff;
+                        }
+
+                        .team-header-svg-rect {
+                            fill: #2683ff;
+                        }
+                    }
+
                     &__message {
                         color: #586c86;
                         font-family: 'font_regular', sans-serif;
@@ -269,68 +253,103 @@ onBeforeUnmount((): void => {
             background: #dadfe7;
             margin: 24px 0;
         }
+    }
 
-        &__wrapper {
-            position: relative;
+    .header-default-state,
+    .header-after-delete-click {
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+
+        &__info-text {
+            font-family: 'font_medium', sans-serif;
+            font-size: 14px;
+            line-height: 28px;
+        }
+
+        &__delete-confirmation {
+            font-family: 'font_regular', sans-serif;
+            font-size: 14px;
+            line-height: 28px;
+        }
+
+        &__button-area {
             display: flex;
-            align-items: center;
-            justify-content: space-between;
+        }
+    }
+
+    .header-selected-members {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+
+        &__info-text {
+            margin-left: 25px;
+            line-height: 48px;
+        }
+    }
+
+    .button {
+        margin-right: 12px;
+    }
+
+    .team-header-container__wrapper {
+        position: relative;
+        margin-bottom: 20px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+
+        @media screen and (width <= 1150px) {
+            flex-direction: column;
+            align-items: flex-start;
+            justify-content: flex-start;
+            row-gap: 10px;
+        }
+
+        &__search {
+            position: static;
+        }
+
+        .blur-content {
+            position: absolute;
+            top: 100%;
+            left: 0;
+            background-color: #f5f6fa;
+            width: 100%;
+            height: 70vh;
+            z-index: 100;
+            opacity: 0.3;
+        }
+
+        .blur-search {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            width: 300px;
+            height: 40px;
+            z-index: 100;
+            opacity: 0.3;
+            background-color: #f5f6fa;
 
             @media screen and (width <= 1150px) {
-                flex-direction: column;
-                align-items: flex-start;
-                justify-content: flex-start;
-                row-gap: 10px;
+                bottom: unset;
+                right: 0;
+                width: unset;
             }
+        }
+    }
 
-            &__search {
-                position: static;
-            }
+    .container.deletion {
+        background-color: #ff4f4d;
 
-            &__right {
-                display: flex;
-                align-items: center;
-                gap: 20px;
+        &.label {
+            color: #fff;
+        }
 
-                @media screen and (width <= 1150px) {
-                    width: 100%;
-                    flex-direction: column-reverse;
-                    align-items: flex-start;
-                    gap: 8px;
-                }
-
-                &__selected-text {
-                    color: rgb(0 0 0 / 60%);
-                    font-family: 'font_regular', sans-serif;
-                    font-size: 14px;
-                    line-height: 24px;
-                }
-
-                &__buttons {
-                    display: flex;
-                    gap: 14px;
-
-                    @media screen and (width <= 1150px) {
-                        width: 100%;
-                    }
-
-                    &__button {
-                        padding: 8px 12px;
-
-                        @media screen and (width <= 1150px) {
-                            padding: 12px;
-                        }
-
-                        :deep(.label) {
-                            color: #56606D !important;
-                        }
-
-                        :deep(path) {
-                            fill: #56606D !important;
-                        }
-                    }
-                }
-            }
+        &:hover {
+            background-color: #de3e3d;
+            box-shadow: none;
         }
     }
 

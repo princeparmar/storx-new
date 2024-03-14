@@ -1,7 +1,7 @@
-// Copyright (C) 2023 Storx Labs, Inc.
+// Copyright (C) 2023 Storj Labs, Inc.
 // See LICENSE for copying information.
 
-// import { Component } from 'vue';
+import { Component } from 'vue';
 
 import AddTeamMemberModal from '@/components/modals/AddTeamMemberModal.vue';
 import RemoveTeamMemberModal from '@/components/modals/RemoveProjectMemberModal.vue';
@@ -9,12 +9,13 @@ import EditProfileModal from '@/components/modals/EditProfileModal.vue';
 import ChangePasswordModal from '@/components/modals/ChangePasswordModal.vue';
 import ChangeProjectLimitModal from '@/components/modals/ChangeProjectLimitModal.vue';
 import CreateProjectModal from '@/components/modals/CreateProjectModal.vue';
-import EnterBucketPassphraseModal from '@/components/modals/EnterBucketPassphraseModal.vue';
+import OpenBucketModal from '@/components/modals/OpenBucketModal.vue';
 import MFARecoveryCodesModal from '@/components/modals/MFARecoveryCodesModal.vue';
 import EnableMFAModal from '@/components/modals/EnableMFAModal.vue';
 import DisableMFAModal from '@/components/modals/DisableMFAModal.vue';
 import AddTokenFundsModal from '@/components/modals/AddTokenFundsModal.vue';
-import ShareModal from '@/components/modals/ShareModal.vue';
+import ShareBucketModal from '@/components/modals/ShareBucketModal.vue';
+import ShareObjectModal from '@/components/modals/ShareObjectModal.vue';
 import DeleteBucketModal from '@/components/modals/DeleteBucketModal.vue';
 import CreateBucketModal from '@/components/modals/CreateBucketModal.vue';
 import NewFolderModal from '@/components/modals/NewFolderModal.vue';
@@ -35,7 +36,6 @@ import EditSessionTimeoutModal from '@/components/modals/EditSessionTimeoutModal
 import UpgradeAccountModal from '@/components/modals/upgradeAccountFlow/UpgradeAccountModal.vue';
 import DeleteAccessGrantModal from '@/components/modals/DeleteAccessGrantModal.vue';
 import SkipPassphraseModal from '@/components/modals/SkipPassphraseModal.vue';
-import JoinProjectModal from '@/components/modals/JoinProjectModal.vue';
 
 export const APP_STATE_DROPDOWNS = {
     ACCOUNT: 'isAccountDropdownShown',
@@ -61,12 +61,13 @@ enum Modals {
     EDIT_PROFILE = 'editProfile',
     CHANGE_PASSWORD = 'changePassword',
     CREATE_PROJECT = 'createProject',
-    ENTER_BUCKET_PASSPHRASE = 'enterBucketPassphrase',
+    OPEN_BUCKET = 'openBucket',
     MFA_RECOVERY = 'mfaRecovery',
     ENABLE_MFA = 'enableMFA',
     DISABLE_MFA = 'disableMFA',
     ADD_TOKEN_FUNDS = 'addTokenFunds',
-    SHARE = 'share',
+    SHARE_BUCKET = 'shareBucket',
+    SHARE_OBJECT = 'shareObject',
     DELETE_BUCKET = 'deleteBucket',
     CREATE_BUCKET = 'createBucket',
     NEW_FOLDER = 'newFolder',
@@ -85,21 +86,21 @@ enum Modals {
     DELETE_ACCESS_GRANT = 'deleteAccessGrant',
     SKIP_PASSPHRASE = 'skipPassphrase',
     CHANGE_PROJECT_LIMIT = 'changeProjectLimit',
-    JOIN_PROJECT = 'joinProject',
 }
 
-export const MODALS: Record<Modals, any> = {
+export const MODALS: Record<Modals, Component> = {
     [Modals.ADD_TEAM_MEMBER]: AddTeamMemberModal,
     [Modals.REMOVE_TEAM_MEMBER]: RemoveTeamMemberModal,
     [Modals.EDIT_PROFILE]: EditProfileModal,
     [Modals.CHANGE_PASSWORD]: ChangePasswordModal,
     [Modals.CREATE_PROJECT]: CreateProjectModal,
-    [Modals.ENTER_BUCKET_PASSPHRASE]: EnterBucketPassphraseModal,
+    [Modals.OPEN_BUCKET]: OpenBucketModal,
     [Modals.MFA_RECOVERY]: MFARecoveryCodesModal,
     [Modals.ENABLE_MFA]: EnableMFAModal,
     [Modals.DISABLE_MFA]: DisableMFAModal,
     [Modals.ADD_TOKEN_FUNDS]: AddTokenFundsModal,
-    [Modals.SHARE]: ShareModal,
+    [Modals.SHARE_BUCKET]: ShareBucketModal,
+    [Modals.SHARE_OBJECT]: ShareObjectModal,
     [Modals.DELETE_BUCKET]: DeleteBucketModal,
     [Modals.CREATE_BUCKET]: CreateBucketModal,
     [Modals.NEW_FOLDER]: NewFolderModal,
@@ -118,5 +119,4 @@ export const MODALS: Record<Modals, any> = {
     [Modals.DELETE_ACCESS_GRANT]: DeleteAccessGrantModal,
     [Modals.SKIP_PASSPHRASE]: SkipPassphraseModal,
     [Modals.CHANGE_PROJECT_LIMIT]: ChangeProjectLimitModal,
-    [Modals.JOIN_PROJECT]: JoinProjectModal,
 };

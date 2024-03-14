@@ -1,4 +1,4 @@
-// Copyright (C) 2021 Storx Labs, Inc.
+// Copyright (C) 2021 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -20,15 +20,19 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue';
+import { useRouter } from 'vue-router';
 
 import { LocalData } from '@/utils/localData';
 import { BucketPage } from '@/types/buckets';
+import { AnalyticsHttpApi } from '@/api/analytics';
 import { AnalyticsErrorEventSource } from '@/utils/constants/analyticsEventNames';
 import { MODALS } from '@/utils/constants/appStatePopUps';
 import { useNotify } from '@/utils/hooks';
 import { useAppStore } from '@/store/modules/appStore';
 import { useBucketsStore } from '@/store/modules/bucketsStore';
 import { useProjectsStore } from '@/store/modules/projectsStore';
+import { RouteConfig } from '@/router';
+import { useConfigStore } from '@/store/modules/configStore';
 
 import EncryptionBanner from '@/components/objects/EncryptionBanner.vue';
 import BucketsTable from '@/components/objects/BucketsTable.vue';
@@ -38,7 +42,11 @@ import WhitePlusIcon from '@/../static/images/common/plusWhite.svg';
 const bucketsStore = useBucketsStore();
 const appStore = useAppStore();
 const projectsStore = useProjectsStore();
+const configStore = useConfigStore();
 const notify = useNotify();
+const router = useRouter();
+
+const analytics: AnalyticsHttpApi = new AnalyticsHttpApi();
 
 const isLoading = ref<boolean>(true);
 const isServerSideEncryptionBannerHidden = ref<boolean>(true);
@@ -120,13 +128,16 @@ function hideBanner(): void {
  * Sets bucket view.
  */
 onMounted(async (): Promise<void> => {
+    if (configStore.state.config.allProjectsDashboard && !projectsStore.state.selectedProject.id) {
+        await router.push(RouteConfig.AllProjectsDashboard.path);
+        return;
+    }
+
     isServerSideEncryptionBannerHidden.value = LocalData.getServerSideEncryptionBannerHidden();
     await setBucketsView();
 });
 
 watch(selectedProjectID, async () => {
-    if (!selectedProjectID.value) return;
-
     isLoading.value = true;
 
     bucketsStore.clear();
@@ -141,7 +152,7 @@ watch(selectedProjectID, async () => {
         display: flex;
         align-items: center;
         justify-content: center;
-        background-color: var(--c-orange-3);
+        background-color: var(--c-blue-3);
         border-radius: 8px;
         cursor: pointer;
 

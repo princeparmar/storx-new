@@ -1,8 +1,8 @@
-GO_VERSION ?= 1.20.6
+GO_VERSION ?= 1.20.3
 GOOS ?= linux
 GOARCH ?= amd64
 GOPATH ?= $(shell go env GOPATH)
-NODE_VERSION ?= 18.17.0
+NODE_VERSION ?= 16.11.1
 COMPOSE_PROJECT_NAME := ${TAG}-$(shell git rev-parse --abbrev-ref HEAD)
 BRANCH_NAME ?= $(shell git rev-parse --abbrev-ref HEAD | sed "s!/!-!g")
 GIT_TAG := $(shell git rev-parse --short HEAD)
@@ -126,7 +126,7 @@ lint:
 		-v ${GOPATH}/pkg:/go/pkg \
 		-v ${PWD}:/storj \
 		-w /storj \
-		storjlabs/ci:slim \
+		storjlabs/ci-slim \
 		make .lint LINT_TARGET="$(LINT_TARGET)"
 
 .PHONY: .lint/testsuite/ui

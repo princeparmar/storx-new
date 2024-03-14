@@ -1,4 +1,4 @@
-// Copyright (C) 2021 Storx Labs, Inc.
+// Copyright (C) 2021 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -11,13 +11,14 @@
 import { onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 
-import { RouteConfig } from '@/types/router';
+import { RouteConfig } from '@/router';
+import { AnalyticsHttpApi } from '@/api/analytics';
 import { useConfigStore } from '@/store/modules/configStore';
-import { useAnalyticsStore } from '@/store/modules/analyticsStore';
 
 const router = useRouter();
 const configStore = useConfigStore();
-const analyticsStore = useAnalyticsStore();
+
+const analytics: AnalyticsHttpApi = new AnalyticsHttpApi();
 
 /**
  * Lifecycle hook after initial render.
@@ -25,7 +26,7 @@ const analyticsStore = useAnalyticsStore();
  */
 onMounted(async (): Promise<void> => {
     if (configStore.state.config.fileBrowserFlowDisabled) {
-        analyticsStore.pageVisit(RouteConfig.ProjectDashboard.path);
+        analytics.pageVisit(RouteConfig.ProjectDashboard.path);
         await router.push(RouteConfig.ProjectDashboard.path);
     }
 });
@@ -33,6 +34,6 @@ onMounted(async (): Promise<void> => {
 
 <style scoped lang="scss">
     .objects-area {
-        padding-bottom: 55px;
+        padding: 20px 45px;
     }
 </style>

@@ -1,4 +1,4 @@
-// Copyright (C) 2021 Storx Labs, Inc.
+// Copyright (C) 2021 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -56,8 +56,9 @@ import { computed, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
 import { User } from '@/types/users';
-import { RouteConfig } from '@/types/router';
+import { RouteConfig } from '@/router';
 import { AuthHttpApi } from '@/api/auth';
+import { AnalyticsHttpApi } from '@/api/analytics';
 import { AnalyticsErrorEventSource, AnalyticsEvent } from '@/utils/constants/analyticsEventNames';
 import { APP_STATE_DROPDOWNS, MODALS } from '@/utils/constants/appStatePopUps';
 import { useNotify } from '@/utils/hooks';
@@ -72,7 +73,6 @@ import { useProjectsStore } from '@/store/modules/projectsStore';
 import { useNotificationsStore } from '@/store/modules/notificationsStore';
 import { useObjectBrowserStore } from '@/store/modules/objectBrowserStore';
 import { useConfigStore } from '@/store/modules/configStore';
-import { useAnalyticsStore } from '@/store/modules/analyticsStore';
 
 import BillingIcon from '@/../static/images/navigation/billing.svg';
 import InfoIcon from '@/../static/images/navigation/info.svg';
@@ -100,9 +100,9 @@ const usersStore = useUsersStore();
 const abTestingStore = useABTestingStore();
 const pmStore = useProjectMembersStore();
 const notificationsStore = useNotificationsStore();
-const analyticsStore = useAnalyticsStore();
 
 const auth: AuthHttpApi = new AuthHttpApi();
+const analytics: AnalyticsHttpApi = new AnalyticsHttpApi();
 
 const dropdownYPos = ref<number>(0);
 const dropdownXPos = ref<number>(0);
@@ -154,7 +154,7 @@ function navigateToBilling(): void {
     if (route.path.includes(RouteConfig.Billing.path)) return;
 
     router.push(RouteConfig.Account.with(RouteConfig.Billing).with(RouteConfig.BillingOverview).path);
-    analyticsStore.pageVisit(RouteConfig.Account.with(RouteConfig.Billing).with(RouteConfig.BillingOverview).path);
+    analytics.pageVisit(RouteConfig.Account.with(RouteConfig.Billing).with(RouteConfig.BillingOverview).path);
 }
 
 /**
@@ -162,7 +162,7 @@ function navigateToBilling(): void {
  */
 function navigateToSettings(): void {
     closeDropdown();
-    analyticsStore.pageVisit(RouteConfig.Account.with(RouteConfig.Settings).path);
+    analytics.pageVisit(RouteConfig.Account.with(RouteConfig.Settings).path);
     router.push(RouteConfig.Account.with(RouteConfig.Settings).path).catch(() => {return;});
 }
 
@@ -170,8 +170,8 @@ function navigateToSettings(): void {
  * Logouts user and navigates to login page.
  */
 async function onLogout(): Promise<void> {
-    analyticsStore.pageVisit(RouteConfig.Login.path);
-    await router.push(RouteConfig.Login.path);
+    analytics.pageVisit(RouteConfig.Login.path);
+    router.push(RouteConfig.Login.path);
 
     await Promise.all([
         pmStore.clear(),
@@ -188,10 +188,10 @@ async function onLogout(): Promise<void> {
     ]);
 
     try {
-        analyticsStore.eventTriggered(AnalyticsEvent.LOGOUT_CLICKED);
+        await analytics.eventTriggered(AnalyticsEvent.LOGOUT_CLICKED);
         await auth.logout();
     } catch (error) {
-        notify.notifyError(error, AnalyticsErrorEventSource.NAVIGATION_ACCOUNT_AREA);
+        notify.error(error.message, AnalyticsErrorEventSource.NAVIGATION_ACCOUNT_AREA);
     }
 }
 
@@ -265,12 +265,12 @@ function closeDropdown(): void {
                 border-color: var(--c-grey-1);
 
                 p {
-                    color: var(--c-orange-3);
+                    color: var(--c-blue-3);
                 }
 
                 .account-area__wrap__arrow :deep(path),
                 .account-area__wrap__left__icon :deep(path) {
-                    fill: var(--c-orange-3);
+                    fill: var(--c-blue-3);
                 }
             }
 
@@ -278,14 +278,14 @@ function closeDropdown(): void {
                 outline: none;
                 border-color: var(--c-grey-1);
                 background-color: var(--c-grey-1);
-                color: var(--c-orange-3);
+                color: var(--c-blue-3);
 
                 p {
-                    color: var(--c-orange-3);
+                    color: var(--c-blue-3);
                 }
 
                 :deep(path) {
-                    fill: var(--c-orange-3);
+                    fill: var(--c-blue-3);
                 }
             }
         }
@@ -338,7 +338,7 @@ function closeDropdown(): void {
                     &__link:focus {
 
                         svg :deep(path) {
-                            fill: var(--c-orange-3);
+                            fill: var(--c-blue-3);
                         }
                     }
                 }
@@ -367,11 +367,11 @@ function closeDropdown(): void {
                     background-color: #f5f6fa;
 
                     p {
-                        color: var(--c-orange-3);
+                        color: var(--c-blue-3);
                     }
 
                     :deep(path) {
-                        fill: var(--c-orange-3);
+                        fill: var(--c-blue-3);
                     }
                 }
 
@@ -386,7 +386,7 @@ function closeDropdown(): void {
         border-color: #000;
 
         p {
-            color: var(--c-orange-6);
+            color: var(--c-blue-6);
             font-family: 'font_bold', sans-serif;
         }
 
@@ -397,16 +397,16 @@ function closeDropdown(): void {
     }
 
     .active:hover {
-        border-color: var(--c-orange-3);
+        border-color: var(--c-blue-3);
         background-color: #f7f8fb;
 
         p {
-            color: var(--c-orange-3);
+            color: var(--c-blue-3);
         }
 
         .account-area__wrap__arrow :deep(path),
         .account-area__wrap__left__icon :deep(path) {
-            fill: var(--c-orange-3);
+            fill: var(--c-blue-3);
         }
     }
 

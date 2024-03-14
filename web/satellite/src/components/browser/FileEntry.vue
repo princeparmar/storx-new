@@ -1,4 +1,4 @@
-// Copyright (C) 2021 Storx Labs, Inc.
+// Copyright (C) 2021 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -81,11 +81,6 @@
                 />
                 <dots-icon v-else />
                 <div v-if="dropdownOpen" class="file-entry__functional__dropdown">
-                    <div class="file-entry__functional__dropdown__item" @click.stop="share">
-                        <share-icon />
-                        <p class="file-entry__functional__dropdown__item__label">Share</p>
-                    </div>
-
                     <div
                         v-if="!deleteConfirmation" class="file-entry__functional__dropdown__item"
                         @click.stop="confirmDeletion"
@@ -123,14 +118,10 @@ import { useRouter } from 'vue-router';
 import prettyBytes from 'pretty-bytes';
 
 import { useNotify } from '@/utils/hooks';
-import { AnalyticsErrorEventSource, AnalyticsEvent } from '@/utils/constants/analyticsEventNames';
+import { AnalyticsErrorEventSource } from '@/utils/constants/analyticsEventNames';
 import { MODALS } from '@/utils/constants/appStatePopUps';
 import { BrowserObject, useObjectBrowserStore } from '@/store/modules/objectBrowserStore';
 import { useAppStore } from '@/store/modules/appStore';
-import { useConfigStore } from '@/store/modules/configStore';
-import { ObjectType } from '@/utils/objectIcon';
-import { ShareType } from '@/types/browser';
-import { useAnalyticsStore } from '@/store/modules/analyticsStore';
 
 import TableItem from '@/components/common/TableItem.vue';
 
@@ -141,10 +132,8 @@ import DownloadIcon from '@/../static/images/objects/download.svg';
 import DotsIcon from '@/../static/images/objects/dots.svg';
 import CloseIcon from '@/../static/images/common/closeCross.svg';
 
-const analyticsStore = useAnalyticsStore();
 const appStore = useAppStore();
 const obStore = useObjectBrowserStore();
-const config = useConfigStore();
 const notify = useNotify();
 const router = useRouter();
 
@@ -160,7 +149,32 @@ const deleteConfirmation = ref(false);
 /**
  * Return the type of the file.
  */
-const fileType = computed((): string => ObjectType.findType(props.file.Key));
+const fileType = computed((): string => {
+    const image = /(\.jpg|\.jpeg|\.png|\.gif)$/i;
+    const video = /(\.mp4|\.mkv|\.mov)$/i;
+    const audio = /(\.mp3|\.aac|\.wav|\.m4a)$/i;
+    const text = /(\.txt|\.docx|\.doc|\.pages)$/i;
+    const pdf = /(\.pdf)$/i;
+    const archive = /(\.zip|\.tar.gz|\.7z|\.rar)$/i;
+    const spreadsheet = /(\.xls|\.numbers|\.csv|\.xlsx|\.tsv)$/i;
+
+    if (image.exec(props.file.Key)) {
+        return 'image';
+    } else if (video.exec(props.file.Key)) {
+        return 'video';
+    } else if (audio.exec(props.file.Key)) {
+        return 'audio';
+    } else if (text.exec(props.file.Key)) {
+        return 'text';
+    } else if (pdf.exec(props.file.Key)) {
+        return 'pdf';
+    } else if (archive.exec(props.file.Key)) {
+        return 'archive';
+    } else if (spreadsheet.exec(props.file.Key)) {
+        return 'spreadsheet';
+    }
+    return 'file';
+});
 
 /**
  * Return the size of the file formatted.
@@ -225,7 +239,7 @@ const fileTypeIsFile = computed((): boolean => {
 });
 
 /**
- * Return a boolean signifying whether the current file/folder is in the process of being deleted, therefore a spinner should be shown.
+ * Return a boolean signifying whether the current file/folder is in the process of being deleted, therefore a spinner shoud be shown.
  */
 const loadingSpinner = computed((): boolean => {
     return obStore.state.filesToBeDeleted.some(
@@ -238,14 +252,7 @@ const loadingSpinner = computed((): boolean => {
  */
 function openModal(): void {
     obStore.setObjectPathForModal(props.path + props.file.Key);
-
-    if (config.state.config.galleryViewEnabled) {
-        appStore.setGalleryView(true);
-        analyticsStore.eventTriggered(AnalyticsEvent.GALLERY_VIEW_CLICKED);
-    } else {
-        appStore.updateActiveModal(MODALS.objectDetails);
-    }
-
+    appStore.updateActiveModal(MODALS.objectDetails);
     obStore.closeDropdown();
 }
 
@@ -316,7 +323,7 @@ function setSelectedFile(command: boolean): void {
         obStore.setUnselectedAnchorFile(null);
         obStore.updateShiftSelectedFiles([]);
     } else if (command) {
-        /* if it's [CMD + click] and it has not met any of the above conditions, then set selectedAnchorFile to file and set unselectedAnchorFile to null, update the selectedFiles, and update the shiftSelectedFiles */
+        /* if it's [CMD + click] and it has not met any of the above conditions, then set selectedAnchorFile to file and set unselectedAnchorfile to null, update the selectedFiles, and update the shiftSelectedFiles */
         obStore.setSelectedAnchorFile(props.file);
         obStore.setUnselectedAnchorFile(null);
         obStore.updateSelectedFiles([
@@ -362,7 +369,7 @@ function setShiftSelectedFiles(): void {
     const unselectedAnchorFile = obStore.state.unselectedAnchorFile;
 
     if (unselectedAnchorFile) {
-        /* if there is an unselectedAnchorFile, meaning that in the previous action the user unselected the anchor file but is now choosing to do a [shift + click] on another file, then reset the selectedAnchorFile, the achor file, to unselectedAnchorFile. */
+        /* if there is an unselectedAnchorFile, meaning that in the previous action the user unselected the anchor file but is now chosing to do a [shift + click] on another file, then reset the selectedAnchorFile, the achor file, to unselectedAnchorFile. */
         obStore.setSelectedAnchorFile(unselectedAnchorFile);
         obStore.setUnselectedAnchorFile(null);
     }
@@ -395,8 +402,7 @@ function setShiftSelectedFiles(): void {
 function share(): void {
     obStore.closeDropdown();
     obStore.setObjectPathForModal(props.path + props.file.Key);
-    appStore.setShareModalType(props.file.type === 'file' ? ShareType.File : ShareType.Folder);
-    appStore.updateActiveModal(MODALS.share);
+    appStore.updateActiveModal(MODALS.shareObject);
 }
 
 /**
@@ -422,16 +428,10 @@ function openDropdown(): void {
 /**
  * Download the current file.
  */
-async function download(): Promise<void> {
+function download(): void {
     try {
-        await obStore.download(props.file);
-        const message = `
-            <p class="message-title">Downloading...</p>
-            <p class="message-info">
-                Keep this download link private.<br>If you want to share, use the Share option.
-            </p>
-        `;
-        notify.success('', message);
+        obStore.download(props.file);
+        notify.warning('Do not share download link with other people. If you want to share this data better use "Share" option.');
     } catch (error) {
         notify.error('Can not download your file', AnalyticsErrorEventSource.FILE_BROWSER_ENTRY);
     }
@@ -512,15 +512,7 @@ function cancelDeletion(): void {
                 }
 
                 .dropdown-item.action.p-3.action {
-                    font-family: 'font_regular', sans-serif;
-                }
-
-                &:first-of-type {
-                    border-radius: 6px 6px 0 0;
-                }
-
-                &:last-of-type {
-                    border-radius: 0 0 6px 6px;
+                    font-family: 'Inter', sans-serif;
                 }
 
                 &__label {
@@ -530,10 +522,10 @@ function cancelDeletion(): void {
                 &:not(.confirmation):hover {
                     background-color: #f4f5f7;
                     font-family: 'font_medium', sans-serif;
-                    color: var(--c-orange-3);
+                    color: var(--c-blue-3);
 
                     svg :deep(path) {
-                        fill: var(--c-orange-3);
+                        fill: var(--c-blue-3);
                     }
                 }
             }
@@ -568,11 +560,11 @@ function cancelDeletion(): void {
             }
 
             &.no:hover {
-                color: var(--c-orange-3);
+                color: var(--c-blue-3);
 
                 svg :deep(path) {
-                    fill: var(--c-orange-3);
-                    stroke: var(--c-orange-3);
+                    fill: var(--c-blue-3);
+                    stroke: var(--c-blue-3);
                 }
             }
         }

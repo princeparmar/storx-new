@@ -1,4 +1,4 @@
-// Copyright (C) 2022 Storx Labs, Inc.
+// Copyright (C) 2022 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -12,7 +12,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, Component } from 'vue';
 
 import { ShareButtonConfig, ShareOptions } from '@/types/browser';
 
@@ -29,7 +29,7 @@ import EmailIcon from '@/../static/images/objects/email.svg';
 
 const props = defineProps<{ link: string; }>();
 
-const images: Record<string, string> = {
+const images: Record<string, Component> = {
     [ShareOptions.Reddit]: RedditIcon,
     [ShareOptions.Facebook]: FacebookIcon,
     [ShareOptions.Twitter]: TwitterIcon,

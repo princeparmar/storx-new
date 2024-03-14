@@ -1,4 +1,4 @@
-// Copyright (C) 2019 Storx Labs, Inc.
+// Copyright (C) 2019 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -72,7 +72,7 @@ onMounted(async (): Promise<void> => {
         await configStore.getConfig();
     } catch (error) {
         appStore.setErrorPage(500, true);
-        notify.notifyError(error, null);
+        notify.error(error.message, null);
     }
 
     fixViewportHeight();

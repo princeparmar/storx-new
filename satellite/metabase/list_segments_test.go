@@ -270,7 +270,7 @@ func TestListSegments(t *testing.T) {
 			}
 		})
 
-		t.Run("segments from copy with duplicate metadata", func(t *testing.T) {
+		t.Run("segments from copy", func(t *testing.T) {
 			defer metabasetest.DeleteAll{}.Check(ctx, t, db)
 
 			for _, numberOfSegments := range []byte{0, 1, 2, 10} {
@@ -304,7 +304,8 @@ func TestListSegments(t *testing.T) {
 
 				metabasetest.ListSegments{
 					Opts: metabase.ListSegments{
-						StreamID: copyStream.StreamID,
+						StreamID:                copyStream.StreamID,
+						UpdateFirstWithAncestor: true,
 					},
 					Result: metabase.ListSegmentsResult{
 						Segments: expectedSegments,

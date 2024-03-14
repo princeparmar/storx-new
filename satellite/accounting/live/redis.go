@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
-	"github.com/zeebo/errs/v2"
 
 	"storj.io/common/uuid"
 	"storj.io/storj/satellite/accounting"
@@ -19,8 +18,6 @@ import (
 
 type redisLiveAccounting struct {
 	client *redis.Client
-
-	batchSize int
 }
 
 // openRedisLiveAccounting returns a redisLiveAccounting cache instance.
@@ -32,15 +29,14 @@ type redisLiveAccounting struct {
 // it fails then it returns an instance and accounting.ErrSystemOrNetError
 // because it means that Redis may not be operative at this precise moment but
 // it may be in future method calls as it handles automatically reconnects.
-func openRedisLiveAccounting(ctx context.Context, address string, batchSize int) (*redisLiveAccounting, error) {
+func openRedisLiveAccounting(ctx context.Context, address string) (*redisLiveAccounting, error) {
 	opts, err := redis.ParseURL(address)
 	if err != nil {
 		return nil, accounting.ErrInvalidArgument.Wrap(err)
 	}
 
 	cache := &redisLiveAccounting{
-		client:    redis.NewClient(opts),
-		batchSize: batchSize,
+		client: redis.NewClient(opts),
 	}
 
 	// ping here to verify we are able to connect to Redis with the initialized client.
@@ -56,7 +52,7 @@ func openRedisLiveAccounting(ctx context.Context, address string, batchSize int)
 func (cache *redisLiveAccounting) GetProjectStorageUsage(ctx context.Context, projectID uuid.UUID) (totalUsed int64, err error) {
 	defer mon.Task()(&ctx, projectID)(&err)
 
-	return cache.getInt64(ctx, createStorageProjectIDKey(projectID))
+	return cache.getInt64(ctx, string(projectID[:]))
 }
 
 // GetProjectBandwidthUsage returns the current bandwidth usage
@@ -179,7 +175,7 @@ func (cache *redisLiveAccounting) AddProjectSegmentUsageUpToLimit(ctx context.Co
 func (cache *redisLiveAccounting) AddProjectStorageUsage(ctx context.Context, projectID uuid.UUID, spaceUsed int64) (err error) {
 	defer mon.Task()(&ctx, projectID, spaceUsed)(&err)
 
-	_, err = cache.client.IncrBy(ctx, createStorageProjectIDKey(projectID), spaceUsed).Result()
+	_, err = cache.client.IncrBy(ctx, string(projectID[:]), spaceUsed).Result()
 	if err != nil {
 		return accounting.ErrSystemOrNetError.New("Redis incrby failed: %w", err)
 	}
@@ -220,7 +216,6 @@ func (cache *redisLiveAccounting) GetAllProjectTotals(ctx context.Context) (_ ma
 	defer mon.Task()(&ctx)(&err)
 
 	projects := make(map[uuid.UUID]accounting.Usage)
-
 	it := cache.client.Scan(ctx, 0, "*", 0).Iterator()
 	for it.Next(ctx) {
 		key := it.Val()
@@ -236,110 +231,56 @@ func (cache *redisLiveAccounting) GetAllProjectTotals(ctx context.Context) (_ ma
 				return nil, accounting.ErrUnexpectedValue.New("cannot parse the key as UUID; key=%q", key)
 			}
 
-			projects[projectID] = accounting.Usage{}
+			usage := accounting.Usage{}
+			if seenUsage, seen := projects[projectID]; seen {
+				if seenUsage.Segments != 0 {
+					continue
+				}
+
+				usage = seenUsage
+			}
+
+			segmentUsage, err := cache.GetProjectSegmentUsage(ctx, projectID)
+			if err != nil {
+				if accounting.ErrKeyNotFound.Has(err) {
+					continue
+				}
+
+				return nil, err
+			}
+
+			usage.Segments = segmentUsage
+			projects[projectID] = usage
 		} else {
 			projectID, err := uuid.FromBytes([]byte(key))
 			if err != nil {
 				return nil, accounting.ErrUnexpectedValue.New("cannot parse the key as UUID; key=%q", key)
 			}
 
-			projects[projectID] = accounting.Usage{}
-		}
-	}
+			usage := accounting.Usage{}
+			if seenUsage, seen := projects[projectID]; seen {
+				if seenUsage.Storage != 0 {
+					continue
+				}
 
-	return cache.fillUsage(ctx, projects)
-}
-
-func (cache *redisLiveAccounting) fillUsage(ctx context.Context, projects map[uuid.UUID]accounting.Usage) (_ map[uuid.UUID]accounting.Usage, err error) {
-	defer mon.Task()(&ctx)(&err)
-
-	if len(projects) == 0 {
-		return nil, nil
-	}
-
-	projectIDs := make([]uuid.UUID, 0, cache.batchSize)
-	segmentKeys := make([]string, 0, cache.batchSize)
-	storageKeys := make([]string, 0, cache.batchSize)
-
-	fetchProjectsUsage := func() error {
-		if len(projectIDs) == 0 {
-			return nil
-		}
-
-		segmentResult, err := cache.client.MGet(ctx, segmentKeys...).Result()
-		if err != nil {
-			return accounting.ErrGetProjectLimitCache.Wrap(err)
-		}
-
-		storageResult, err := cache.client.MGet(ctx, storageKeys...).Result()
-		if err != nil {
-			return accounting.ErrGetProjectLimitCache.Wrap(err)
-		}
-
-		// Note, because we are using a cache, it might be empty and not contain the
-		// information we are looking for -- or they might be still empty for some reason.
-
-		for i, projectID := range projectIDs {
-			segmentsUsage, err := parseAnyAsInt64(segmentResult[i])
-			if err != nil {
-				return errs.Wrap(err)
+				usage = seenUsage
 			}
 
-			storageUsage, err := parseAnyAsInt64(storageResult[i])
+			storageUsage, err := cache.getInt64(ctx, key)
 			if err != nil {
-				return errs.Wrap(err)
-			}
+				if accounting.ErrKeyNotFound.Has(err) {
+					continue
+				}
 
-			projects[projectID] = accounting.Usage{
-				Segments: segmentsUsage,
-				Storage:  storageUsage,
-			}
-		}
-
-		return nil
-	}
-
-	for projectID := range projects {
-		projectIDs = append(projectIDs, projectID)
-		segmentKeys = append(segmentKeys, createSegmentProjectIDKey(projectID))
-		storageKeys = append(storageKeys, createStorageProjectIDKey(projectID))
-
-		if len(projectIDs) >= cache.batchSize {
-			err := fetchProjectsUsage()
-			if err != nil {
 				return nil, err
 			}
 
-			projectIDs = projectIDs[:0]
-			segmentKeys = segmentKeys[:0]
-			storageKeys = storageKeys[:0]
+			usage.Storage = storageUsage
+			projects[projectID] = usage
 		}
 	}
 
-	err = fetchProjectsUsage()
-	if err != nil {
-		return nil, err
-	}
-
 	return projects, nil
-}
-
-func parseAnyAsInt64(v any) (int64, error) {
-	if v == nil {
-		return 0, nil
-	}
-
-	s, ok := v.(string)
-	if !ok {
-		return 0, accounting.ErrUnexpectedValue.New("cannot parse the value as int64; val=%q", v)
-	}
-
-	i, err := strconv.ParseInt(s, 10, 64)
-	if err != nil {
-		return 0, accounting.ErrUnexpectedValue.New("cannot parse the value as int64; val=%q", v)
-	}
-
-	return i, nil
 }
 
 // Close the DB connection.
@@ -383,9 +324,4 @@ func createBandwidthProjectIDKey(projectID uuid.UUID, now time.Time) string {
 // createSegmentProjectIDKey creates the segment project key.
 func createSegmentProjectIDKey(projectID uuid.UUID) string {
 	return string(projectID[:]) + ":segment"
-}
-
-// createStorageProjectIDKey creates the storage project key.
-func createStorageProjectIDKey(projectID uuid.UUID) string {
-	return string(projectID[:])
 }

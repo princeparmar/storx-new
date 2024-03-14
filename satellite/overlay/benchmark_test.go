@@ -64,12 +64,14 @@ func BenchmarkOverlay(b *testing.B) {
 			check = append(check, testrand.NodeID())
 		}
 
-		b.Run("KnownReliable", func(b *testing.B) {
-			onlineWindow := 1000 * time.Hour
+		b.Run("KnownUnreliableOrOffline", func(b *testing.B) {
+			criteria := &overlay.NodeCriteria{
+				OnlineWindow: 1000 * time.Hour,
+			}
 			for i := 0; i < b.N; i++ {
-				online, _, err := overlaydb.KnownReliable(ctx, check, onlineWindow, 0)
+				badNodes, err := overlaydb.KnownUnreliableOrOffline(ctx, criteria, check)
 				require.NoError(b, err)
-				require.Len(b, online, OnlineCount)
+				require.Len(b, badNodes, OfflineCount)
 			}
 		})
 
@@ -355,7 +357,7 @@ func BenchmarkNodeSelection(b *testing.B) {
 			}
 		})
 
-		service, err := overlay.NewService(zap.NewNop(), overlaydb, db.NodeEvents(), overlay.NewPlacementRules().CreateFilters, "", "", overlay.Config{
+		service, err := overlay.NewService(zap.NewNop(), overlaydb, db.NodeEvents(), "", "", overlay.Config{
 			Node: nodeSelectionConfig,
 			NodeSelectionCache: overlay.UploadSelectionCacheConfig{
 				Staleness: time.Hour,

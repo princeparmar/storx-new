@@ -1,4 +1,4 @@
-// Copyright (C) 2022 Storx Labs, Inc.
+// Copyright (C) 2022 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -151,30 +151,59 @@ const emit = defineEmits(['selectAllClicked']);
     }
 }
 
-tbody tr > .data p {
-    max-width: 25rem;
-    overflow: hidden;
-    white-space: nowrap;
-    text-overflow: ellipsis;
+@media screen and (width <= 970px) {
 
-    @media screen and (width <= 970px) {
-        max-width: 15rem;
-    }
-
-    @media screen and (width <= 870px) {
-        max-width: 10rem;
-    }
-
-    @media screen and (width <= 350px) {
-        max-width: 8rem;
+    tbody tr > .data p {
+        max-width: 25rem;
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
     }
 }
 
-@media screen and (width <= 600px) {
+@media screen and (width <= 870px) {
+
+    tbody tr > .data p {
+        max-width: 20rem;
+    }
+}
+
+@media screen and (width <= 550px) {
 
     .select {
         display: none;
     }
+
+    tbody tr > .data p {
+        max-width: 25rem;
+    }
 }
 
+@media screen and (width <= 660px) {
+
+    tbody tr > .data p {
+        max-width: 15rem;
+    }
+}
+
+@media screen and (width <= 550px) {
+
+    tbody tr > .data p {
+        max-width: 15rem;
+    }
+}
+
+@media screen and (width <= 440px) {
+
+    tbody tr > .data p {
+        max-width: 10rem;
+    }
+}
+
+@media screen and (width <= 350px) {
+
+    tbody tr > .data p {
+        max-width: 8rem;
+    }
+}
 </style>

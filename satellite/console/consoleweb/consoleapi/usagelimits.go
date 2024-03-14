@@ -4,7 +4,6 @@
 package consoleapi
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -51,13 +50,13 @@ func (ul *UsageLimits) ProjectUsageLimits(w http.ResponseWriter, r *http.Request
 	var idParam string
 
 	if idParam, ok = mux.Vars(r)["id"]; !ok {
-		ul.serveJSONError(ctx, w, http.StatusBadRequest, errs.New("missing project id route param"))
+		ul.serveJSONError(w, http.StatusBadRequest, errs.New("missing project id route param"))
 		return
 	}
 
 	projectID, err := uuid.FromString(idParam)
 	if err != nil {
-		ul.serveJSONError(ctx, w, http.StatusBadRequest, errs.New("invalid project id: %v", err))
+		ul.serveJSONError(w, http.StatusBadRequest, errs.New("invalid project id: %v", err))
 		return
 	}
 
@@ -65,13 +64,13 @@ func (ul *UsageLimits) ProjectUsageLimits(w http.ResponseWriter, r *http.Request
 	if err != nil {
 		switch {
 		case console.ErrUnauthorized.Has(err):
-			ul.serveJSONError(ctx, w, http.StatusUnauthorized, err)
+			ul.serveJSONError(w, http.StatusUnauthorized, err)
 			return
 		case accounting.ErrInvalidArgument.Has(err):
-			ul.serveJSONError(ctx, w, http.StatusBadRequest, err)
+			ul.serveJSONError(w, http.StatusBadRequest, err)
 			return
 		default:
-			ul.serveJSONError(ctx, w, http.StatusInternalServerError, err)
+			ul.serveJSONError(w, http.StatusInternalServerError, err)
 			return
 		}
 	}
@@ -91,11 +90,11 @@ func (ul *UsageLimits) TotalUsageLimits(w http.ResponseWriter, r *http.Request) 
 	usageLimits, err := ul.service.GetTotalUsageLimits(ctx)
 	if err != nil {
 		if console.ErrUnauthorized.Has(err) {
-			ul.serveJSONError(ctx, w, http.StatusUnauthorized, err)
+			ul.serveJSONError(w, http.StatusUnauthorized, err)
 			return
 		}
 
-		ul.serveJSONError(ctx, w, http.StatusInternalServerError, err)
+		ul.serveJSONError(w, http.StatusInternalServerError, err)
 		return
 	}
 
@@ -115,23 +114,23 @@ func (ul *UsageLimits) DailyUsage(w http.ResponseWriter, r *http.Request) {
 	var idParam string
 
 	if idParam, ok = mux.Vars(r)["id"]; !ok {
-		ul.serveJSONError(ctx, w, http.StatusBadRequest, errs.New("missing project id route param"))
+		ul.serveJSONError(w, http.StatusBadRequest, errs.New("missing project id route param"))
 		return
 	}
 	projectID, err := uuid.FromString(idParam)
 	if err != nil {
-		ul.serveJSONError(ctx, w, http.StatusBadRequest, errs.New("invalid project id: %v", err))
+		ul.serveJSONError(w, http.StatusBadRequest, errs.New("invalid project id: %v", err))
 		return
 	}
 
 	sinceStamp, err := strconv.ParseInt(r.URL.Query().Get("from"), 10, 64)
 	if err != nil {
-		ul.serveJSONError(ctx, w, http.StatusBadRequest, err)
+		ul.serveJSONError(w, http.StatusBadRequest, err)
 		return
 	}
 	beforeStamp, err := strconv.ParseInt(r.URL.Query().Get("to"), 10, 64)
 	if err != nil {
-		ul.serveJSONError(ctx, w, http.StatusBadRequest, err)
+		ul.serveJSONError(w, http.StatusBadRequest, err)
 		return
 	}
 
@@ -141,11 +140,11 @@ func (ul *UsageLimits) DailyUsage(w http.ResponseWriter, r *http.Request) {
 	dailyUsage, err := ul.service.GetDailyProjectUsage(ctx, projectID, since, before)
 	if err != nil {
 		if console.ErrUnauthorized.Has(err) {
-			ul.serveJSONError(ctx, w, http.StatusUnauthorized, err)
+			ul.serveJSONError(w, http.StatusUnauthorized, err)
 			return
 		}
 
-		ul.serveJSONError(ctx, w, http.StatusInternalServerError, err)
+		ul.serveJSONError(w, http.StatusInternalServerError, err)
 		return
 	}
 
@@ -156,6 +155,6 @@ func (ul *UsageLimits) DailyUsage(w http.ResponseWriter, r *http.Request) {
 }
 
 // serveJSONError writes JSON error to response output stream.
-func (ul *UsageLimits) serveJSONError(ctx context.Context, w http.ResponseWriter, status int, err error) {
-	web.ServeJSONError(ctx, ul.log, w, status, err)
+func (ul *UsageLimits) serveJSONError(w http.ResponseWriter, status int, err error) {
+	web.ServeJSONError(ul.log, w, status, err)
 }

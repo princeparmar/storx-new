@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Storx Labs, Inc.
+// Copyright (C) 2023 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -96,7 +96,7 @@ onMounted(() => {
         padding: 52px 24px;
         box-sizing: border-box;
         display: flex;
-        background: url('../../static/images/errors/dotWorld.png') no-repeat center 178px;
+        background: url('~@/../static/images/errors/dotWorld.png') no-repeat center 178px;
         flex-direction: column;
         justify-content: center;
         overflow-y: auto;

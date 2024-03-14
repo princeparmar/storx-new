@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Storx Labs, Inc.
+// Copyright (C) 2023 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -110,15 +110,15 @@ const props = withDefaults(defineProps<{
         }
 
         input:checked ~ span {
-            border: 2px solid var(--c-light-orange-5);
-            background-color: var(--c-light-orange-5);
+            border: 2px solid var(--c-light-blue-5);
+            background-color: var(--c-light-blue-5);
         }
 
         &:hover {
 
             input:checked ~ span {
-                border: 2px solid var(--c-light-orange-5);
-                background-color: var(--c-light-orange-5);
+                border: 2px solid var(--c-light-blue-5);
+                background-color: var(--c-light-blue-5);
             }
         }
     }

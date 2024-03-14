@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Storx Labs, Inc.
+// Copyright (C) 2023 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -6,18 +6,11 @@
         <div class="modal__header" :class="{'custom-radius': !isExpanded}" @click="toggleExpanded">
             <div class="modal__header__left">
                 <div class="modal__header__left__info">
-                    <div class="modal__header__left__info__cont">
-                        <component :is="icon" v-if="icon" :class="{ close: icon === FailedIcon }" />
-                        <p class="modal__header__left__info__cont__title">{{ statusLabel }}</p>
-                    </div>
-                    <div class="modal__header__left__info__right">
-                        <p class="modal__header__left__info__right__remaining">{{ remainingTimeString }}</p>
-                        <p v-if="!isClosable" class="modal__header__left__info__right__cancel" @click.stop="cancelAll">Cancel</p>
-                    </div>
+                    <p class="modal__header__left__info__title">{{ statusLabel }}</p>
+                    <p class="modal__header__left__info__remaining">{{ remainingTimeString }}</p>
                 </div>
                 <div v-if="!isClosable" class="modal__header__left__track">
-                    <div v-if="progress" class="modal__header__left__track__fill" :style="progressStyle" />
-                    <div v-else class="modal__header__left__track__indeterminate" />
+                    <div class="modal__header__left__track__fill" :style="progressStyle" />
                 </div>
             </div>
             <div class="modal__header__right">
@@ -26,13 +19,9 @@
             </div>
         </div>
         <div v-if="isExpanded" class="modal__items">
-            <UploadItem
-                v-for="item in uploading"
-                :key="item.Key"
-                :class="{ modal__items__completed: item.status == UploadingStatus.Finished }"
-                :item="item"
-                @click="() => showFile(item)"
-            />
+            <div v-for="item in uploading" :key="item.Key">
+                <UploadItem :item="item" />
+            </div>
         </div>
     </div>
 </template>
@@ -43,22 +32,14 @@ import { computed, onMounted, ref, watch } from 'vue';
 import { UploadingBrowserObject, UploadingStatus, useObjectBrowserStore } from '@/store/modules/objectBrowserStore';
 import { useAppStore } from '@/store/modules/appStore';
 import { Duration } from '@/utils/time';
-import { useNotify } from '@/utils/hooks';
-import { AnalyticsErrorEventSource } from '@/utils/constants/analyticsEventNames';
-import { useConfigStore } from '@/store/modules/configStore';
-import { MODALS } from '@/utils/constants/appStatePopUps';
 
 import UploadItem from '@/components/modals/objectUpload/UploadItem.vue';
 
 import ArrowIcon from '@/../static/images/modals/objectUpload/arrow.svg';
 import CloseIcon from '@/../static/images/modals/objectUpload/close.svg';
-import CompleteIcon from '@/../static/images/modals/objectUpload/complete.svg';
-import FailedIcon from '@/../static/images/modals/objectUpload/failed.svg';
 
 const obStore = useObjectBrowserStore();
 const appStore = useAppStore();
-const notify = useNotify();
-const config = useConfigStore();
 
 const isExpanded = ref<boolean>(false);
 const startDate = ref<number>(Date.now());
@@ -87,64 +68,47 @@ const isClosable = computed((): boolean => {
 });
 
 /**
- * Returns what icon should be displayed in the header.
- */
-const icon = computed((): string => {
-    if (!isClosable.value) return '';
-    if (uploading.value.some(f => f.status === UploadingStatus.Finished)) return CompleteIcon;
-    if (uploading.value.some(f => f.status === UploadingStatus.Failed)) return FailedIcon;
-    return '';
-});
-
-/**
  * Returns header's status label.
  */
 const statusLabel = computed((): string => {
-    let inProgress = 0, finished = 0, failed = 0, cancelled = 0;
-    uploading.value.forEach(u => {
-        switch (u.status) {
-        case UploadingStatus.InProgress:
-            inProgress++;
-            break;
-        case UploadingStatus.Failed:
-            failed++;
-            break;
-        case UploadingStatus.Cancelled:
-            cancelled++;
-            break;
-        default:
-            finished++;
+    if (isClosable.value) {
+        let status = 'Uploading completed';
+
+        const failedUploads = uploading.value.filter(f => f.status === UploadingStatus.Failed);
+        if (failedUploads.length > 0) {
+            status += ` (${failedUploads.length} failed`;
         }
-    });
 
-    if (failed === uploading.value.length) return 'Uploading failed';
-    if (cancelled === uploading.value.length) return 'Uploading cancelled';
-    if (inProgress) return `Uploading ${inProgress} item${inProgress > 1 ? 's' : ''}`;
+        const cancelledUploads = uploading.value.filter(f => f.status === UploadingStatus.Cancelled);
+        if (cancelledUploads.length > 0) {
+            status += `, (${cancelledUploads.length} cancelled`;
+        }
 
-    const statuses = [
-        failed ? `${failed} failed` : '',
-        cancelled ? `${cancelled} cancelled` : '',
-    ].filter(s => s).join(', ');
+        if (!failedUploads.length && !cancelledUploads.length) {
+            return status;
+        }
 
-    return `Uploading completed${statuses ? ` (${statuses})` : ''}`;
-});
+        return `${status})`;
+    }
 
-/**
- * Returns upload progress.
- */
-const progress = computed((): number => {
-    return uploading.value.reduce((total: number, item: UploadingBrowserObject) => {
-        total += item.progress || 0;
-        return total;
-    }, 0) / uploading.value.length;
+    if (uploading.value.length === 1) {
+        return 'Uploading 1 item';
+    }
+
+    return `Uploading ${uploading.value.length} items`;
 });
 
 /**
  * Returns progress bar style.
  */
 const progressStyle = computed((): Record<string, string> => {
+    const progress = uploading.value.reduce((total: number, item: UploadingBrowserObject) => {
+        total += item.progress || 0;
+        return total;
+    }, 0) / uploading.value.length;
+
     return {
-        width: `${progress.value}%`,
+        width: `${progress}%`,
     };
 });
 
@@ -167,34 +131,6 @@ function calculateRemainingTime(): void {
     }
 
     remainingTimeString.value = new Duration(remainingNanoseconds).remainingFormatted;
-}
-
-/**
- * Cancels all uploads in progress.
- */
-function cancelAll(): void {
-    objectsInProgress.value.forEach(item => {
-        try {
-            obStore.cancelUpload(item.Key);
-        } catch (error) {
-            notify.error(`Unable to cancel upload for '${item.Key}'. ${error.message}`, AnalyticsErrorEventSource.OBJECTS_UPLOAD_MODAL);
-        }
-    });
-}
-
-/**
- * Opens the object preview.
- */
-function showFile(item: UploadingBrowserObject): void {
-    if (item.status !== UploadingStatus.Finished) return;
-
-    obStore.setObjectPathForModal(item.Key);
-
-    if (config.state.config.galleryViewEnabled) {
-        appStore.setGalleryView(true);
-    } else {
-        appStore.updateActiveModal(MODALS.objectDetails);
-    }
 }
 
 /**
@@ -251,7 +187,6 @@ onMounted(() => {
     max-width: 500px;
     border-radius: 8px;
     font-family: 'font_regular', sans-serif;
-    filter: drop-shadow(0 7px 20px rgb(0 0 0 / 15%));
 
     @media screen and (width <= 650px) {
         max-width: unset;
@@ -271,10 +206,10 @@ onMounted(() => {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        gap: 24px;
 
         &__left {
             box-sizing: border-box;
+            margin-right: 24px;
             width: 100%;
 
             &__info {
@@ -282,43 +217,18 @@ onMounted(() => {
                 align-items: center;
                 justify-content: space-between;
 
-                &__cont {
-                    display: flex;
-                    align-items: center;
-                    gap: 11px;
-
-                    svg {
-                        width: 24px;
-                        height: 24px;
-                    }
-
-                    &__title {
-                        font-size: 14px;
-                        line-height: 20px;
-                        color: var(--c-white);
-                    }
-                }
-
-                &__right {
-                    display: flex;
-                    align-items: center;
-                    gap: 17px;
+                &__title {
+                    font-family: 'font_medium', sans-serif;
                     font-size: 14px;
                     line-height: 20px;
                     color: var(--c-white);
+                }
 
-                    &__remaining {
-                        opacity: 0.7;
-                        text-align: right;
-                    }
-
-                    &__cancel {
-                        cursor: pointer;
-
-                        &:hover {
-                            text-decoration: underline;
-                        }
-                    }
+                &__remaining {
+                    font-size: 14px;
+                    line-height: 20px;
+                    color: var(--c-white);
+                    opacity: 0.7;
                 }
             }
 
@@ -329,41 +239,15 @@ onMounted(() => {
                 border-radius: 4px;
                 position: relative;
                 background-color: var(--c-grey-11);
-                overflow: hidden;
 
                 &__fill {
                     position: absolute;
                     top: 0;
                     left: 0;
                     bottom: 0;
-                    background-color: var(--c-orange-1);
+                    background-color: var(--c-blue-1);
                     border-radius: 4px;
                     max-width: 100%;
-                }
-
-                &__indeterminate {
-                    position: absolute;
-                    top: 0;
-                    left: 0;
-                    bottom: 0;
-                    background-color: var(--c-orange-1);
-                    border-radius: 4px;
-                    max-width: 100%;
-                    width: 50%;
-                    animation: indeterminate-progress-bar;
-                    animation-duration: 2s;
-                    animation-iteration-count: infinite;
-                }
-
-                @keyframes indeterminate-progress-bar {
-
-                    from {
-                        left: -50%;
-                    }
-
-                    to {
-                        left: 100%;
-                    }
                 }
             }
         }
@@ -391,18 +275,6 @@ onMounted(() => {
         border-radius: 0 0 8px 8px;
         max-height: 185px;
         overflow-y: auto;
-
-        &__completed {
-            cursor: pointer;
-
-            &:hover {
-                background-color: var(--c-grey-1);
-            }
-
-            &:active {
-                background-color: var(--c-grey-2);
-            }
-        }
     }
 }
 

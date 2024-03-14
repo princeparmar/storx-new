@@ -1,4 +1,4 @@
-// Copyright (C) 2020 Storx Labs, Inc.
+// Copyright (C) 2020 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -78,7 +78,7 @@
                     <CLIIcon />
                 </div>
                 <div class="access-grants__flows-area__title">API Key</div>
-                <div class="access-grants__flows-area__summary">Use it for generating S3 credentials and access grants programmatically. </div>
+                <div class="access-grants__flows-area__summary">Use it for generating S3 credentials and access grants programatically. </div>
                 <br>
                 <div class="access-grants__flows-area__button-container">
                     <a
@@ -110,7 +110,12 @@
         <div class="access-grants__header-container">
             <h3 class="access-grants__header-container__title">My Accesses</h3>
             <div class="access-grants__header-container__divider" />
-            <VSearch :search="fetch" />
+            <VHeader
+                class="access-header-component"
+                placeholder="Accesses"
+                :search="fetch"
+                style-type="access"
+            />
         </div>
         <VLoader v-if="areGrantsFetching" width="100px" height="100px" class="grants-loader" />
         <div class="access-grants-items">
@@ -156,8 +161,9 @@ import { useRouter } from 'vue-router';
 
 import AccessGrantsHeader from './AccessGrantsHeader.vue';
 
-import { RouteConfig } from '@/types/router';
+import { RouteConfig } from '@/router';
 import { AccessGrant } from '@/types/accessGrants';
+import { AnalyticsHttpApi } from '@/api/analytics';
 import { AnalyticsErrorEventSource, AnalyticsEvent } from '@/utils/constants/analyticsEventNames';
 import { AccessType } from '@/types/createAccessGrant';
 import { useNotify } from '@/utils/hooks';
@@ -165,13 +171,13 @@ import { useAccessGrantsStore } from '@/store/modules/accessGrantsStore';
 import { useProjectsStore } from '@/store/modules/projectsStore';
 import { useAppStore } from '@/store/modules/appStore';
 import { MODALS } from '@/utils/constants/appStatePopUps';
-import { useAnalyticsStore } from '@/store/modules/analyticsStore';
+import { useConfigStore } from '@/store/modules/configStore';
 
 import AccessGrantsItem from '@/components/accessGrants/AccessGrantsItem.vue';
 import VButton from '@/components/common/VButton.vue';
 import VLoader from '@/components/common/VLoader.vue';
+import VHeader from '@/components/common/VHeader.vue';
 import VTable from '@/components/common/VTable.vue';
-import VSearch from '@/components/common/VSearch.vue';
 
 import AccessGrantsIcon from '@/../static/images/accessGrants/accessGrantsIcon.svg';
 import CLIIcon from '@/../static/images/accessGrants/cli.svg';
@@ -179,10 +185,12 @@ import S3Icon from '@/../static/images/accessGrants/s3.svg';
 
 const FIRST_PAGE = 1;
 
-const analyticsStore = useAnalyticsStore();
+const analytics: AnalyticsHttpApi = new AnalyticsHttpApi();
+
 const appStore = useAppStore();
 const agStore = useAccessGrantsStore();
 const projectsStore = useProjectsStore();
+const configStore = useConfigStore();
 const notify = useNotify();
 const router = useRouter();
 
@@ -243,8 +251,7 @@ async function onPageClick(index: number, limit: number): Promise<void> {
     try {
         await agStore.getAccessGrants(index, projectsStore.state.selectedProject.id, limit);
     } catch (error) {
-        error.message = `Unable to fetch Access Grants. ${error.message}`;
-        notify.notifyError(error, AnalyticsErrorEventSource.ACCESS_GRANTS_PAGE);
+        await notify.error(`Unable to fetch Access Grants. ${error.message}`, AnalyticsErrorEventSource.ACCESS_GRANTS_PAGE);
     }
 }
 
@@ -280,8 +287,7 @@ async function fetch(searchQuery: string): Promise<void> {
     try {
         await agStore.getAccessGrants(FIRST_PAGE, projectsStore.state.selectedProject.id);
     } catch (error) {
-        error.message = `Unable to fetch accesses: ${error.message}`;
-        notify.notifyError(error, AnalyticsErrorEventSource.ACCESS_GRANTS_PAGE);
+        notify.error(`Unable to fetch accesses: ${error.message}`, AnalyticsErrorEventSource.ACCESS_GRANTS_PAGE);
     }
 }
 
@@ -289,7 +295,7 @@ async function fetch(searchQuery: string): Promise<void> {
  * Access grant button click.
  */
 function accessGrantClick(): void {
-    analyticsStore.eventTriggered(AnalyticsEvent.CREATE_ACCESS_GRANT_CLICKED);
+    analytics.eventTriggered(AnalyticsEvent.CREATE_ACCESS_GRANT_CLICKED);
     trackPageVisit(RouteConfig.AccessGrants.with(RouteConfig.CreateAccessModal).path);
     router.push({
         name: RouteConfig.CreateAccessModal.name,
@@ -301,7 +307,7 @@ function accessGrantClick(): void {
  * S3 Access button click..
  */
 function s3Click(): void {
-    analyticsStore.eventTriggered(AnalyticsEvent.CREATE_S3_CREDENTIALS_CLICKED);
+    analytics.eventTriggered(AnalyticsEvent.CREATE_S3_CREDENTIALS_CLICKED);
     trackPageVisit(RouteConfig.AccessGrants.with(RouteConfig.CreateAccessModal).path);
     router.push({
         name: RouteConfig.CreateAccessModal.name,
@@ -313,7 +319,7 @@ function s3Click(): void {
  * CLI Access button click.
  */
 function cliClick(): void {
-    analyticsStore.eventTriggered(AnalyticsEvent.CREATE_KEYS_FOR_CLI_CLICKED);
+    analytics.eventTriggered(AnalyticsEvent.CREATE_KEYS_FOR_CLI_CLICKED);
     trackPageVisit(RouteConfig.AccessGrants.with(RouteConfig.CreateAccessModal).path);
     router.push({
         name: RouteConfig.CreateAccessModal.name,
@@ -325,16 +331,20 @@ function cliClick(): void {
  * Sends "trackPageVisit" event to segment and opens link.
  */
 function trackPageVisit(link: string): void {
-    analyticsStore.pageVisit(link);
+    analytics.pageVisit(link);
 }
 
 onMounted(async () => {
+    if (configStore.state.config.allProjectsDashboard && !projectsStore.state.selectedProject.id) {
+        await router.push(RouteConfig.AllProjectsDashboard.path);
+        return;
+    }
+
     try {
         await agStore.getAccessGrants(FIRST_PAGE, projectsStore.state.selectedProject.id);
         areGrantsFetching.value = false;
     } catch (error) {
-        error.message = `Unable to fetch Access Grants. ${error.message}`;
-        notify.notifyError(error, AnalyticsErrorEventSource.ACCESS_GRANTS_PAGE);
+        await notify.error(`Unable to fetch Access Grants. ${error.message}`, AnalyticsErrorEventSource.ACCESS_GRANTS_PAGE);
     }
 });
 
@@ -362,6 +372,7 @@ onBeforeUnmount(() => {
 
     .access-grants {
         position: relative;
+        height: calc(100% - 95px);
         padding: 40px 30px 55px;
         font-family: 'font_regular', sans-serif;
 
@@ -459,6 +470,11 @@ onBeforeUnmount(() => {
         }
 
         .access-grants-items {
+            padding-bottom: 55px;
+
+            @media screen and (width <= 1150px) {
+                margin-top: -45px;
+            }
 
             &__content {
                 margin-top: 20px;
@@ -496,7 +512,12 @@ onBeforeUnmount(() => {
                 height: 1px;
                 width: auto;
                 background-color: #dadfe7;
-                margin: 13px 0 16px;
+                margin-top: 10px;
+            }
+
+            &__access-header-component {
+                height: 55px !important;
+                margin-top: 15px;
             }
         }
     }

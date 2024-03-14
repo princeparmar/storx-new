@@ -1,4 +1,4 @@
-// Copyright (C) 2021 Storx Labs, Inc.
+// Copyright (C) 2021 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -126,8 +126,8 @@
 <script setup lang="ts">
 import { useRouter } from 'vue-router';
 
-import { RouteConfig } from '@/types/router';
-import { useAnalyticsStore } from '@/store/modules/analyticsStore';
+import { RouteConfig } from '@/router';
+import { AnalyticsHttpApi } from '@/api/analytics';
 
 import CLIFlowContainer from '@/components/onboardingTour/steps/common/CLIFlowContainer.vue';
 import OSContainer from '@/components/onboardingTour/steps/common/OSContainer.vue';
@@ -137,13 +137,13 @@ import Icon from '@/../static/images/onboardingTour/cliSetupStep.svg';
 
 const router = useRouter();
 
-const analyticsStore = useAnalyticsStore();
+const analytics: AnalyticsHttpApi = new AnalyticsHttpApi();
 
 /**
  * Holds on back button click logic.
  */
 async function onBackClick(): Promise<void> {
-    analyticsStore.pageVisit(RouteConfig.OnboardingTour.with(RouteConfig.OnbCLIStep.with(RouteConfig.APIKey)).path);
+    analytics.pageVisit(RouteConfig.OnboardingTour.with(RouteConfig.OnbCLIStep.with(RouteConfig.APIKey)).path);
     await router.push(RouteConfig.OnboardingTour.with(RouteConfig.OnbCLIStep.with(RouteConfig.APIKey)).path);
 }
 
@@ -151,7 +151,7 @@ async function onBackClick(): Promise<void> {
  * Holds on next button click logic.
  */
 async function onNextClick(): Promise<void> {
-    analyticsStore.pageVisit(RouteConfig.OnboardingTour.with(RouteConfig.OnbCLIStep.with(RouteConfig.CLISetup)).path);
+    analytics.pageVisit(RouteConfig.OnboardingTour.with(RouteConfig.OnbCLIStep.with(RouteConfig.CLISetup)).path);
     await router.push(RouteConfig.OnboardingTour.with(RouteConfig.OnbCLIStep.with(RouteConfig.CLISetup)).path);
 }
 </script>

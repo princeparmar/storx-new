@@ -1,11 +1,11 @@
-// Copyright (C) 2023 Storx Labs, Inc.
+// Copyright (C) 2023 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
     <div class="empty-project-item">
         <div class="empty-project-item__header">
             <div class="empty-project-item__header__tag">
-                <box-icon class="empty-project-item__header__tag__icon" />
+                <box-icon />
 
                 <span> Project </span>
             </div>
@@ -31,27 +31,27 @@
 <script setup lang="ts">
 import { AnalyticsEvent } from '@/utils/constants/analyticsEventNames';
 import { User } from '@/types/users';
-import { RouteConfig } from '@/types/router';
+import { AnalyticsHttpApi } from '@/api/analytics';
+import { RouteConfig } from '@/router';
 import { MODALS } from '@/utils/constants/appStatePopUps';
 import { useUsersStore } from '@/store/modules/usersStore';
 import { useAppStore } from '@/store/modules/appStore';
 import { useProjectsStore } from '@/store/modules/projectsStore';
-import { useAnalyticsStore } from '@/store/modules/analyticsStore';
 
 import VButton from '@/components/common/VButton.vue';
 
-import BoxIcon from '@/../static/images/navigation/project.svg';
+import BoxIcon from '@/../static/images/allDashboard/box.svg';
 
-const analyticsStore = useAnalyticsStore();
 const appStore = useAppStore();
 const usersStore = useUsersStore();
 const projectsStore = useProjectsStore();
+const analytics = new AnalyticsHttpApi();
 
 /**
  * Route to create project page.
  */
 function onCreateProjectClicked(): void {
-    analyticsStore.eventTriggered(AnalyticsEvent.CREATE_NEW_CLICKED);
+    analytics.eventTriggered(AnalyticsEvent.CREATE_NEW_CLICKED);
 
     const user: User = usersStore.state.user;
     const ownProjectsCount: number = projectsStore.projectsCount(user.id);
@@ -59,7 +59,7 @@ function onCreateProjectClicked(): void {
     if (!user.paidTier && user.projectLimit === ownProjectsCount) {
         appStore.updateActiveModal(MODALS.createProjectPrompt);
     } else {
-        analyticsStore.pageVisit(RouteConfig.CreateProject.path);
+        analytics.pageVisit(RouteConfig.CreateProject.path);
         appStore.updateActiveModal(MODALS.newCreateProject);
     }
 }
@@ -85,26 +85,22 @@ function onCreateProjectClicked(): void {
             align-items: center;
             gap: 5px;
             padding: 4px 8px;
-            border: 1px solid var(--c-light-orange-4);
+            border: 1px solid var(--c-light-blue-4);
             border-radius: 24px;
-            color: var(--c-orange-4);
+            color: var(--c-blue-4);
             font-size: 12px;
             font-family: 'font_regular', sans-serif;
 
-            &__icon {
-                width: 12px;
-                height: 12px;
-
-                :deep(path) {
-                    fill: var(--c-orange-4);
-                }
+            & :deep(svg path) {
+                fill: var(--c-blue-4);
             }
         }
     }
 
     &__title {
         margin-top: 16px;
-        font-family: 'font_bold', sans-serif;
+        font-weight: bold;
+        font-family: 'font_regular', sans-serif;
         font-size: 24px;
         line-height: 31px;
         width: 100%;

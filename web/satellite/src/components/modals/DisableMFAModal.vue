@@ -1,4 +1,4 @@
-// Copyright (C) 2021 Storx Labs, Inc.
+// Copyright (C) 2021 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -108,7 +108,7 @@ async function disable(): Promise<void> {
 
         closeModal();
     } catch (error) {
-        notify.notifyError(error, AnalyticsErrorEventSource.DISABLE_MFA_MODAL);
+        await notify.error(error.message, AnalyticsErrorEventSource.DISABLE_MFA_MODAL);
         isError.value = true;
     }
 

@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Storx Labs, Inc.
+// Copyright (C) 2023 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -16,7 +16,7 @@
         </div>
         <div class="blured-container__wrap" :class="{justify: !isMnemonic}">
             <p v-if="isMnemonic" tabindex="0" class="blured-container__wrap__mnemonic" @keyup.space="onCopy">{{ value }}</p>
-            <p v-else tabindex="0" class="blured-container__wrap__text" :class="{ shown: isValueShown }" @keyup.space="onCopy">{{ value }}</p>
+            <p v-else tabindex="0" class="blured-container__wrap__text" @keyup.space="onCopy">{{ value }}</p>
             <div
                 v-if="!isMnemonic"
                 tabindex="0"
@@ -46,7 +46,7 @@ import { ref } from 'vue';
 
 import { useNotify } from '@/utils/hooks';
 import { AnalyticsEvent } from '@/utils/constants/analyticsEventNames';
-import { useAnalyticsStore } from '@/store/modules/analyticsStore';
+import { AnalyticsHttpApi } from '@/api/analytics';
 
 import VButton from '@/components/common/VButton.vue';
 import VInfo from '@/components/common/VInfo.vue';
@@ -67,9 +67,9 @@ const props = withDefaults(defineProps<{
 
 const notify = useNotify();
 
-const analyticsStore = useAnalyticsStore();
-
 const isValueShown = ref<boolean>(false);
+
+const analytics: AnalyticsHttpApi = new AnalyticsHttpApi();
 
 /**
  * Makes blurred value to be shown.
@@ -83,7 +83,7 @@ function showValue(): void {
  */
 function onCopy(): void {
     navigator.clipboard.writeText(props.value);
-    analyticsStore.eventTriggered(AnalyticsEvent.COPY_TO_CLIPBOARD_CLICKED);
+    analytics.eventTriggered(AnalyticsEvent.COPY_TO_CLIPBOARD_CLICKED);
     notify.success(`${props.title} was copied successfully`);
 }
 </script>
@@ -135,12 +135,12 @@ function onCopy(): void {
 
         &__text {
             font-size: 14px;
+            line-height: 20px;
             color: var(--c-grey-7);
-            margin-right: 16px;
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
-            line-height: 24px;
+            margin-right: 16px;
         }
 
         &__copy {
@@ -158,14 +158,6 @@ function onCopy(): void {
             backdrop-filter: blur(10px);
         }
     }
-}
-
-.shown {
-    white-space: unset;
-    text-overflow: unset;
-    overflow-wrap: break-word;
-    text-align: left;
-    font-family: 'Courier', monospace;
 }
 
 .justify {

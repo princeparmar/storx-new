@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Storx Labs, Inc.
+// Copyright (C) 2023 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -47,21 +47,22 @@
 <script setup lang="ts">
 import { ref } from 'vue';
 
-import { AnalyticsErrorEventSource, AnalyticsEvent } from '@/utils/constants/analyticsEventNames';
+import AccessEncryptionIcon from '../../../static/images/accessGrants/newCreateFlow/accessEncryption.svg';
+
+import { AnalyticsHttpApi } from '@/api/analytics';
+import { AnalyticsErrorEventSource } from '@/utils/constants/analyticsEventNames';
 import { useAppStore } from '@/store/modules/appStore';
 import { useBucketsStore } from '@/store/modules/bucketsStore';
 import { MODALS } from '@/utils/constants/appStatePopUps';
-import { useAnalyticsStore } from '@/store/modules/analyticsStore';
 
 import VModal from '@/components/common/VModal.vue';
 import VInput from '@/components/common/VInput.vue';
 import VButton from '@/components/common/VButton.vue';
 
-import AccessEncryptionIcon from '@/../static/images/accessGrants/newCreateFlow/accessEncryption.svg';
-
-const analyticsStore = useAnalyticsStore();
 const bucketsStore = useBucketsStore();
 const appStore = useAppStore();
+
+const analytics: AnalyticsHttpApi = new AnalyticsHttpApi();
 
 const enterError = ref<string>('');
 const passphrase = ref<string>('');
@@ -72,14 +73,10 @@ const passphrase = ref<string>('');
 function onContinue(): void {
     if (!passphrase.value) {
         enterError.value = 'Passphrase can\'t be empty';
-        analyticsStore.errorEventTriggered(AnalyticsErrorEventSource.OPEN_BUCKET_MODAL);
+        analytics.errorEventTriggered(AnalyticsErrorEventSource.OPEN_BUCKET_MODAL);
 
         return;
     }
-
-    analyticsStore.eventTriggered(AnalyticsEvent.PASSPHRASE_CREATED, {
-        method: 'enter',
-    });
 
     bucketsStore.setPassphrase(passphrase.value);
     bucketsStore.setPromptForPassphrase(false);

@@ -71,7 +71,7 @@ func (endpoint *Endpoint) CreateBucket(ctx context.Context, req *pb.BucketCreate
 	}
 	endpoint.usageTracking(keyInfo, req.Header, fmt.Sprintf("%T", req))
 
-	err = endpoint.validateBucketName(req.Name)
+	err = endpoint.validateBucket(ctx, req.Name)
 	if err != nil {
 		return nil, rpcstatus.Error(rpcstatus.InvalidArgument, err.Error())
 	}
@@ -83,7 +83,7 @@ func (endpoint *Endpoint) CreateBucket(ctx context.Context, req *pb.BucketCreate
 		return nil, rpcstatus.Error(rpcstatus.Internal, err.Error())
 	} else if exists {
 		// When the bucket exists, try to set the attribution.
-		if err := endpoint.ensureAttribution(ctx, req.Header, keyInfo, req.GetName(), nil, true); err != nil {
+		if err := endpoint.ensureAttribution(ctx, req.Header, keyInfo, req.GetName(), nil); err != nil {
 			return nil, err
 		}
 		return nil, rpcstatus.Error(rpcstatus.AlreadyExists, "bucket already exists")
@@ -110,7 +110,6 @@ func (endpoint *Endpoint) CreateBucket(ctx context.Context, req *pb.BucketCreate
 	if err != nil {
 		return nil, rpcstatus.Error(rpcstatus.InvalidArgument, err.Error())
 	}
-	bucketReq.Placement = project.DefaultPlacement
 
 	bucket, err := endpoint.buckets.CreateBucket(ctx, bucketReq)
 	if err != nil {
@@ -119,7 +118,7 @@ func (endpoint *Endpoint) CreateBucket(ctx context.Context, req *pb.BucketCreate
 	}
 
 	// Once we have created the bucket, we can try setting the attribution.
-	if err := endpoint.ensureAttribution(ctx, req.Header, keyInfo, req.GetName(), project.UserAgent, true); err != nil {
+	if err := endpoint.ensureAttribution(ctx, req.Header, keyInfo, req.GetName(), project.UserAgent); err != nil {
 		return nil, err
 	}
 
@@ -180,7 +179,7 @@ func (endpoint *Endpoint) DeleteBucket(ctx context.Context, req *pb.BucketDelete
 	}
 	endpoint.usageTracking(keyInfo, req.Header, fmt.Sprintf("%T", req))
 
-	err = endpoint.validateBucketNameLength(req.Name)
+	err = endpoint.validateBucket(ctx, req.Name)
 	if err != nil {
 		return nil, rpcstatus.Error(rpcstatus.InvalidArgument, err.Error())
 	}
@@ -264,7 +263,7 @@ func (endpoint *Endpoint) deleteBucketNotEmpty(ctx context.Context, projectID uu
 	deletedCount, err := endpoint.deleteBucketObjects(ctx, projectID, bucketName)
 	if err != nil {
 		endpoint.log.Error("internal", zap.Error(err))
-		return nil, 0, rpcstatus.Error(rpcstatus.Internal, "internal error")
+		return nil, 0, rpcstatus.Error(rpcstatus.Internal, err.Error())
 	}
 
 	err = endpoint.deleteBucket(ctx, bucketName, projectID)
@@ -276,7 +275,7 @@ func (endpoint *Endpoint) deleteBucketNotEmpty(ctx context.Context, projectID uu
 			return bucketName, 0, nil
 		}
 		endpoint.log.Error("internal", zap.Error(err))
-		return nil, deletedCount, rpcstatus.Error(rpcstatus.Internal, "internal error")
+		return nil, deletedCount, rpcstatus.Error(rpcstatus.Internal, err.Error())
 	}
 
 	return bucketName, deletedCount, nil
@@ -289,6 +288,10 @@ func (endpoint *Endpoint) deleteBucketObjects(ctx context.Context, projectID uui
 	bucketLocation := metabase.BucketLocation{ProjectID: projectID, BucketName: string(bucketName)}
 	deletedObjects, err := endpoint.metabase.DeleteBucketObjects(ctx, metabase.DeleteBucketObjects{
 		Bucket: bucketLocation,
+		DeletePieces: func(ctx context.Context, deleted []metabase.DeletedSegmentInfo) error {
+			endpoint.deleteSegmentPieces(ctx, deleted)
+			return nil
+		},
 	})
 
 	return deletedObjects, Error.Wrap(err)

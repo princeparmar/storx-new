@@ -1,4 +1,4 @@
-// Copyright (C) 2019 Storx Labs, Inc.
+// Copyright (C) 2019 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 import { DEFAULT_PAGE_LIMIT } from '@/types/pagination';
@@ -43,7 +43,7 @@ export interface ProjectsApi {
      * Get project limits.
      *
      * @param projectId- project ID
-     * @throws Error
+     * throws Error
      */
     getLimits(projectId: string): Promise<ProjectLimits>;
 
@@ -51,21 +51,21 @@ export interface ProjectsApi {
      * Get project salt
      *
      * @param projectID - project ID
-     * @throws Error
+     * throws Error
      */
     getSalt(projectID: string): Promise<string>;
 
     /**
      * Get project limits.
      *
-     * @throws Error
+     * throws Error
      */
     getTotalLimits(): Promise<ProjectLimits>;
 
     /**
      * Get project daily usage by specific date range.
      *
-     * @throws Error
+     * throws Error
      */
     getDailyUsage(projectID: string, start: Date, end: Date): Promise<ProjectsStorageBandwidthDaily>;
 
@@ -76,20 +76,6 @@ export interface ProjectsApi {
      * @throws Error
      */
     getOwnedProjects(cursor: ProjectsCursor): Promise<ProjectsPage>;
-
-    /**
-     * Returns a user's pending project member invitations.
-     *
-     * @throws Error
-     */
-    getUserInvitations(): Promise<ProjectInvitation[]>;
-
-    /**
-     * Handles accepting or declining a user's project member invitation.
-     *
-     * @throws Error
-     */
-    respondToInvitation(projectID: string, response: ProjectInvitationResponse): Promise<void>;
 }
 
 /**
@@ -238,35 +224,6 @@ export class ProjectsStorageBandwidthDaily {
 }
 
 /**
- * ProjectInvitation represents a pending project member invitation.
- */
-export class ProjectInvitation {
-    public constructor(
-        public projectID: string,
-        public projectName: string,
-        public projectDescription: string,
-        public inviterEmail: string,
-        public createdAt: Date,
-    ) {}
-
-    /**
-     * Returns created date as a local string.
-     */
-    public get invitedDate(): string {
-        const createdAt = new Date(this.createdAt);
-        return createdAt.toLocaleString('en-US', { year: 'numeric', month: '2-digit', day: 'numeric' });
-    }
-}
-
-/**
- * ProjectInvitationResponse represents a response to a project member invitation.
- */
-export enum ProjectInvitationResponse {
-    Decline,
-    Accept,
-}
-
-/**
  * ProjectUsageDateRange is used to describe project's usage by date range.
  */
 export interface ProjectUsageDateRange {
@@ -277,9 +234,4 @@ export interface ProjectUsageDateRange {
 export enum LimitToChange {
     Storage = 'Storage',
     Bandwidth = 'Bandwidth',
-}
-
-export enum FieldToChange {
-    Name = 'Name',
-    Description = 'Description',
 }

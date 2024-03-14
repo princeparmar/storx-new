@@ -22,7 +22,7 @@ func main() {
 	// definition for REST API
 	a := &apigen.API{
 		Version:     "v0",
-		Description: "Interacts with projects",
+		Description: "",
 		PackageName: "consoleapi",
 	}
 
@@ -35,7 +35,7 @@ func main() {
 			MethodName:  "GenCreateProject",
 			RequestName: "createProject",
 			Response:    &console.Project{},
-			Request:     console.UpsertProjectInfo{},
+			Request:     console.ProjectInfo{},
 		})
 
 		g.Patch("/update/{id}", &apigen.Endpoint{
@@ -44,7 +44,7 @@ func main() {
 			MethodName:  "GenUpdateProject",
 			RequestName: "updateProject",
 			Response:    console.Project{},
-			Request:     console.UpsertProjectInfo{},
+			Request:     console.ProjectInfo{},
 			PathParams: []apigen.Param{
 				apigen.NewParam("id", uuid.UUID{}),
 			},
@@ -152,7 +152,6 @@ func main() {
 	modroot := findModuleRootDir()
 	a.MustWriteGo(filepath.Join(modroot, "satellite", "console", "consoleweb", "consoleapi", "api.gen.go"))
 	a.MustWriteTS(filepath.Join(modroot, "web", "satellite", "src", "api", a.Version+".gen.ts"))
-	a.MustWriteDocs(filepath.Join(modroot, "satellite", "console", "consoleweb", "consoleapi", "apidocs.gen.md"))
 }
 
 func findModuleRootDir() string {

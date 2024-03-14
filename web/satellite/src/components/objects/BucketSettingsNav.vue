@@ -1,4 +1,4 @@
-// Copyright (C) 2022 Storx Labs, Inc.
+// Copyright (C) 2022 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -30,11 +30,10 @@
 import { computed, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
-import { RouteConfig } from '@/types/router';
+import { RouteConfig } from '@/router';
 import { MODALS } from '@/utils/constants/appStatePopUps';
 import { useAppStore } from '@/store/modules/appStore';
 import { useObjectBrowserStore } from '@/store/modules/objectBrowserStore';
-import { ShareType } from '@/types/browser';
 
 import ArrowDownIcon from '@/../static/images/common/dropIcon.svg';
 import DetailsIcon from '@/../static/images/objects/details.svg';
@@ -85,8 +84,7 @@ function onDetailsClick(): void {
  * Toggles share bucket modal.
  */
 function onShareBucketClick(): void {
-    appStore.setShareModalType(ShareType.Bucket);
-    appStore.updateActiveModal(MODALS.share);
+    appStore.updateActiveModal(MODALS.shareBucket);
     isDropdownOpen.value = false;
 }
 </script>
@@ -114,7 +112,7 @@ function onShareBucketClick(): void {
     &:hover,
     &:active,
     &:focus {
-        border: 1px solid var(--c-orange-3);
+        border: 1px solid var(--c-blue-3);
     }
 
     &__button {
@@ -134,7 +132,7 @@ function onShareBucketClick(): void {
         &__icon.active {
 
             :deep(path) {
-                fill: var(--c-orange-3);
+                fill: var(--c-blue-3);
             }
         }
     }
@@ -168,10 +166,10 @@ function onShareBucketClick(): void {
             &:hover {
                 background-color: #f4f5f7;
                 font-family: 'font_medium', sans-serif;
-                color: var(--c-orange-3);
+                color: var(--c-blue-3);
 
                 :deep(path) {
-                    fill: var(--c-orange-3);
+                    fill: var(--c-blue-3);
                 }
             }
         }
@@ -188,7 +186,7 @@ function onShareBucketClick(): void {
     &__arrow.hovered {
 
         :deep(path) {
-            fill: var(--c-orange-3);
+            fill: var(--c-blue-3);
         }
     }
 }

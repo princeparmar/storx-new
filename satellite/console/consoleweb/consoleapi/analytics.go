@@ -4,7 +4,6 @@
 package consoleapi
 
 import (
-	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -37,10 +36,9 @@ func NewAnalytics(log *zap.Logger, service *console.Service, a *analytics.Servic
 }
 
 type eventTriggeredBody struct {
-	EventName        string            `json:"eventName"`
-	Link             string            `json:"link"`
-	ErrorEventSource string            `json:"errorEventSource"`
-	Props            map[string]string `json:"props"`
+	EventName        string `json:"eventName"`
+	Link             string `json:"link"`
+	ErrorEventSource string `json:"errorEventSource"`
 }
 
 type pageVisitBody struct {
@@ -55,17 +53,17 @@ func (a *Analytics) EventTriggered(w http.ResponseWriter, r *http.Request) {
 
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		a.serveJSONError(ctx, w, http.StatusInternalServerError, err)
+		a.serveJSONError(w, http.StatusInternalServerError, err)
 	}
 	var et eventTriggeredBody
 	err = json.Unmarshal(body, &et)
 	if err != nil {
-		a.serveJSONError(ctx, w, http.StatusInternalServerError, err)
+		a.serveJSONError(w, http.StatusInternalServerError, err)
 	}
 
 	user, err := console.GetUser(ctx)
 	if err != nil {
-		a.serveJSONError(ctx, w, http.StatusUnauthorized, err)
+		a.serveJSONError(w, http.StatusUnauthorized, err)
 		return
 	}
 
@@ -74,7 +72,7 @@ func (a *Analytics) EventTriggered(w http.ResponseWriter, r *http.Request) {
 	} else if et.Link != "" {
 		a.analytics.TrackLinkEvent(et.EventName, user.ID, user.Email, et.Link)
 	} else {
-		a.analytics.TrackEvent(et.EventName, user.ID, user.Email, et.Props)
+		a.analytics.TrackEvent(et.EventName, user.ID, user.Email)
 	}
 	w.WriteHeader(http.StatusOK)
 }
@@ -87,17 +85,17 @@ func (a *Analytics) PageEventTriggered(w http.ResponseWriter, r *http.Request) {
 
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		a.serveJSONError(ctx, w, http.StatusInternalServerError, err)
+		a.serveJSONError(w, http.StatusInternalServerError, err)
 	}
 	var pv pageVisitBody
 	err = json.Unmarshal(body, &pv)
 	if err != nil {
-		a.serveJSONError(ctx, w, http.StatusInternalServerError, err)
+		a.serveJSONError(w, http.StatusInternalServerError, err)
 	}
 
 	user, err := console.GetUser(ctx)
 	if err != nil {
-		a.serveJSONError(ctx, w, http.StatusUnauthorized, err)
+		a.serveJSONError(w, http.StatusUnauthorized, err)
 		return
 	}
 
@@ -107,6 +105,6 @@ func (a *Analytics) PageEventTriggered(w http.ResponseWriter, r *http.Request) {
 }
 
 // serveJSONError writes JSON error to response output stream.
-func (a *Analytics) serveJSONError(ctx context.Context, w http.ResponseWriter, status int, err error) {
-	web.ServeJSONError(ctx, a.log, w, status, err)
+func (a *Analytics) serveJSONError(w http.ResponseWriter, status int, err error) {
+	web.ServeJSONError(a.log, w, status, err)
 }

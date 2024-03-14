@@ -48,7 +48,6 @@ Requires setting `Authorization` header for requests.
                 * [POST /api/projects/{project-id}/buckets/{bucket-name}/geofence?region={value}](#post-apiprojectsproject-idbucketsbucket-namegeofenceregionvalue)
                 * [DELETE /api/projects/{project-id}/buckets/{bucket-name}/geofence](#delete-apiprojectsproject-idbucketsbucket-namegeofence)
         * [APIKey Management](#apikey-management)
-            * [GET /api/apikeys/{apikey}](#get-apiapikeysapikey)
             * [DELETE /api/apikeys/{apikey}](#delete-apiapikeysapikey)
 
 <!-- tocstop -->
@@ -178,22 +177,6 @@ Freezes a user account so no uploads or downloads may occur.
 #### DELETE /api/users/{user-email}/freeze
 
 Unfreezes a user account so uploads and downloads may resume.
-
-#### PATCH /api/users/{user-email}/geofence
-
-Sets the account level geofence for the user.
-
-Example request:
-
-```json
-{
-  "region": "US"
-}
-```
-
-#### DELETE /api/users/{user-email}/geofence
-
-Removes the account level geofence for the user.
 
 ### OAuth Client Management
 
@@ -418,32 +401,6 @@ values for the `region` parameter are:
 Removes the geofencing configuration for the specified bucket. The bucket MUST be empty in order for this to work.
 
 ### APIKey Management
-
-#### GET /api/apikeys/{apikey}
-
-Gets information on the given apikey.
-
-A successful response body:
-
-```json
-{
-  "api_key": {
-    "id": "12345678-1234-1234-1234-123456789abc",
-    "name": "my key",
-    "createdAt": "2020-05-19T00:34:13.265761+02:00"
-  },
-  "project": {
-    "id": "12345678-1234-1234-1234-123456789abc",
-    "name": "My Project",
-  },
-  "owner": {
-    "id": "12345678-1234-1234-1234-123456789abc",
-    "fullName": "test user",
-    "email": "bob@example.test",
-    "paidTier": true
-  }
-}
-```
 
 #### DELETE /api/apikeys/{apikey}
 

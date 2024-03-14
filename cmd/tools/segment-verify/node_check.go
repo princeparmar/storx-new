@@ -15,7 +15,6 @@ import (
 	"storj.io/common/uuid"
 	"storj.io/private/process"
 	"storj.io/storj/satellite/metabase"
-	"storj.io/storj/satellite/nodeselection"
 	"storj.io/storj/satellite/overlay"
 	"storj.io/storj/satellite/satellitedb"
 )
@@ -79,7 +78,7 @@ type NodeCheckConfig struct {
 
 // NodeCheckOverlayDB contains dependencies from overlay that are needed for the processing.
 type NodeCheckOverlayDB interface {
-	IterateAllContactedNodes(context.Context, func(context.Context, *nodeselection.SelectedNode) error) error
+	IterateAllContactedNodes(context.Context, func(context.Context, *overlay.SelectedNode) error) error
 	IterateAllNodeDossiers(context.Context, func(context.Context, *overlay.NodeDossier) error) error
 }
 

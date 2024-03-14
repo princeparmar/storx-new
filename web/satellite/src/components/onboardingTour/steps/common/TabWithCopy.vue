@@ -1,9 +1,9 @@
-// Copyright (C) 2021 Storx Labs, Inc.
+// Copyright (C) 2021 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
     <div class="tab-copy">
-        <p class="tab-copy__value" :title="value" :aria-roledescription="ariaRoleDescription">{{ value }}</p>
+        <p class="tab-copy__value" :aria-roledescription="ariaRoleDescription">{{ value }}</p>
         <CopyIcon class="tab-copy__icon" @click="onCopyClick" />
     </div>
 </template>

@@ -1,4 +1,4 @@
-// Copyright (C) 2022 Storx Labs, Inc.
+// Copyright (C) 2022 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -15,7 +15,7 @@
 import { computed } from 'vue';
 import { useRoute } from 'vue-router';
 
-import { RouteConfig } from '@/types/router';
+import { RouteConfig } from '@/router';
 
 const route = useRoute();
 
@@ -80,10 +80,6 @@ const fill = computed((): string => {
             height: 16px;
             background: var(--c-grey-3);
             border-radius: 8px;
-
-            @media screen and (width <= 600px) {
-                width: 100%;
-            }
 
             &__fill {
                 height: 16px;

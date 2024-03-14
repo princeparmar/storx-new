@@ -1,21 +1,11 @@
-// Copyright (C) 2023 Storx Labs, Inc.
+// Copyright (C) 2023 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
-    <UpgradeAccountWrapper :title="title">
+    <UpgradeAccountWrapper title="Add STORJ Tokens">
         <template #content>
             <div class="add-tokens">
-                <p class="add-tokens__info">
-                    Send more than $10 in STORJ Tokens to the following deposit address to upgrade to a Pro account.
-                    Your account will be upgraded after your transaction receives {{ neededConfirmations }} confirmations.
-                    If your account is not automatically upgraded, please fill out this
-                    <a
-                        class="add-tokens__info__link"
-                        href="https://supportdcs.storj.io/hc/en-us/requests/new?ticket_form_id=360000683212"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                    >limit increase request form</a>.
-                </p>
+                <p class="add-tokens__info">Send more than $10 in STORJ Tokens to the following deposit address.</p>
                 <canvas ref="canvas" />
                 <div class="add-tokens__label">
                     <h2 class="add-tokens__label__text">Deposit Address</h2>
@@ -52,81 +42,42 @@
                     />
                 </div>
                 <div class="add-tokens__divider" />
-                <AddTokensStepBanner
-                    :is-default="viewState === ViewState.Default"
-                    :is-pending="viewState === ViewState.Pending"
-                    :is-success="viewState === ViewState.Success"
-                    :pending-payments="pendingPayments"
-                />
+                <div class="add-tokens__send-info">
+                    <h2 class="add-tokens__send-info__title">Send only STORJ Tokens to this deposit address.</h2>
+                    <p class="add-tokens__send-info__message">
+                        Sending anything else may result in the loss of your deposit.
+                    </p>
+                </div>
             </div>
         </template>
     </UpgradeAccountWrapper>
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import QRCode from 'qrcode';
 
 import { useBillingStore } from '@/store/modules/billingStore';
-import { useConfigStore } from '@/store/modules/configStore';
 import { useNotify } from '@/utils/hooks';
-import { PaymentStatus, PaymentWithConfirmations, Wallet } from '@/types/payments';
+import { Wallet } from '@/types/payments';
 import { AnalyticsErrorEventSource } from '@/utils/constants/analyticsEventNames';
 
 import UpgradeAccountWrapper from '@/components/modals/upgradeAccountFlow/UpgradeAccountWrapper.vue';
 import VButton from '@/components/common/VButton.vue';
 import VInfo from '@/components/common/VInfo.vue';
-import AddTokensStepBanner from '@/components/modals/upgradeAccountFlow/AddTokensStepBanner.vue';
 
 import InfoIcon from '@/../static/images/payments/infoIcon.svg';
 
-enum ViewState {
-    Default,
-    Pending,
-    Success,
-}
-
-const configStore = useConfigStore();
 const billingStore = useBillingStore();
 const notify = useNotify();
 
 const canvas = ref<HTMLCanvasElement>();
-const intervalID = ref<NodeJS.Timer>();
-const viewState = ref<ViewState>(ViewState.Default);
 
 /**
  * Returns wallet from store.
  */
 const wallet = computed((): Wallet => {
     return billingStore.state.wallet as Wallet;
-});
-
-/**
- * Returns needed transaction confirmations from config store.
- */
-const neededConfirmations = computed((): number => {
-    return configStore.state.config.neededTransactionConfirmations;
-});
-
-/**
- * Returns pending payments from store.
- */
-const pendingPayments = computed((): PaymentWithConfirmations[] => {
-    return billingStore.state.pendingPaymentsWithConfirmations;
-});
-
-/**
- * Returns title based on payment statuses.
- */
-const title = computed((): string => {
-    switch (viewState.value) {
-    case ViewState.Pending:
-        return 'Transaction pending...';
-    case ViewState.Success:
-        return 'Transaction Successful';
-    default:
-        return 'Add STORJ Tokens';
-    }
 });
 
 /**
@@ -138,38 +89,10 @@ function onCopyAddressClick(): void {
 }
 
 /**
- * Sets current view state depending on payment statuses.
- */
-function setViewState(): void {
-    switch (true) {
-    case pendingPayments.value.some(p => p.status === PaymentStatus.Pending):
-        viewState.value = ViewState.Pending;
-        break;
-    case pendingPayments.value.some(p => p.status === PaymentStatus.Confirmed):
-        viewState.value = ViewState.Success;
-        break;
-    default:
-        viewState.value = ViewState.Default;
-    }
-}
-
-watch(() => pendingPayments.value, () => {
-    setViewState();
-}, { deep: true });
-
-/**
  * Mounted lifecycle hook after initial render.
  * Renders QR code.
  */
 onMounted(async (): Promise<void> => {
-    setViewState();
-
-    intervalID.value = setInterval(async () => {
-        try {
-            await billingStore.getPaymentsWithConfirmations();
-        } catch { /* empty */ }
-    }, 20000); // get payments every 20 seconds.
-
     if (!canvas.value) {
         return;
     }
@@ -178,14 +101,6 @@ onMounted(async (): Promise<void> => {
         await QRCode.toCanvas(canvas.value, wallet.value.address, { width: 124 });
     } catch (error) {
         notify.error(error.message, AnalyticsErrorEventSource.UPGRADE_ACCOUNT_MODAL);
-    }
-});
-
-onBeforeUnmount(() => {
-    clearInterval(intervalID.value);
-
-    if (viewState.value === ViewState.Success) {
-        billingStore.clearPendingPayments();
     }
 });
 </script>
@@ -206,19 +121,9 @@ onBeforeUnmount(() => {
     &__info {
         font-size: 14px;
         line-height: 20px;
-        color: var(--c-orange-6);
+        color: var(--c-blue-6);
         margin-bottom: 16px;
         text-align: left;
-
-        &__link {
-            color: var(--c-orange-3);
-            text-decoration: underline;
-            text-underline-position: under;
-
-            &:visited {
-                color: var(--c-orange-3);
-            }
-        }
     }
 
     &__label {
@@ -290,6 +195,27 @@ onBeforeUnmount(() => {
         height: 1px;
         margin-top: 16px;
         background-color: var(--c-grey-2);
+    }
+
+    &__send-info {
+        margin-top: 16px;
+        padding: 16px;
+        background: var(--c-yellow-1);
+        border: 1px solid var(--c-yellow-2);
+        box-shadow: 0 7px 20px rgb(0 0 0 / 15%);
+        border-radius: 10px;
+
+        &__title,
+        &__message {
+            font-size: 14px;
+            line-height: 20px;
+            color: var(--c-black);
+            text-align: left;
+        }
+
+        &__title {
+            font-family: 'font_bold', sans-serif;
+        }
     }
 }
 

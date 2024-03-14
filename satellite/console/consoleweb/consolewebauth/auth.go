@@ -20,14 +20,12 @@ type CookieSettings struct {
 // CookieAuth handles cookie authorization.
 type CookieAuth struct {
 	settings CookieSettings
-	domain   string
 }
 
 // NewCookieAuth create new cookie authorization with provided settings.
-func NewCookieAuth(settings CookieSettings, domain string) *CookieAuth {
+func NewCookieAuth(settings CookieSettings) *CookieAuth {
 	return &CookieAuth{
 		settings: settings,
-		domain:   domain,
 	}
 }
 
@@ -52,7 +50,6 @@ func (auth *CookieAuth) GetToken(r *http.Request) (console.TokenInfo, error) {
 // SetTokenCookie sets parametrized token cookie that is not accessible from js.
 func (auth *CookieAuth) SetTokenCookie(w http.ResponseWriter, tokenInfo console.TokenInfo) {
 	http.SetCookie(w, &http.Cookie{
-		Domain:   auth.domain,
 		Name:     auth.settings.Name,
 		Value:    tokenInfo.Token.String(),
 		Path:     auth.settings.Path,
@@ -65,7 +62,6 @@ func (auth *CookieAuth) SetTokenCookie(w http.ResponseWriter, tokenInfo console.
 // RemoveTokenCookie removes auth cookie that is not accessible from js.
 func (auth *CookieAuth) RemoveTokenCookie(w http.ResponseWriter) {
 	http.SetCookie(w, &http.Cookie{
-		Domain:   auth.domain,
 		Name:     auth.settings.Name,
 		Value:    "",
 		Path:     auth.settings.Path,

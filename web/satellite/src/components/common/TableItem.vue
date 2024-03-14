@@ -1,4 +1,4 @@
-// Copyright (C) 2022 Storx Labs, Inc.
+// Copyright (C) 2022 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -14,25 +14,16 @@
             v-for="(val, keyVal, index) in item" :key="index" class="align-left data"
             :class="{'overflow-visible': showBucketGuide(index)}"
         >
-            <div v-if="Array.isArray(val)" class="few-items-container">
-                <div v-if="icon && index === 0 && itemType?.includes('project')" class="item-icon file-background" :class="customIconClasses">
-                    <component :is="icon" />
-                </div>
-                <div class="few-items">
-                    <p v-for="str in val" :key="str" class="array-val">{{ str }}</p>
-                </div>
+            <div v-if="Array.isArray(val)" class="few-items">
+                <p v-for="str in val" :key="str" class="array-val">{{ str }}</p>
             </div>
             <div v-else class="table-item">
-                <div v-if="icon && index === 0" class="item-icon file-background" :class="customIconClasses">
+                <div v-if="icon && index === 0" class="item-icon file-background">
                     <component :is="icon" />
                 </div>
-                <p v-if="keyVal === 'multi'" class="multi" :class="{primary: index === 0}" :title="val['title']" @click.stop="(e) => cellContentClicked(index, e)">
-                    <span class="multi__title">{{ val['title'] }}</span>
-                    <span class="multi__subtitle">{{ val['subtitle'] }}</span>
-                </p>
-                <p v-else :class="{primary: index === 0}" :title="val" @click.stop="(e) => cellContentClicked(index, e)">
+                <p :class="{primary: index === 0}" :title="val" @click.stop="(e) => cellContentClicked(index, e)">
                     <middle-truncate v-if="keyVal === 'fileName'" :text="val" />
-                    <project-ownership-tag v-else-if="keyVal === 'role'" :no-icon="!isProjectRoleIconShown(val)" :role="val" />
+                    <project-ownership-tag v-else-if="keyVal === 'owner'" no-icon :is-owner="val" />
                     <span v-else>{{ val }}</span>
                 </p>
                 <div v-if="showBucketGuide(index)" class="animation">
@@ -46,15 +37,25 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
-
-import { ProjectRole } from '@/types/projectMembers';
-import { ObjectType } from '@/utils/objectIcon';
+import { computed, Component } from 'vue';
 
 import VTableCheckbox from '@/components/common/VTableCheckbox.vue';
 import BucketGuide from '@/components/objects/BucketGuide.vue';
 import MiddleTruncate from '@/components/browser/MiddleTruncate.vue';
 import ProjectOwnershipTag from '@/components/project/ProjectOwnershipTag.vue';
+
+import TableLockedIcon from '@/../static/images/browser/tableLocked.svg';
+import ColorFolderIcon from '@/../static/images/objects/colorFolder.svg';
+import ColorBucketIcon from '@/../static/images/objects/colorBucket.svg';
+import FileIcon from '@/../static/images/objects/file.svg';
+import AudioIcon from '@/../static/images/objects/audio.svg';
+import VideoIcon from '@/../static/images/objects/video.svg';
+import ChevronLeftIcon from '@/../static/images/objects/chevronLeft.svg';
+import GraphIcon from '@/../static/images/objects/graph.svg';
+import PdfIcon from '@/../static/images/objects/pdf.svg';
+import PictureIcon from '@/../static/images/objects/picture.svg';
+import TxtIcon from '@/../static/images/objects/txt.svg';
+import ZipIcon from '@/../static/images/objects/zip.svg';
 
 const props = withDefaults(defineProps<{
     selectDisabled?: boolean;
@@ -83,21 +84,22 @@ const props = withDefaults(defineProps<{
 
 const emit = defineEmits(['selectClicked']);
 
-const icon = computed((): string => ObjectType.findIcon(props.itemType));
+const icons = new Map<string, Component>([
+    ['locked', TableLockedIcon],
+    ['bucket', ColorBucketIcon],
+    ['folder', ColorFolderIcon],
+    ['file', FileIcon],
+    ['audio', AudioIcon],
+    ['video', VideoIcon],
+    ['back', ChevronLeftIcon],
+    ['spreadsheet', GraphIcon],
+    ['pdf', PdfIcon],
+    ['image', PictureIcon],
+    ['text', TxtIcon],
+    ['archive', ZipIcon],
+]);
 
-const customIconClasses = computed(() => {
-    const classes = {};
-    if (props.itemType === 'project') {
-        classes['project-owner'] = true;
-    } else if (props.itemType === 'shared-project') {
-        classes['project-member'] = true;
-    }
-    return classes;
-});
-
-function isProjectRoleIconShown(role: ProjectRole) {
-    return props.itemType.includes('project') || role === ProjectRole.Invited || role === ProjectRole.InviteExpired;
-}
+const icon = computed(() => icons.get(props.itemType.toLowerCase()));
 
 function selectClicked(event: Event): void {
     emit('selectClicked', event);
@@ -185,11 +187,7 @@ function cellContentClicked(cellIndex: number, event: Event) {
             .table-item {
 
                 .primary {
-                    color: var(--c-orange-3);
-
-                    & > .multi__subtitle {
-                        color: var(--c-orange-3);
-                    }
+                    color: var(--c-blue-3);
                 }
             }
         }
@@ -200,34 +198,6 @@ function cellContentClicked(cellIndex: number, event: Event) {
             :deep(.select) {
                 background: var(--c-yellow-1);
             }
-        }
-    }
-
-    .multi {
-        display: flex;
-        flex-direction: column;
-
-        &__title {
-            text-overflow: ellipsis;
-            overflow: hidden;
-        }
-
-        &__subtitle {
-            font-family: 'font_regular', sans-serif;
-            font-size: 12px;
-            line-height: 20px;
-            color: var(--c-grey-6);
-            text-overflow: ellipsis;
-            overflow: hidden;
-        }
-    }
-
-    .few-items-container {
-        display: flex;
-        align-items: center;
-
-        @media screen and (width <= 370px) {
-            max-width: 9rem;
         }
     }
 
@@ -273,19 +243,5 @@ function cellContentClicked(cellIndex: number, event: Event) {
         display: flex;
         align-items: center;
         justify-content: center;
-    }
-
-    .project-owner {
-
-        :deep(path) {
-            fill: var(--c-purple-4);
-        }
-    }
-
-    .project-member {
-
-        :deep(path) {
-            fill: var(--c-yellow-5);
-        }
     }
 </style>

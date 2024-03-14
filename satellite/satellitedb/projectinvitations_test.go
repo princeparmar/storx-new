@@ -50,7 +50,7 @@ func TestProjectInvitations(t *testing.T) {
 
 		if !t.Run("insert invitations", func(t *testing.T) {
 			// Expect failure because no user with inviterID exists.
-			_, err = invitesDB.Upsert(ctx, invite)
+			_, err = invitesDB.Insert(ctx, invite)
 			require.Error(t, err)
 
 			_, err = db.Console().Users().Insert(ctx, &console.User{
@@ -59,15 +59,19 @@ func TestProjectInvitations(t *testing.T) {
 			})
 			require.NoError(t, err)
 
-			invite, err = invitesDB.Upsert(ctx, invite)
+			invite, err = invitesDB.Insert(ctx, invite)
 			require.NoError(t, err)
 			require.WithinDuration(t, time.Now(), invite.CreatedAt, time.Minute)
 			require.Equal(t, projID, invite.ProjectID)
 			require.Equal(t, strings.ToUpper(email), invite.Email)
 
-			inviteSameEmail, err = invitesDB.Upsert(ctx, inviteSameEmail)
+			// Duplicate invitations should be rejected.
+			_, err = invitesDB.Insert(ctx, invite)
+			require.Error(t, err)
+
+			inviteSameEmail, err = invitesDB.Insert(ctx, inviteSameEmail)
 			require.NoError(t, err)
-			inviteSameProject, err = invitesDB.Upsert(ctx, inviteSameProject)
+			inviteSameProject, err = invitesDB.Insert(ctx, inviteSameProject)
 			require.NoError(t, err)
 		}) {
 			// None of the following subtests will pass if invitation insertion failed.
@@ -77,11 +81,7 @@ func TestProjectInvitations(t *testing.T) {
 		t.Run("get invitation", func(t *testing.T) {
 			ctx := testcontext.New(t)
 
-			other, err := invitesDB.Get(ctx, projID, "nobody@mail.test")
-			require.ErrorIs(t, err, sql.ErrNoRows)
-			require.Nil(t, other)
-
-			other, err = invitesDB.Get(ctx, projID, email)
+			other, err := invitesDB.Get(ctx, projID, email)
 			require.NoError(t, err)
 			require.Equal(t, invite, other)
 		})
@@ -119,24 +119,6 @@ func TestProjectInvitations(t *testing.T) {
 			require.Nil(t, invite.InviterID)
 		})
 
-		t.Run("update invitation", func(t *testing.T) {
-			ctx := testcontext.New(t)
-
-			inviter, err := db.Console().Users().Insert(ctx, &console.User{
-				ID:           testrand.UUID(),
-				PasswordHash: testrand.Bytes(8),
-			})
-			require.NoError(t, err)
-			invite.InviterID = &inviter.ID
-
-			oldCreatedAt := invite.CreatedAt
-
-			invite, err = invitesDB.Upsert(ctx, invite)
-			require.NoError(t, err)
-			require.Equal(t, inviter.ID, *invite.InviterID)
-			require.True(t, invite.CreatedAt.After(oldCreatedAt))
-		})
-
 		t.Run("delete invitation", func(t *testing.T) {
 			ctx := testcontext.New(t)
 
@@ -160,5 +142,52 @@ func TestProjectInvitations(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, invites, []console.ProjectInvitation{*inviteSameEmail})
 		})
+	})
+}
+
+func TestDeleteBefore(t *testing.T) {
+	maxAge := time.Hour
+	now := time.Now()
+	expiration := now.Add(-maxAge)
+
+	satellitedbtest.Run(t, func(ctx *testcontext.Context, t *testing.T, db satellite.DB) {
+		invitesDB := db.Console().ProjectInvitations()
+		now := time.Now()
+
+		// Only positive page sizes should be allowed.
+		require.Error(t, invitesDB.DeleteBefore(ctx, time.Time{}, 0, 0))
+		require.Error(t, invitesDB.DeleteBefore(ctx, time.Time{}, 0, -1))
+
+		createInvite := func(createdAt time.Time) *console.ProjectInvitation {
+			projID := testrand.UUID()
+			_, err := db.Console().Projects().Insert(ctx, &console.Project{ID: projID})
+			require.NoError(t, err)
+
+			invite, err := invitesDB.Insert(ctx, &console.ProjectInvitation{ProjectID: projID})
+			require.NoError(t, err)
+
+			result, err := db.Testing().RawDB().ExecContext(ctx,
+				"UPDATE project_invitations SET created_at = $1 WHERE project_id = $2",
+				createdAt, invite.ProjectID,
+			)
+			require.NoError(t, err)
+
+			count, err := result.RowsAffected()
+			require.NoError(t, err)
+			require.EqualValues(t, 1, count)
+
+			return invite
+		}
+
+		newInvite := createInvite(now)
+		oldInvite := createInvite(expiration.Add(-time.Second))
+
+		require.NoError(t, invitesDB.DeleteBefore(ctx, expiration, 0, 1))
+
+		// Ensure that the old invitation record was deleted and the other remains.
+		_, err := invitesDB.Get(ctx, oldInvite.ProjectID, oldInvite.Email)
+		require.ErrorIs(t, err, sql.ErrNoRows)
+		_, err = invitesDB.Get(ctx, newInvite.ProjectID, newInvite.Email)
+		require.NoError(t, err)
 	})
 }

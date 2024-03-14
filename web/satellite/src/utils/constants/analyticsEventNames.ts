@@ -1,4 +1,4 @@
-// Copyright (C) 2022 Storx Labs, Inc.
+// Copyright (C) 2022 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 // Make sure these event names match up with the client-side event names in satellite/analytics/service.go
@@ -51,18 +51,10 @@ export enum AnalyticsEvent {
     PROJECT_DESCRIPTION_UPDATED = 'Project Description Updated',
     PROJECT_STORAGE_LIMIT_UPDATED = 'Project Storage Limit Updated',
     PROJECT_BANDWIDTH_LIMIT_UPDATED = 'Project Bandwidth Limit Updated',
-    GALLERY_VIEW_CLICKED = 'Gallery View Clicked',
-    PROJECT_INVITATION_ACCEPTED = 'Project Invitation Accepted',
-    PROJECT_INVITATION_DECLINED = 'Project Invitation Declined',
-    PASSPHRASE_CREATED = 'Passphrase Created',
-    RESEND_INVITE_CLICKED = 'Resend Invite Clicked',
-    COPY_INVITE_LINK_CLICKED = 'Copy Invite Link Clicked',
-    REMOVE_PROJECT_MEMBER_CLICKED = 'Remove Member Clicked',
 }
 
 export enum AnalyticsErrorEventSource {
     ACCESS_GRANTS_PAGE = 'Access grants page',
-    ACCOUNT_PAGE = 'Account page',
     ACCOUNT_SETTINGS_AREA = 'Account settings area',
     BILLING_HISTORY_TAB = 'Billing history tab',
     BILLING_COUPONS_TAB = 'Billing coupons tab',
@@ -84,7 +76,6 @@ export enum AnalyticsErrorEventSource {
     CHANGE_PASSWORD_MODAL = 'Change password modal',
     CREATE_PROJECT_MODAL = 'Create project modal',
     CREATE_PROJECT_PASSPHRASE_MODAL = 'Create project passphrase modal',
-    CREATE_BUCKET_MODAL = 'Create bucket modal',
     DELETE_BUCKET_MODAL = 'Delete bucket modal',
     ENABLE_MFA_MODAL = 'Enable MFA modal',
     DISABLE_MFA_MODAL = 'Disable MFA modal',
@@ -92,23 +83,22 @@ export enum AnalyticsErrorEventSource {
     CREATE_FOLDER_MODAL = 'Create folder modal',
     OBJECT_DETAILS_MODAL = 'Object details modal',
     OPEN_BUCKET_MODAL = 'Open bucket modal',
-    SHARE_MODAL = 'Share modal',
+    SHARE_BUCKET_MODAL = 'Share bucket modal',
     OBJECTS_UPLOAD_MODAL = 'Objects upload modal',
     NAVIGATION_ACCOUNT_AREA = 'Navigation account area',
     NAVIGATION_PROJECT_SELECTION = 'Navigation project selection',
     MOBILE_NAVIGATION = 'Mobile navigation',
+    BUCKET_CREATION_FLOW = 'Bucket creation flow',
+    BUCKET_CREATION_NAME_STEP = 'Bucket creation name step',
     BUCKET_TABLE = 'Bucket table',
     BUCKET_PAGE = 'Bucket page',
     BUCKET_DETAILS_PAGE = 'Bucket details page',
     UPLOAD_FILE_VIEW = 'Upload file view',
-    GALLERY_VIEW = 'Gallery view',
     OBJECT_UPLOAD_ERROR = 'Object upload error',
     ONBOARDING_NAME_STEP = 'Onboarding name step',
     ONBOARDING_PERMISSIONS_STEP = 'Onboarding permissions step',
     PROJECT_DASHBOARD_PAGE = 'Project dashboard page',
-    PROJECT_SETTINGS_AREA = 'Project settings area',
     EDIT_PROJECT_DETAILS = 'Edit project details',
-    EDIT_PROJECT_LIMIT = 'Edit project limit',
     PROJECTS_LIST = 'Projects list',
     PROJECT_MEMBERS_HEADER = 'Project members page header',
     PROJECT_MEMBERS_PAGE = 'Project members page',
@@ -120,6 +110,4 @@ export enum AnalyticsErrorEventSource {
     PRICING_PLAN_STEP = 'Onboarding Pricing Plan step error',
     EDIT_TIMEOUT_MODAL = 'Edit session timeout error',
     SKIP_PASSPHRASE_MODAL = 'Remember skip passphrase error',
-    JOIN_PROJECT_MODAL = 'Join project modal',
-    PROJECT_INVITATION = 'Project invitation',
 }

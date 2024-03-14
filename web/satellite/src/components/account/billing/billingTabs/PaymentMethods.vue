@@ -1,4 +1,4 @@
-// Copyright (C) 2022 Storx Labs, Inc.
+// Copyright (C) 2022 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -107,8 +107,8 @@
                     @mouseover="deleteHover = true"
                     @mouseleave="deleteHover = false"
                 >
-                    <Trash v-if="!deleteHover" />
-                    <Trash v-if="deleteHover" class="red-trash" />
+                    <Trash v-if="deleteHover === false" />
+                    <Trash v-if="deleteHover === true" class="red-trash" />
                     Remove
                 </div>
             </div>
@@ -165,8 +165,8 @@
                     </template>
                     <template #body>
                         <token-transaction-item
-                            v-for="(item, index) in displayedHistory"
-                            :key="index"
+                            v-for="item in displayedHistory"
+                            :key="item.id"
                             :item="item"
                         />
                     </template>
@@ -186,7 +186,8 @@ import {
     Wallet,
     NativePaymentHistoryItem,
 } from '@/types/payments';
-import { RouteConfig } from '@/types/router';
+import { RouteConfig } from '@/router';
+import { AnalyticsHttpApi } from '@/api/analytics';
 import { AnalyticsErrorEventSource, AnalyticsEvent } from '@/utils/constants/analyticsEventNames';
 import { useNotify } from '@/utils/hooks';
 import { useUsersStore } from '@/store/modules/usersStore';
@@ -196,7 +197,6 @@ import { useProjectsStore } from '@/store/modules/projectsStore';
 import { useConfigStore } from '@/store/modules/configStore';
 import { MODALS } from '@/utils/constants/appStatePopUps';
 import { DEFAULT_PAGE_LIMIT } from '@/types/pagination';
-import { useAnalyticsStore } from '@/store/modules/analyticsStore';
 
 import VButton from '@/components/common/VButton.vue';
 import VLoader from '@/components/common/VLoader.vue';
@@ -228,7 +228,6 @@ interface CardEdited {
     isDefault?: boolean
 }
 
-const analyticsStore = useAnalyticsStore();
 const configStore = useConfigStore();
 const billingStore = useBillingStore();
 const usersStore = useUsersStore();
@@ -239,6 +238,8 @@ const router = useRouter();
 const route = useRoute();
 
 const emit = defineEmits(['toggleIsLoading', 'toggleIsLoaded', 'cancel']);
+
+const analytics: AnalyticsHttpApi = new AnalyticsHttpApi();
 
 const showTransactions = ref<boolean>(false);
 const nativePayIsLoading = ref<boolean>(false);
@@ -303,7 +304,7 @@ async function fetchHistory(): Promise<void> {
         transactionCount.value = nativePaymentHistoryItems.value.length;
         displayedHistory.value = nativePaymentHistoryItems.value.slice(0, DEFAULT_PAGE_LIMIT);
     } catch (error) {
-        notify.notifyError(error, AnalyticsErrorEventSource.BILLING_PAYMENT_METHODS_TAB);
+        await notify.error(error.message, AnalyticsErrorEventSource.BILLING_PAYMENT_METHODS_TAB);
     } finally {
         nativePayIsLoading.value = false;
     }
@@ -325,17 +326,17 @@ async function prepQRCode(): Promise<void> {
     try {
         await QRCode.toCanvas(canvas.value, wallet.value.address);
     } catch (error) {
-        notify.error(error.message, AnalyticsErrorEventSource.BILLING_PAYMENT_METHODS_TAB);
+        await notify.error(error.message, AnalyticsErrorEventSource.BILLING_PAYMENT_METHODS_TAB);
     }
 }
 
 async function updatePaymentMethod(): Promise<void> {
     try {
         await billingStore.makeCardDefault(defaultCreditCardSelection.value);
-        notify.success('Default payment card updated');
+        await notify.success('Default payment card updated');
         isChangeDefaultPaymentModalOpen.value = false;
     } catch (error) {
-        notify.notifyError(error, AnalyticsErrorEventSource.BILLING_PAYMENT_METHODS_TAB);
+        await notify.error(error.message, AnalyticsErrorEventSource.BILLING_PAYMENT_METHODS_TAB);
     }
 }
 
@@ -347,10 +348,10 @@ async function removePaymentMethod(): Promise<void> {
 
         try {
             await billingStore.removeCreditCard(cardBeingEdited.value.id);
-            analyticsStore.eventTriggered(AnalyticsEvent.CREDIT_CARD_REMOVED);
-            notify.success('Credit card removed');
+            analytics.eventTriggered(AnalyticsEvent.CREDIT_CARD_REMOVED);
+            await notify.success('Credit card removed');
         } catch (error) {
-            notify.notifyError(error, AnalyticsErrorEventSource.BILLING_PAYMENT_METHODS_TAB);
+            await notify.error(error.message, AnalyticsErrorEventSource.BILLING_PAYMENT_METHODS_TAB);
         }
 
         isRemovePaymentMethodsModalOpen.value = false;
@@ -375,18 +376,18 @@ async function addCard(token: string): Promise<void> {
         // We fetch User one more time to update their Paid Tier status.
         await usersStore.getUser();
     } catch (error) {
-        notify.notifyError(error, AnalyticsErrorEventSource.BILLING_PAYMENT_METHODS_TAB);
+        await notify.error(error.message, AnalyticsErrorEventSource.BILLING_PAYMENT_METHODS_TAB);
 
         emit('toggleIsLoading');
 
         return;
     }
 
-    notify.success('Card successfully added');
+    await notify.success('Card successfully added');
     try {
         await billingStore.getCreditCards();
     } catch (error) {
-        notify.notifyError(error, AnalyticsErrorEventSource.BILLING_PAYMENT_METHODS_TAB);
+        await notify.error(error.message, AnalyticsErrorEventSource.BILLING_PAYMENT_METHODS_TAB);
         emit('toggleIsLoading');
     }
 
@@ -410,11 +411,11 @@ async function onConfirmAddStripe(): Promise<void> {
 
     isLoading.value = true;
     await stripeCardInput.value.onSubmit().then(() => {isLoading.value = false;});
-    analyticsStore.eventTriggered(AnalyticsEvent.CREDIT_CARD_ADDED_FROM_BILLING);
+    analytics.eventTriggered(AnalyticsEvent.CREDIT_CARD_ADDED_FROM_BILLING);
 }
 
 function addPaymentMethodHandler(): void {
-    analyticsStore.eventTriggered(AnalyticsEvent.ADD_NEW_PAYMENT_METHOD_CLICKED);
+    analytics.eventTriggered(AnalyticsEvent.ADD_NEW_PAYMENT_METHOD_CLICKED);
 
     if (!usersStore.state.user.paidTier) {
         appStore.updateActiveModal(MODALS.upgradeAccount);
@@ -443,7 +444,7 @@ function onCloseClickDefault(): void {
 /**
  * controls sorting the transaction table
  */
-function sortFunction(key: string): void {
+function sortFunction(key): void {
     switch (key) {
     case 'date-ascending':
         nativePaymentHistoryItems.value.sort((a, b) => {return a.timestamp.getTime() - b.timestamp.getTime();});
@@ -480,8 +481,8 @@ function sortFunction(key: string): void {
 /**
  * controls transaction table pagination
  */
-function paginationController(page: number, limit: number): void {
-    displayedHistory.value = nativePaymentHistoryItems.value.slice((page - 1) * limit, ((page - 1) * limit) + limit);
+function paginationController(i: number, limit: number): void {
+    displayedHistory.value = nativePaymentHistoryItems.value.slice((i - 1) * limit, ((i - 1) * limit) + limit);
 }
 
 onMounted((): void => {
@@ -529,7 +530,7 @@ $align: center;
 }
 
 .edit-card-text {
-    color: var(--c-orange-3);
+    color: var(--c-blue-3);
     font-family: 'font_regular', sans-serif;
 }
 
@@ -541,6 +542,7 @@ $align: center;
 }
 
 .change-default-input-container {
+    margin: auto;
     display: $flex;
     flex-direction: row;
     align-items: flex-start;
@@ -550,7 +552,7 @@ $align: center;
     height: 10px;
     border: 1px solid var(--c-grey-4);
     border-radius: 8px;
-    margin: 7px auto auto;
+    margin-top: 7px;
 }
 
 .change-default-input {
@@ -572,7 +574,7 @@ $align: center;
     height: 24px;
     padding: 16px;
     gap: 8px;
-    background: var(--c-orange-3);
+    background: var(--c-blue-3);
     box-shadow: 0 0 1px rgb(9 28 69 / 80%);
     border-radius: 8px;
     font-family: 'font_bold', sans-serif;
@@ -583,7 +585,7 @@ $align: center;
     color: white;
 
     &:hover {
-        background-color: #b32006;
+        background-color: #0059d0;
     }
 }
 
@@ -825,7 +827,7 @@ $align: center;
                 align-items: center;
                 font-size: 16px;
                 font-family: 'font_regular', sans-serif;
-                color: var(--c-orange-3);
+                color: var(--c-blue-3);
                 cursor: pointer;
 
                 &__text {
@@ -938,15 +940,10 @@ $align: center;
             flex-wrap: wrap;
             gap: 0.3rem;
 
-            @media screen and (width <= 650px) {
-                width: 100%;
-            }
-
             &__address {
                 display: flex;
                 flex-direction: column;
                 justify-content: center;
-                width: 100%;
                 gap: 0.3rem;
 
                 &__label {
@@ -956,8 +953,6 @@ $align: center;
 
                 &__value {
                     font-family: 'font_bold', sans-serif;
-                    overflow: hidden;
-                    text-overflow: ellipsis;
                 }
             }
         }

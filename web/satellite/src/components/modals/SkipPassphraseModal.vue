@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Storx Labs, Inc.
+// Copyright (C) 2023 Storj Labs, Inc.
 // See LICENSE for copying information.
 <template>
     <VModal :on-close="closeModal">
@@ -58,7 +58,7 @@ async function rememberSkip() {
         await usersStore.updateSettings({ passphrasePrompt: false });
         appStore.removeActiveModal();
     } catch (error) {
-        notify.notifyError(error, AnalyticsErrorEventSource.SKIP_PASSPHRASE_MODAL);
+        notify.error(error.message, AnalyticsErrorEventSource.SKIP_PASSPHRASE_MODAL);
     }
 }
 

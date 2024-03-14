@@ -1,4 +1,4 @@
-// Copyright (C) 2021 Storx Labs, Inc.
+// Copyright (C) 2021 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -42,14 +42,14 @@
 import { computed, onMounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
-import { RouteConfig } from '@/types/router';
+import { RouteConfig } from '@/router';
 import { AnalyticsErrorEventSource, AnalyticsEvent } from '@/utils/constants/analyticsEventNames';
+import { AnalyticsHttpApi } from '@/api/analytics';
 import { useNotify } from '@/utils/hooks';
 import { useAppStore } from '@/store/modules/appStore';
 import { useAccessGrantsStore } from '@/store/modules/accessGrantsStore';
 import { useBucketsStore } from '@/store/modules/bucketsStore';
 import { useProjectsStore } from '@/store/modules/projectsStore';
-import { useAnalyticsStore } from '@/store/modules/analyticsStore';
 
 import CLIFlowContainer from '@/components/onboardingTour/steps/common/CLIFlowContainer.vue';
 import PermissionsSelect from '@/components/onboardingTour/steps/cliFlow/PermissionsSelect.vue';
@@ -60,7 +60,6 @@ import DurationSelection from '@/components/onboardingTour/steps/cliFlow/permiss
 
 import Icon from '@/../static/images/onboardingTour/accessGrant.svg';
 
-const analyticsStore = useAnalyticsStore();
 const bucketsStore = useBucketsStore();
 const appStore = useAppStore();
 const agStore = useAccessGrantsStore();
@@ -68,6 +67,8 @@ const projectsStore = useProjectsStore();
 const notify = useNotify();
 const router = useRouter();
 const route = useRoute();
+
+const analytics: AnalyticsHttpApi = new AnalyticsHttpApi();
 
 const worker = ref<Worker| null>(null);
 const areBucketNamesFetching = ref<boolean>(true);
@@ -150,7 +151,7 @@ function setWorker(): void {
 async function onBackClick(): Promise<void> {
     if (isLoading.value) return;
 
-    analyticsStore.pageVisit(RouteConfig.OnboardingTour.with(RouteConfig.OnbCLIStep.with(RouteConfig.AGName)).path);
+    analytics.pageVisit(RouteConfig.OnboardingTour.with(RouteConfig.OnbCLIStep.with(RouteConfig.AGName)).path);
     await router.push({ name: RouteConfig.AGName.name });
 }
 
@@ -175,7 +176,7 @@ async function onNextClick(): Promise<void> {
     }
 
     appStore.setOnboardingAPIKeyStepBackRoute(route.path);
-    analyticsStore.pageVisit(RouteConfig.OnboardingTour.with(RouteConfig.OnbCLIStep.with(RouteConfig.APIKey)).path);
+    analytics.pageVisit(RouteConfig.OnboardingTour.with(RouteConfig.OnbCLIStep.with(RouteConfig.APIKey)).path);
     await router.push({ name: RouteConfig.APIKey.name });
 }
 
@@ -204,7 +205,7 @@ async function generateRestrictedKey(): Promise<string> {
         permissionsMsg, { 'notAfter': notAfterPermission.value.toISOString() },
     );
 
-    worker.value.postMessage(permissionsMsg);
+    await worker.value.postMessage(permissionsMsg);
 
     const grantEvent: MessageEvent = await new Promise(resolve => {
         if (worker.value) {
@@ -215,7 +216,7 @@ async function generateRestrictedKey(): Promise<string> {
         throw new Error(grantEvent.data.error);
     }
 
-    analyticsStore.eventTriggered(AnalyticsEvent.API_KEY_GENERATED);
+    analytics.eventTriggered(AnalyticsEvent.API_KEY_GENERATED);
 
     return grantEvent.data.value;
 }
@@ -241,8 +242,7 @@ onMounted(async (): Promise<void> => {
 
         areBucketNamesFetching.value = false;
     } catch (error) {
-        error.message = `Unable to fetch all bucket names. ${error.message}`;
-        notify.notifyError(error, AnalyticsErrorEventSource.ONBOARDING_PERMISSIONS_STEP);
+        await notify.error(`Unable to fetch all bucket names. ${error.message}`, AnalyticsErrorEventSource.ONBOARDING_PERMISSIONS_STEP);
     }
 
     isLoading.value = false;
@@ -255,11 +255,6 @@ onMounted(async (): Promise<void> => {
         &__select {
             width: 287px;
             padding: 0 98.5px;
-
-            @media screen and (width <= 600px) {
-                width: 100%;
-                padding: 0;
-            }
 
             &__label {
                 font-family: 'font_medium', sans-serif;
@@ -277,11 +272,6 @@ onMounted(async (): Promise<void> => {
             padding: 0 98.5px;
             flex-wrap: wrap;
 
-            @media screen and (width <= 600px) {
-                width: 100%;
-                padding: 0;
-            }
-
             &__container {
                 display: flex;
                 margin-top: 5px;
@@ -293,9 +283,5 @@ onMounted(async (): Promise<void> => {
     :deep(.duration-selection) {
         width: 287px;
         margin-left: 0;
-
-        @media screen and (width <= 600px) {
-            width: 100%;
-        }
     }
 </style>

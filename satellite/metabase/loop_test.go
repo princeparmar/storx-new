@@ -819,28 +819,6 @@ func TestCollectBucketTallies(t *testing.T) {
 			metabasetest.Verify{}.Check(ctx, t, db)
 		})
 
-		t.Run("invalid bucket name", func(t *testing.T) {
-			defer metabasetest.DeleteAll{}.Check(ctx, t, db)
-
-			projectA := uuid.UUID{1}
-			projectB := uuid.UUID{2}
-
-			metabasetest.CollectBucketTallies{
-				Opts: metabase.CollectBucketTallies{
-					From: metabase.BucketLocation{
-						ProjectID:  projectA,
-						BucketName: "a\\",
-					},
-					To: metabase.BucketLocation{
-						ProjectID:  projectB,
-						BucketName: "b\\",
-					},
-				},
-				Result: nil,
-			}.Check(ctx, t, db)
-			metabasetest.Verify{}.Check(ctx, t, db)
-		})
-
 		t.Run("pending and committed", func(t *testing.T) {
 			defer metabasetest.DeleteAll{}.Check(ctx, t, db)
 
@@ -872,22 +850,20 @@ func TestCollectBucketTallies(t *testing.T) {
 						ProjectID:  pending.ProjectID,
 						BucketName: pending.BucketName,
 					},
-					ObjectCount:        1,
-					PendingObjectCount: 1,
-					TotalSegments:      0,
-					TotalBytes:         0,
-					MetadataSize:       1024,
+					ObjectCount:   1,
+					TotalSegments: 0,
+					TotalBytes:    0,
+					MetadataSize:  1024,
 				},
 				{
 					BucketLocation: metabase.BucketLocation{
 						ProjectID:  committed.ProjectID,
 						BucketName: committed.BucketName,
 					},
-					ObjectCount:        1,
-					PendingObjectCount: 0,
-					TotalSegments:      1,
-					TotalBytes:         1024,
-					MetadataSize:       0,
+					ObjectCount:   1,
+					TotalSegments: 1,
+					TotalBytes:    1024,
+					MetadataSize:  0,
 				},
 			}
 

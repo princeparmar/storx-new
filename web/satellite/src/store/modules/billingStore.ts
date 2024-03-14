@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Storx Labs, Inc.
+// Copyright (C) 2023 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 import { computed, reactive } from 'vue';
@@ -14,8 +14,6 @@ import {
     PaymentsHistoryItem,
     PaymentsHistoryItemStatus,
     PaymentsHistoryItemType,
-    PaymentStatus,
-    PaymentWithConfirmations,
     ProjectCharges,
     ProjectUsagePriceModel,
     Wallet,
@@ -26,7 +24,6 @@ export class PaymentsState {
     public balance: AccountBalance = new AccountBalance();
     public creditCards: CreditCard[] = [];
     public paymentsHistory: PaymentsHistoryItem[] = [];
-    public pendingPaymentsWithConfirmations: PaymentWithConfirmations[] = [];
     public nativePaymentsHistory: NativePaymentHistoryItem[] = [];
     public projectCharges: ProjectCharges = new ProjectCharges();
     public usagePriceModel: ProjectUsagePriceModel = new ProjectUsagePriceModel();
@@ -95,10 +92,6 @@ export const useBillingStore = defineStore('billing', () => {
         });
     }
 
-    function clearPendingPayments(): void {
-        state.pendingPaymentsWithConfirmations = [];
-    }
-
     async function makeCardDefault(id: string): Promise<void> {
         await api.makeCreditCardDefault(id);
 
@@ -127,25 +120,6 @@ export const useBillingStore = defineStore('billing', () => {
 
     async function getNativePaymentsHistory(): Promise<void> {
         state.nativePaymentsHistory = await api.nativePaymentsHistory();
-    }
-
-    async function getPaymentsWithConfirmations(): Promise<void> {
-        const newPayments = await api.paymentsWithConfirmations();
-        newPayments.forEach(newPayment => {
-            const oldPayment = state.pendingPaymentsWithConfirmations.find(old => old.transaction === newPayment.transaction);
-
-            if (newPayment.status === PaymentStatus.Pending) {
-                if (oldPayment) {
-                    oldPayment.confirmations = newPayment.confirmations;
-                    return;
-                }
-
-                state.pendingPaymentsWithConfirmations.push(newPayment);
-                return;
-            }
-
-            if (oldPayment) oldPayment.status = PaymentStatus.Confirmed;
-        });
     }
 
     async function getProjectUsageAndChargesCurrentRollup(): Promise<void> {
@@ -195,7 +169,6 @@ export const useBillingStore = defineStore('billing', () => {
         state.nativePaymentsHistory = [];
         state.projectCharges = new ProjectCharges();
         state.usagePriceModel = new ProjectUsagePriceModel();
-        state.pendingPaymentsWithConfirmations = [];
         state.startDate = new Date();
         state.endDate = new Date();
         state.coupon = null;
@@ -241,8 +214,6 @@ export const useBillingStore = defineStore('billing', () => {
         getNativePaymentsHistory,
         getProjectUsageAndChargesCurrentRollup,
         getProjectUsageAndChargesPreviousRollup,
-        getPaymentsWithConfirmations,
-        clearPendingPayments,
         getProjectUsagePriceModel,
         applyCouponCode,
         getCoupon,

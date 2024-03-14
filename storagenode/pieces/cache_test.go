@@ -311,10 +311,7 @@ func TestCacheServiceRun_LazyFilewalker(t *testing.T) {
 		lazyFwCfg := dbConfig.LazyFilewalkerConfig()
 		lazyFwCfg.LowerIOPriority = false
 		lazyFw := lazyfilewalker.NewSupervisor(log, lazyFwCfg, "")
-		cmd := internalcmd.NewUsedSpaceFilewalkerCmd()
-		cmd.Logger = log.Named("used-space-filewalker")
-		cmd.Ctx = ctx
-		lazyFw.TestingSetUsedSpaceCmd(cmd)
+		lazyFw.TestingSetUsedSpaceCmd(internalcmd.NewUsedSpaceLazyFilewalker(ctx, log.Named("used-space-filewalker.subprocess"), lazyFwCfg))
 
 		// Now instantiate the cache
 		cache := pieces.NewBlobsUsageCache(log, store)

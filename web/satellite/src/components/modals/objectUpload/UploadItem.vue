@@ -1,19 +1,18 @@
-// Copyright (C) 2023 Storx Labs, Inc.
+// Copyright (C) 2023 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
     <div class="item">
         <div class="item__left">
             <div class="item__left__icon">
-                <component :is="icon" />
+                <p class="item__left__icon__label">{{ extension }}</p>
             </div>
             <p class="item__left__name" :title="item.Key">{{ item.Key }}</p>
         </div>
         <div class="item__right">
             <template v-if="item.status === UploadingStatus.InProgress">
                 <div class="item__right__track">
-                    <div v-if="item.progress" class="item__right__track__fill" :style="progressStyle" />
-                    <div v-else class="item__right__track__indeterminate" />
+                    <div class="item__right__track__fill" :style="progressStyle" />
                 </div>
                 <CloseIcon class="item__right__cancel" @click="cancelUpload" />
             </template>
@@ -55,9 +54,9 @@ import {
     FailedUploadMessage,
     useObjectBrowserStore,
 } from '@/store/modules/objectBrowserStore';
+import { AnalyticsHttpApi } from '@/api/analytics';
 import { AnalyticsErrorEventSource } from '@/utils/constants/analyticsEventNames';
 import { useNotify } from '@/utils/hooks';
-import { ObjectType } from '@/utils/objectIcon';
 
 import VInfo from '@/components/common/VInfo.vue';
 
@@ -65,6 +64,8 @@ import CloseIcon from '@/../static/images/modals/objectUpload/close.svg';
 import CheckIcon from '@/../static/images/modals/objectUpload/check.svg';
 import FailedIcon from '@/../static/images/modals/objectUpload/failed.svg';
 import InfoIcon from '@/../static/images/modals/objectUpload/info.svg';
+
+const analytics: AnalyticsHttpApi = new AnalyticsHttpApi();
 
 const obStore = useObjectBrowserStore();
 const notify = useNotify();
@@ -74,9 +75,11 @@ const props = defineProps<{
 }>();
 
 /**
- * Returns appropriate icon for provided object.
+ * Returns file's extension.
  */
-const icon = computed((): string => ObjectType.findIcon(ObjectType.findType(props.item.Key)));
+const extension = computed((): string => {
+    return props.item.Key.split('.').pop()?.substring(0, 3).toUpperCase() || 'EXT';
+});
 
 /**
  * Returns progress bar style.
@@ -92,7 +95,7 @@ const progressStyle = computed((): Record<string, string> => {
  */
 async function retryUpload(): Promise<void> {
     try {
-        await obStore.retryUpload(props.item.Key);
+        await obStore.retryUpload(props.item);
     } catch (error) {
         notify.error(error.message, AnalyticsErrorEventSource.OBJECTS_UPLOAD_MODAL);
     }
@@ -141,8 +144,7 @@ function cancelUpload(): void {
             min-width: 32px;
             width: 32px;
             height: 32px;
-            background-color: var(--c-white);
-            border: 1px solid var(--c-grey-2);
+            background-color: var(--c-green-6);
             border-radius: 8px;
             margin-right: 12px;
             display: flex;
@@ -152,9 +154,17 @@ function cancelUpload(): void {
             @media screen and (width <= 550px) {
                 display: none;
             }
+
+            &__label {
+                font-family: 'font_bold', sans-serif;
+                font-size: 9px;
+                line-height: 18px;
+                color: var(--c-green-5);
+            }
         }
 
         &__name {
+            font-family: 'font_medium', sans-serif;
             font-size: 14px;
             line-height: 20px;
             color: var(--c-grey-9);
@@ -170,8 +180,7 @@ function cancelUpload(): void {
         margin-left: 20px;
 
         svg {
-            width: 20px;
-            height: 20px;
+            min-width: 20px;
         }
 
         &__track {
@@ -180,42 +189,16 @@ function cancelUpload(): void {
             border-radius: 3px;
             position: relative;
             margin-right: 34px;
-            background-color: var(--c-orange-1);
-            overflow: hidden;
+            background-color: var(--c-blue-1);
 
             &__fill {
                 position: absolute;
                 top: 0;
                 left: 0;
                 bottom: 0;
-                background-color: var(--c-orange-3);
+                background-color: var(--c-blue-3);
                 border-radius: 3px;
                 max-width: 100%;
-            }
-
-            &__indeterminate {
-                position: absolute;
-                top: 0;
-                left: 0;
-                bottom: 0;
-                background-color: var(--c-orange-3);
-                border-radius: 3px;
-                max-width: 100%;
-                width: 50%;
-                animation: indeterminate-progress-bar;
-                animation-duration: 2s;
-                animation-iteration-count: infinite;
-            }
-
-            @keyframes indeterminate-progress-bar {
-
-                from {
-                    left: -50%;
-                }
-
-                to {
-                    left: 100%;
-                }
             }
         }
 
@@ -224,13 +207,14 @@ function cancelUpload(): void {
         }
 
         &__cancelled {
+            font-family: 'font_medium', sans-serif;
             font-size: 14px;
             line-height: 20px;
             color: var(--c-grey-5);
-            text-align: right;
         }
 
         &__failed {
+            font-family: 'font_medium', sans-serif;
             font-size: 14px;
             line-height: 20px;
             color: var(--c-red-4);
@@ -238,15 +222,12 @@ function cancelUpload(): void {
         }
 
         &__retry {
+            font-family: 'font_medium', sans-serif;
             font-size: 14px;
             line-height: 20px;
-            color: var(--c-orange-3);
+            color: var(--c-blue-3);
             margin-left: 18px;
             cursor: pointer;
-
-            &:hover {
-                text-decoration: underline;
-            }
         }
 
         &__info {
@@ -261,10 +242,10 @@ function cancelUpload(): void {
                 color: var(--c-black);
 
                 &__link {
-                    color: var(--c-orange-3);
+                    color: var(--c-blue-3);
 
                     &:visited {
-                        color: var(--c-orange-3);
+                        color: var(--c-blue-3);
                     }
                 }
             }

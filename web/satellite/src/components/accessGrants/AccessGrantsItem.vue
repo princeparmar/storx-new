@@ -1,4 +1,4 @@
-// Copyright (C) 2020 Storx Labs, Inc.
+// Copyright (C) 2020 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -105,10 +105,10 @@ async function onDeleteClick(): Promise<void> {
                     &:hover {
                         background-color: #f4f5f7;
                         font-family: 'font_medium', sans-serif;
-                        color: var(--c-orange-3);
+                        color: var(--c-blue-3);
 
                         svg :deep(path) {
-                            fill: var(--c-orange-3);
+                            fill: var(--c-blue-3);
                         }
                     }
                 }

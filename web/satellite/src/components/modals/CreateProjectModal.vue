@@ -1,4 +1,4 @@
-// Copyright (C) 2022 Storx Labs, Inc.
+// Copyright (C) 2022 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -63,9 +63,10 @@
 import { ref } from 'vue';
 import { useRouter } from 'vue-router';
 
-import { RouteConfig } from '@/types/router';
+import { RouteConfig } from '@/router';
 import { ProjectFields } from '@/types/projects';
 import { LocalData } from '@/utils/localData';
+import { AnalyticsHttpApi } from '@/api/analytics';
 import { AnalyticsErrorEventSource } from '@/utils/constants/analyticsEventNames';
 import { MODALS } from '@/utils/constants/appStatePopUps';
 import { useNotify } from '@/utils/hooks';
@@ -73,20 +74,20 @@ import { useUsersStore } from '@/store/modules/usersStore';
 import { useAppStore } from '@/store/modules/appStore';
 import { useBucketsStore } from '@/store/modules/bucketsStore';
 import { useProjectsStore } from '@/store/modules/projectsStore';
-import { useAnalyticsStore } from '@/store/modules/analyticsStore';
 
 import VLoader from '@/components/common/VLoader.vue';
 import VInput from '@/components/common/VInput.vue';
 import VModal from '@/components/common/VModal.vue';
 import VButton from '@/components/common/VButton.vue';
 
-const analyticsStore = useAnalyticsStore();
 const projectsStore = useProjectsStore();
 const bucketsStore = useBucketsStore();
 const appStore = useAppStore();
 const usersStore = useUsersStore();
 const notify = useNotify();
 const router = useRouter();
+
+const analytics: AnalyticsHttpApi = new AnalyticsHttpApi();
 
 const description = ref<string>('');
 const createdProjectId = ref<string>('');
@@ -129,7 +130,7 @@ async function onCreateProjectClick(): Promise<void> {
     } catch (error) {
         isLoading.value = false;
         nameError.value = error.message;
-        analyticsStore.errorEventTriggered(AnalyticsErrorEventSource.CREATE_PROJECT_MODAL);
+        analytics.errorEventTriggered(AnalyticsErrorEventSource.CREATE_PROJECT_MODAL);
 
         return;
     }
@@ -155,7 +156,7 @@ async function onCreateProjectClick(): Promise<void> {
         appStore.updateActiveModal(MODALS.createProjectPassphrase);
     }
 
-    analyticsStore.pageVisit(RouteConfig.ProjectDashboard.path);
+    analytics.pageVisit(RouteConfig.ProjectDashboard.path);
     await router.push(RouteConfig.ProjectDashboard.path);
 }
 

@@ -6,9 +6,7 @@ package audit_test
 import (
 	"context"
 	"crypto/rand"
-	"errors"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"syscall"
@@ -374,9 +372,7 @@ func TestDownloadSharesDialIOTimeout(t *testing.T) {
 					for {
 						_, err = conn.Read(buf)
 						if err != nil {
-							if !errors.Is(err, syscall.ECONNRESET) && !errors.Is(err, io.EOF) {
-								t.Fatalf("expected econnreset or eof, got %q", err.Error())
-							}
+							assert.ErrorIs(t, err, syscall.ECONNRESET)
 							return nil
 						}
 					}
@@ -968,15 +964,7 @@ func TestVerifierModifiedSegmentFailsOnce(t *testing.T) {
 
 		assert.Len(t, report.Successes, origNumPieces-1)
 		require.Len(t, report.Fails, 1)
-		assert.Equal(t, metabase.Piece{
-			StorageNode: piece.StorageNode,
-			Number:      piece.Number,
-		}, report.Fails[0])
-		require.NotNil(t, report.Segment)
-		assert.Equal(t, segment.StreamID, report.Segment.StreamID)
-		assert.Equal(t, segment.Position, report.Segment.Position)
-		assert.Equal(t, segment.Redundancy, report.Segment.Redundancy)
-		assert.Equal(t, segment.Pieces, report.Segment.Pieces)
+		assert.Equal(t, report.Fails[0], piece.StorageNode)
 		assert.Len(t, report.Offlines, 0)
 		require.Len(t, report.PendingAudits, 0)
 	})
@@ -1204,15 +1192,7 @@ func TestAuditRepairedSegmentInExcludedCountries(t *testing.T) {
 		}, nil)
 		require.NoError(t, err)
 		require.Len(t, report.Fails, 1)
-		require.Equal(t, metabase.Piece{
-			StorageNode: lastPiece.StorageNode,
-			Number:      lastPiece.Number,
-		}, report.Fails[0])
-		require.NotNil(t, report.Segment)
-		assert.Equal(t, segmentAfterRepair.StreamID, report.Segment.StreamID)
-		assert.Equal(t, segmentAfterRepair.Position, report.Segment.Position)
-		assert.Equal(t, segmentAfterRepair.Redundancy, report.Segment.Redundancy)
-		assert.Equal(t, segmentAfterRepair.Pieces, report.Segment.Pieces)
+		require.Equal(t, report.Fails[0], lastPiece.StorageNode)
 	})
 }
 

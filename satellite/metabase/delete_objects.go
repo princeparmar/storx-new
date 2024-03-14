@@ -8,7 +8,7 @@ import (
 	"encoding/hex"
 	"time"
 
-	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v4"
 	"github.com/zeebo/errs"
 	"go.uber.org/zap"
 
@@ -22,9 +22,9 @@ const (
 
 // DeleteExpiredObjects contains all the information necessary to delete expired objects and segments.
 type DeleteExpiredObjects struct {
-	ExpiredBefore      time.Time
-	AsOfSystemInterval time.Duration
-	BatchSize          int
+	ExpiredBefore  time.Time
+	AsOfSystemTime time.Time
+	BatchSize      int
 }
 
 // DeleteExpiredObjects deletes all objects that expired before expiredBefore.
@@ -37,7 +37,7 @@ func (db *DB) DeleteExpiredObjects(ctx context.Context, opts DeleteExpiredObject
 				project_id, bucket_name, object_key, version, stream_id,
 				expires_at
 			FROM objects
-			` + db.impl.AsOfSystemInterval(opts.AsOfSystemInterval) + `
+			` + db.impl.AsOfSystemTime(opts.AsOfSystemTime) + `
 			WHERE
 				(project_id, bucket_name, object_key, version) > ($1, $2, $3, $4)
 				AND expires_at < $5
@@ -95,10 +95,10 @@ func (db *DB) DeleteExpiredObjects(ctx context.Context, opts DeleteExpiredObject
 
 // DeleteZombieObjects contains all the information necessary to delete zombie objects and segments.
 type DeleteZombieObjects struct {
-	DeadlineBefore     time.Time
-	InactiveDeadline   time.Time
-	AsOfSystemInterval time.Duration
-	BatchSize          int
+	DeadlineBefore   time.Time
+	InactiveDeadline time.Time
+	AsOfSystemTime   time.Time
+	BatchSize        int
 }
 
 // DeleteZombieObjects deletes all objects that zombie deletion deadline passed.
@@ -112,7 +112,7 @@ func (db *DB) DeleteZombieObjects(ctx context.Context, opts DeleteZombieObjects)
 			SELECT
 				project_id, bucket_name, object_key, version, stream_id
 			FROM objects
-			` + db.impl.AsOfSystemInterval(opts.AsOfSystemInterval) + `
+			` + db.impl.AsOfSystemTime(opts.AsOfSystemTime) + `
 			WHERE
 				(project_id, bucket_name, object_key, version) > ($1, $2, $3, $4)
 				AND status = ` + pendingStatus + `
@@ -155,7 +155,7 @@ func (db *DB) DeleteZombieObjects(ctx context.Context, opts DeleteZombieObjects)
 			return ObjectStream{}, nil
 		}
 
-		err = db.deleteInactiveObjectsAndSegments(ctx, objects, opts)
+		err = db.deleteInactiveObjectsAndSegments(ctx, objects, opts.InactiveDeadline)
 		if err != nil {
 			db.log.Warn("delete from DB zombie objects", zap.Error(err))
 			return ObjectStream{}, nil
@@ -237,7 +237,7 @@ func (db *DB) deleteObjectsAndSegments(ctx context.Context, objects []ObjectStre
 	return nil
 }
 
-func (db *DB) deleteInactiveObjectsAndSegments(ctx context.Context, objects []ObjectStream, opts DeleteZombieObjects) (err error) {
+func (db *DB) deleteInactiveObjectsAndSegments(ctx context.Context, objects []ObjectStream, inactiveDeadline time.Time) (err error) {
 	defer mon.Task()(&ctx)(&err)
 
 	if len(objects) == 0 {
@@ -248,19 +248,24 @@ func (db *DB) deleteInactiveObjectsAndSegments(ctx context.Context, objects []Ob
 		var batch pgx.Batch
 		for _, obj := range objects {
 			batch.Queue(`
-				WITH check_segments AS (
-					SELECT 1 FROM segments
-					WHERE stream_id = $5::BYTEA AND created_at > $6
-				), deleted_objects AS (
+				WITH deleted_objects AS (
 					DELETE FROM objects
 					WHERE
 						(project_id, bucket_name, object_key, version) = ($1::BYTEA, $2::BYTEA, $3::BYTEA, $4) AND
-						NOT EXISTS (SELECT 1 FROM check_segments)
-					RETURNING stream_id
+						stream_id = $5::BYTEA AND (
+							-- TODO figure out something more optimal
+							NOT EXISTS (SELECT stream_id FROM segments WHERE stream_id = $5::BYTEA)
+							OR
+							-- check that all segments where created before inactive time
+							NOT EXISTS (SELECT stream_id FROM segments WHERE stream_id = $5::BYTEA AND created_at > $6)
+						)
+						RETURNING version -- return anything
 				)
 				DELETE FROM segments
-				WHERE segments.stream_id IN (SELECT stream_id FROM deleted_objects)
-			`, obj.ProjectID, []byte(obj.BucketName), []byte(obj.ObjectKey), obj.Version, obj.StreamID, opts.InactiveDeadline)
+				WHERE
+					segments.stream_id = $5::BYTEA AND
+					NOT EXISTS (SELECT stream_id FROM segments WHERE stream_id = $5::BYTEA AND created_at > $6)
+			`, obj.ProjectID, []byte(obj.BucketName), []byte(obj.ObjectKey), obj.Version, obj.StreamID, inactiveDeadline)
 		}
 
 		results := conn.SendBatch(ctx, &batch)

@@ -1,10 +1,8 @@
-// Copyright (C) 2020 Storx Labs, Inc.
+// Copyright (C) 2020 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 // eslint-disable-next-line no-undef
 importScripts('/static/static/wasm/wasm_exec.js');
-
-// importScripts('../../static/wasm/wasm_exec.js');
 
 if (!WebAssembly.instantiate) {
     self.postMessage(new Error('web assembly is not supported'));
@@ -17,7 +15,7 @@ self.onmessage = async function (event) {
     switch (data.type) {
     case 'Setup':
         try {
-            const go = new self.Go();
+            const go = new global.Go();
             const response = await fetch('/static/static/wasm/access.wasm');
             const buffer = await response.arrayBuffer();
             const module = await WebAssembly.compile(buffer);

@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Storx Labs, Inc.
+// Copyright (C) 2023 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -17,10 +17,10 @@
                         :on-press="() => {}"
                     />
                     <div class="info-step__column__bullets">
-                        <InfoBullet class="info-step__column__bullets__item" title="Projects" :info="freeProjects" />
-                        <InfoBullet class="info-step__column__bullets__item" title="Storage" :info="`${freeUsageValue(user.projectStorageLimit)} limit`" />
-                        <InfoBullet class="info-step__column__bullets__item" title="Egress" :info="`${freeUsageValue(user.projectBandwidthLimit)} limit`" />
-                        <InfoBullet class="info-step__column__bullets__item" title="Segments" :info="`${user.projectSegmentLimit.toLocaleString()} segments limit`" />
+                        <InfoBullet class="info-step__column__bullets__item" title="Projects" info="1 project" />
+                        <InfoBullet class="info-step__column__bullets__item" title="Storage" info="25 GB limit" />
+                        <InfoBullet class="info-step__column__bullets__item" title="Download" info="25 GB limit" />
+                        <InfoBullet class="info-step__column__bullets__item" title="Segments" info="10,000 segments limit" />
                         <InfoBullet class="info-step__column__bullets__item" title="Link Sharing" info="Link sharing with Storj domain" />
                     </div>
                 </div>
@@ -34,12 +34,11 @@
                         height="48px"
                         :is-green="true"
                         :on-press="onUpgrade"
-                        :is-disabled="loading"
                     />
                     <div class="info-step__column__bullets">
                         <InfoBullet class="info-step__column__bullets__item" is-pro title="Projects" info="3 projects + more on request" />
                         <InfoBullet class="info-step__column__bullets__item" is-pro :title="storagePrice" info="25 GB free included" />
-                        <InfoBullet class="info-step__column__bullets__item" is-pro title="Egress $0.007 GB" :info="downloadInfo">
+                        <InfoBullet class="info-step__column__bullets__item" is-pro title="Download $0.007 GB" :info="downloadInfo">
                             <template v-if="downloadMoreInfo" #moreInfo>
                                 <p class="info-step__column__bullets__message">{{ downloadMoreInfo }}</p>
                             </template>
@@ -65,12 +64,10 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeMount, ref } from 'vue';
+import { onBeforeMount, ref } from 'vue';
 
 import { useUsersStore } from '@/store/modules/usersStore';
 import { useNotify } from '@/utils/hooks';
-import { User } from '@/types/users';
-import { Size } from '@/utils/bytesSize';
 
 import UpgradeAccountWrapper from '@/components/modals/upgradeAccountFlow/UpgradeAccountWrapper.vue';
 import VButton from '@/components/common/VButton.vue';
@@ -80,35 +77,12 @@ const usersStore = useUsersStore();
 const notify = useNotify();
 
 const props = defineProps<{
-    loading: boolean;
     onUpgrade: () => void;
 }>();
 
 const storagePrice = ref<string>('Storage $0.004 GB / month');
 const downloadInfo = ref<string>('25 GB free every month');
 const downloadMoreInfo = ref<string>('');
-
-/**
- * Returns user entity from store.
- */
-const user = computed((): User => {
-    return usersStore.state.user;
-});
-
-/**
- * Returns formatted free projects count.
- */
-const freeProjects = computed((): string => {
-    return `${user.value.projectLimit} project${user.value.projectLimit > 1 ? 's' : ''}`;
-});
-
-/**
- * Returns formatted free usage value.
- */
-function freeUsageValue(value: number): string {
-    const size = new Size(value);
-    return `${size.formattedBytes} ${size.label}`;
-}
 
 /**
  * Lifecycle hook before initial render.

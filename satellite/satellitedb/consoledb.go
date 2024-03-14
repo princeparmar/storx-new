@@ -48,7 +48,7 @@ func (db *ConsoleDB) ProjectMembers() console.ProjectMembers {
 
 // ProjectInvitations is a getter for ProjectInvitations repository.
 func (db *ConsoleDB) ProjectInvitations() console.ProjectInvitations {
-	return &projectInvitations{db.methods}
+	return &projectInvitations{db.db}
 }
 
 // APIKeys is a getter for APIKeys repository.
@@ -78,12 +78,12 @@ func (db *ConsoleDB) ResetPasswordTokens() console.ResetPasswordTokens {
 
 // WebappSessions is a getter for WebappSessions repository.
 func (db *ConsoleDB) WebappSessions() consoleauth.WebappSessions {
-	return &webappSessions{db.db}
+	return &webappSessions{db.methods}
 }
 
 // AccountFreezeEvents is a getter for AccountFreezeEvents repository.
 func (db *ConsoleDB) AccountFreezeEvents() console.AccountFreezeEvents {
-	return &accountFreezeEvents{db.db}
+	return &accountFreezeEvents{db.methods}
 }
 
 // WithTx is a method for executing and retrying transaction.

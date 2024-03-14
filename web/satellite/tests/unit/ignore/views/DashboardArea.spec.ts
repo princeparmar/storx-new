@@ -1,10 +1,9 @@
-// Copyright (C) 2019 Storx Labs, Inc.
+// Copyright (C) 2019 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 import { shallowMount } from '@vue/test-utils';
 
-import { router } from '@/router';
-import { RouteConfig } from '@/types/router';
+import { RouteConfig, router } from '@/router';
 import { AnalyticsHttpApi } from '@/api/analytics';
 import DashboardArea from '@/views/DashboardArea.vue';
 

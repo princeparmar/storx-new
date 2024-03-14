@@ -18,7 +18,6 @@ import (
 	"storj.io/common/storj"
 	"storj.io/storj/satellite/internalpb"
 	"storj.io/storj/satellite/metabase"
-	"storj.io/storj/satellite/nodeselection"
 	"storj.io/storj/satellite/overlay"
 )
 
@@ -44,7 +43,7 @@ type Config struct {
 //
 //go:generate mockgen -destination mock_test.go -package orders . OverlayForOrders
 type Overlay interface {
-	CachedGetOnlineNodesForGet(context.Context, []storj.NodeID) (map[storj.NodeID]*nodeselection.SelectedNode, error)
+	CachedGetOnlineNodesForGet(context.Context, []storj.NodeID) (map[storj.NodeID]*overlay.SelectedNode, error)
 	GetOnlineNodesForAuditRepair(context.Context, []storj.NodeID) (map[storj.NodeID]*overlay.NodeReputation, error)
 	Get(ctx context.Context, nodeID storj.NodeID) (*overlay.NodeDossier, error)
 	IsOnline(node *overlay.NodeDossier) bool
@@ -54,11 +53,10 @@ type Overlay interface {
 //
 // architecture: Service
 type Service struct {
-	log            *zap.Logger
-	satellite      signing.Signer
-	overlay        Overlay
-	orders         DB
-	placementRules overlay.PlacementRules
+	log       *zap.Logger
+	satellite signing.Signer
+	overlay   Overlay
+	orders    DB
 
 	encryptionKeys EncryptionKeys
 
@@ -71,18 +69,17 @@ type Service struct {
 // NewService creates new service for creating order limits.
 func NewService(
 	log *zap.Logger, satellite signing.Signer, overlay Overlay,
-	orders DB, placementRules overlay.PlacementRules, config Config,
+	orders DB, config Config,
 ) (*Service, error) {
 	if config.EncryptionKeys.Default.IsZero() {
 		return nil, Error.New("encryption keys must be specified to include encrypted metadata")
 	}
 
 	return &Service{
-		log:            log,
-		satellite:      satellite,
-		overlay:        overlay,
-		orders:         orders,
-		placementRules: placementRules,
+		log:       log,
+		satellite: satellite,
+		overlay:   overlay,
+		orders:    orders,
 
 		encryptionKeys: config.EncryptionKeys,
 
@@ -147,10 +144,11 @@ func (service *Service) CreateGetOrderLimits(ctx context.Context, bucket metabas
 		return nil, storj.PiecePrivateKey{}, Error.Wrap(err)
 	}
 
-	filter := service.placementRules(segment.Placement)
-	for id, node := range nodes {
-		if !filter.MatchInclude(node) {
-			delete(nodes, id)
+	if segment.Placement != storj.EveryCountry {
+		for id, node := range nodes {
+			if !segment.Placement.AllowedCountry(node.CountryCode) {
+				delete(nodes, id)
+			}
 		}
 	}
 
@@ -237,7 +235,7 @@ func getLimitByStorageNodeID(limits []*pb.AddressedOrderLimit, storageNodeID sto
 }
 
 // CreatePutOrderLimits creates the order limits for uploading pieces to nodes.
-func (service *Service) CreatePutOrderLimits(ctx context.Context, bucket metabase.BucketLocation, nodes []*nodeselection.SelectedNode, pieceExpiration time.Time, maxPieceSize int64) (_ storj.PieceID, _ []*pb.AddressedOrderLimit, privateKey storj.PiecePrivateKey, err error) {
+func (service *Service) CreatePutOrderLimits(ctx context.Context, bucket metabase.BucketLocation, nodes []*overlay.SelectedNode, pieceExpiration time.Time, maxPieceSize int64) (_ storj.PieceID, _ []*pb.AddressedOrderLimit, privateKey storj.PiecePrivateKey, err error) {
 	defer mon.Task()(&ctx)(&err)
 
 	signer, err := NewSignerPut(service, pieceExpiration, time.Now(), maxPieceSize, bucket)
@@ -256,7 +254,7 @@ func (service *Service) CreatePutOrderLimits(ctx context.Context, bucket metabas
 }
 
 // ReplacePutOrderLimits replaces order limits for uploading pieces to nodes.
-func (service *Service) ReplacePutOrderLimits(ctx context.Context, rootPieceID storj.PieceID, addressedLimits []*pb.AddressedOrderLimit, nodes []*nodeselection.SelectedNode, pieceNumbers []int32) (_ []*pb.AddressedOrderLimit, err error) {
+func (service *Service) ReplacePutOrderLimits(ctx context.Context, rootPieceID storj.PieceID, addressedLimits []*pb.AddressedOrderLimit, nodes []*overlay.SelectedNode, pieceNumbers []int32) (_ []*pb.AddressedOrderLimit, err error) {
 	defer mon.Task()(&ctx)(&err)
 
 	pieceIDDeriver := rootPieceID.Deriver()
@@ -459,7 +457,7 @@ func (service *Service) CreateGetRepairOrderLimits(ctx context.Context, segment 
 }
 
 // CreatePutRepairOrderLimits creates the order limits for uploading the repaired pieces of segment to newNodes.
-func (service *Service) CreatePutRepairOrderLimits(ctx context.Context, segment metabase.Segment, getOrderLimits []*pb.AddressedOrderLimit, healthySet map[int32]struct{}, newNodes []*nodeselection.SelectedNode, optimalThresholdMultiplier float64, numPiecesInExcludedCountries int) (_ []*pb.AddressedOrderLimit, _ storj.PiecePrivateKey, err error) {
+func (service *Service) CreatePutRepairOrderLimits(ctx context.Context, segment metabase.Segment, getOrderLimits []*pb.AddressedOrderLimit, healthySet map[int32]struct{}, newNodes []*overlay.SelectedNode, optimalThresholdMultiplier float64, numPiecesInExcludedCountries int) (_ []*pb.AddressedOrderLimit, _ storj.PiecePrivateKey, err error) {
 	defer mon.Task()(&ctx)(&err)
 
 	// Create the order limits for being used to upload the repaired pieces
@@ -592,7 +590,7 @@ func (service *Service) DecryptOrderMetadata(ctx context.Context, order *pb.Orde
 	return key.DecryptMetadata(order.SerialNumber, order.EncryptedMetadata)
 }
 
-func resolveStorageNode_Selected(node *nodeselection.SelectedNode, resolveDNS bool) *pb.Node {
+func resolveStorageNode_Selected(node *overlay.SelectedNode, resolveDNS bool) *pb.Node {
 	return resolveStorageNode(&pb.Node{
 		Id:      node.ID,
 		Address: node.Address,

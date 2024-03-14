@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Storx Labs, Inc.
+// Copyright (C) 2023 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 import { reactive } from 'vue';
@@ -51,12 +51,11 @@ export const useNotificationsStore = defineStore('notifications', () => {
         }
     }
 
-    function notifySuccess(message: string, messageNode?: string): void {
+    function notifySuccess(message: string): void {
         const notification = new DelayedNotification(
             () => deleteNotification(notification.id),
             NOTIFICATION_TYPES.SUCCESS,
             message,
-            messageNode,
         );
 
         addNotification(notification);
@@ -82,7 +81,7 @@ export const useNotificationsStore = defineStore('notifications', () => {
         addNotification(notification);
     }
 
-    function notifyError(payload: ErrorPayload, messageNode?: string): void {
+    function notifyError(payload: ErrorPayload): void {
         if (payload.source) {
             state.analytics.errorEventTriggered(payload.source);
         }
@@ -91,7 +90,6 @@ export const useNotificationsStore = defineStore('notifications', () => {
             () => deleteNotification(notification.id),
             NOTIFICATION_TYPES.ERROR,
             payload.message,
-            messageNode,
         );
 
         addNotification(notification);

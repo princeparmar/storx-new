@@ -1,4 +1,4 @@
-// Copyright (C) 2021 Storx Labs, Inc.
+// Copyright (C) 2021 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -108,7 +108,7 @@ watch(() => props.width, () => {
         display: flex;
         flex-direction: column;
         align-items: center;
-        background-color: var(--c-orange-4);
+        background-color: var(--c-blue-4);
 
         &__value {
             font-size: 14px;
@@ -128,7 +128,7 @@ watch(() => props.width, () => {
             border-radius: 8px 0 0;
             transform: scale(1, 0.85) translate(0, 20%) rotate(45deg);
             margin-bottom: -4px;
-            background-color: var(--c-orange-4);
+            background-color: var(--c-blue-4);
         }
     }
 </style>

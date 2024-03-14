@@ -6,7 +6,6 @@ package live_test
 import (
 	"context"
 	"math/rand"
-	"strconv"
 	"testing"
 	"time"
 
@@ -137,28 +136,19 @@ func TestGetAllProjectTotals(t *testing.T) {
 				require.NoError(t, err)
 			}
 
-			for _, batchSize := range []int{1, 2, 3, 10, 13, 10000} {
-				t.Run("batch-size-"+strconv.Itoa(batchSize), func(t *testing.T) {
-					config.BatchSize = batchSize
-					testCache, err := live.OpenCache(ctx, zaptest.NewLogger(t).Named("live-accounting"), config)
-					require.NoError(t, err)
-					defer ctx.Check(testCache.Close)
+			usage, err := cache.GetAllProjectTotals(ctx)
+			require.NoError(t, err)
+			require.Len(t, usage, len(projectIDs))
 
-					usage, err := testCache.GetAllProjectTotals(ctx)
-					require.NoError(t, err)
-					require.Len(t, usage, len(projectIDs))
+			// make sure each project ID and total was received
+			for _, projID := range projectIDs {
+				totalStorage, err := cache.GetProjectStorageUsage(ctx, projID)
+				require.NoError(t, err)
+				assert.Equal(t, totalStorage, usage[projID].Storage)
 
-					// make sure each project ID and total was received
-					for _, projID := range projectIDs {
-						totalStorage, err := testCache.GetProjectStorageUsage(ctx, projID)
-						require.NoError(t, err)
-						assert.Equal(t, totalStorage, usage[projID].Storage)
-
-						totalSegments, err := testCache.GetProjectSegmentUsage(ctx, projID)
-						require.NoError(t, err)
-						assert.Equal(t, totalSegments, usage[projID].Segments)
-					}
-				})
+				totalSegments, err := cache.GetProjectSegmentUsage(ctx, projID)
+				require.NoError(t, err)
+				assert.Equal(t, totalSegments, usage[projID].Segments)
 			}
 		})
 	}

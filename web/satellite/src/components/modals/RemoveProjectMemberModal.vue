@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Storx Labs, Inc.
+// Copyright (C) 2023 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -32,7 +32,6 @@
                         border-radius="10px"
                         :on-press="closeModal"
                         :is-transparent="true"
-                        :is-disabled="isLoading"
                     />
                     <VButton
                         label="Remove"
@@ -43,7 +42,6 @@
                         font-size="14px"
                         border-radius="10px"
                         :on-press="onRemove"
-                        :is-disabled="isLoading"
                     />
                 </div>
             </div>
@@ -55,7 +53,8 @@
 import { computed } from 'vue';
 import { useRouter } from 'vue-router';
 
-import { RouteConfig } from '@/types/router';
+import { RouteConfig } from '@/router';
+import { AnalyticsHttpApi } from '@/api/analytics';
 import { Project } from '@/types/projects';
 import { AnalyticsErrorEventSource } from '@/utils/constants/analyticsEventNames';
 import { useNotify } from '@/utils/hooks';
@@ -63,8 +62,6 @@ import { useAppStore } from '@/store/modules/appStore';
 import { useProjectsStore } from '@/store/modules/projectsStore';
 import { useProjectMembersStore } from '@/store/modules/projectMembersStore';
 import { useConfigStore } from '@/store/modules/configStore';
-import { useLoading } from '@/composables/useLoading';
-import { useAnalyticsStore } from '@/store/modules/analyticsStore';
 
 import VModal from '@/components/common/VModal.vue';
 import VButton from '@/components/common/VButton.vue';
@@ -72,15 +69,14 @@ import VButton from '@/components/common/VButton.vue';
 import TeamMemberIcon from '@/../static/images/team/teamMember.svg';
 
 const FIRST_PAGE = 1;
-
-const analyticsStore = useAnalyticsStore();
 const configStore = useConfigStore();
 const appStore = useAppStore();
 const projectsStore = useProjectsStore();
 const pmStore = useProjectMembersStore();
 const notify = useNotify();
 const router = useRouter();
-const { isLoading, withLoading } = useLoading();
+
+const analytics: AnalyticsHttpApi = new AnalyticsHttpApi();
 
 const firstThreeSelected = computed((): string[] => {
     return pmStore.state.selectedProjectMembersEmails.slice(0, 3);
@@ -95,13 +91,13 @@ async function setProjectState(): Promise<void> {
     if (!projects.length) {
         const onboardingPath = RouteConfig.OnboardingTour.with(configStore.firstOnboardingStep).path;
 
-        analyticsStore.pageVisit(onboardingPath);
-        await router.push(onboardingPath);
+        analytics.pageVisit(onboardingPath);
+        router.push(onboardingPath);
 
         return;
     }
 
-    if (!projects.some(p => p.id === projectsStore.state.selectedProject.id)) {
+    if (!projects.includes(projectsStore.state.selectedProject)) {
         projectsStore.selectProject(projects[0].id);
     }
 
@@ -109,25 +105,17 @@ async function setProjectState(): Promise<void> {
 }
 
 async function onRemove(): Promise<void> {
-    await withLoading(async () => {
-        try {
-            await pmStore.deleteProjectMembers(projectsStore.state.selectedProject.id);
-            notify.success('Members were successfully removed from the project');
-            pmStore.setSearchQuery('');
-        } catch (error) {
-            error.message = `Error removing project members. ${error.message}`;
-            notify.notifyError(error, AnalyticsErrorEventSource.PROJECT_MEMBERS_HEADER);
-        }
+    try {
+        await pmStore.deleteProjectMembers(projectsStore.state.selectedProject.id);
+        await setProjectState();
+    } catch (error) {
+        notify.error(`Error while deleting users from projectMembers. ${error.message}`, AnalyticsErrorEventSource.PROJECT_MEMBERS_HEADER);
+        return;
+    }
 
-        try {
-            await setProjectState();
-        } catch (error) {
-            error.message = `Unable to fetch project members. ${error.message}`;
-            notify.notifyError(error, AnalyticsErrorEventSource.PROJECT_MEMBERS_HEADER);
-        }
-
-        closeModal();
-    });
+    notify.success('Members were successfully removed from project');
+    pmStore.setSearchQuery('');
+    closeModal();
 }
 
 /**
@@ -198,7 +186,7 @@ function closeModal(): void {
     &__info {
         font-size: 14px;
         line-height: 20px;
-        color: var(--c-orange-6);
+        color: var(--c-blue-6);
         padding: 16px 0;
         border-bottom: 1px solid var(--c-grey-2);
         text-align: left;

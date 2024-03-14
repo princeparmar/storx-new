@@ -5,8 +5,6 @@ package satellitedb
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 	"time"
 
 	"storj.io/common/uuid"
@@ -18,7 +16,7 @@ import (
 var _ consoleauth.WebappSessions = (*webappSessions)(nil)
 
 type webappSessions struct {
-	db *satelliteDB
+	db dbx.Methods
 }
 
 // Create creates a webapp session and returns the session info.
@@ -91,75 +89,6 @@ func (db *webappSessions) DeleteAllByUserID(ctx context.Context, userID uuid.UUI
 	defer mon.Task()(&ctx)(&err)
 
 	return db.db.Delete_WebappSession_By_UserId(ctx, dbx.WebappSession_UserId(userID.Bytes()))
-}
-
-// DeleteExpired deletes all sessions that have expired before the provided timestamp.
-func (db *webappSessions) DeleteExpired(ctx context.Context, now time.Time, asOfSystemTimeInterval time.Duration, pageSize int) (err error) {
-	defer mon.Task()(&ctx)(&err)
-
-	if pageSize <= 0 {
-		return Error.New("expected page size to be positive; got %d", pageSize)
-	}
-
-	var pageCursor, pageEnd uuid.UUID
-	aost := db.db.impl.AsOfSystemInterval(asOfSystemTimeInterval)
-	for {
-		// Select the ID beginning this page of records
-		err := db.db.QueryRowContext(ctx, `
-			SELECT id FROM webapp_sessions
-			`+aost+`
-			WHERE id > $1 AND expires_at < $2
-			ORDER BY id LIMIT 1
-		`, pageCursor, now).Scan(&pageCursor)
-		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				return nil
-			}
-			return Error.Wrap(err)
-		}
-
-		// Select the ID ending this page of records
-		err = db.db.QueryRowContext(ctx, `
-			SELECT id FROM webapp_sessions
-			`+aost+`
-			WHERE id > $1
-			ORDER BY id LIMIT 1 OFFSET $2
-		`, pageCursor, pageSize).Scan(&pageEnd)
-		if err != nil {
-			if !errors.Is(err, sql.ErrNoRows) {
-				return Error.Wrap(err)
-			}
-			// Since this is the last page, we want to return all remaining records
-			_, err = db.db.ExecContext(ctx, `
-				DELETE FROM webapp_sessions
-				WHERE id IN (
-					SELECT id FROM webapp_sessions
-					`+aost+`
-					WHERE id >= $1 AND expires_at < $2
-					ORDER BY id
-				)
-			`, pageCursor, now)
-			return Error.Wrap(err)
-		}
-
-		// Delete all expired records in the range between the beginning and ending IDs
-		_, err = db.db.ExecContext(ctx, `
-			DELETE FROM webapp_sessions
-			WHERE id IN (
-				SELECT id FROM webapp_sessions
-				`+aost+`
-				WHERE id BETWEEN $1 AND $2
-				AND expires_at < $3
-				ORDER BY id
-			)
-		`, pageCursor, pageEnd, now)
-		if err != nil {
-			return Error.Wrap(err)
-		}
-
-		// Advance the cursor to the next page
-		pageCursor = pageEnd
-	}
 }
 
 func getSessionFromDBX(dbxSession *dbx.WebappSession) (consoleauth.WebappSession, error) {

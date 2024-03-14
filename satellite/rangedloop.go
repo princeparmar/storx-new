@@ -18,7 +18,6 @@ import (
 	"storj.io/storj/private/lifecycle"
 	"storj.io/storj/satellite/accounting/nodetally"
 	"storj.io/storj/satellite/audit"
-	"storj.io/storj/satellite/gc/piecetracker"
 	"storj.io/storj/satellite/gracefulexit"
 	"storj.io/storj/satellite/metabase"
 	"storj.io/storj/satellite/metabase/rangedloop"
@@ -64,10 +63,6 @@ type RangedLoop struct {
 
 	Accounting struct {
 		NodeTallyObserver *nodetally.Observer
-	}
-
-	PieceTracker struct {
-		Observer *piecetracker.Observer
 	}
 
 	RangedLoop struct {
@@ -129,17 +124,8 @@ func NewRangedLoop(log *zap.Logger, db DB, metabaseDB *metabase.DB, config *Conf
 			metabaseDB)
 	}
 
-	{ // setup piece tracker observer
-		peer.PieceTracker.Observer = piecetracker.NewObserver(
-			log.Named("piecetracker"),
-			metabaseDB,
-			peer.DB.OverlayCache(),
-			config.PieceTracker,
-		)
-	}
-
 	{ // setup overlay
-		peer.Overlay.Service, err = overlay.NewService(peer.Log.Named("overlay"), peer.DB.OverlayCache(), peer.DB.NodeEvents(), config.Placement.CreateFilters, config.Console.ExternalAddress, config.Console.SatelliteName, config.Overlay)
+		peer.Overlay.Service, err = overlay.NewService(peer.Log.Named("overlay"), peer.DB.OverlayCache(), peer.DB.NodeEvents(), config.Console.ExternalAddress, config.Console.SatelliteName, config.Overlay)
 		if err != nil {
 			return nil, errs.Combine(err, peer.Close())
 		}
@@ -151,15 +137,10 @@ func NewRangedLoop(log *zap.Logger, db DB, metabaseDB *metabase.DB, config *Conf
 	}
 
 	{ // setup repair
-		if len(config.Checker.RepairExcludedCountryCodes) == 0 {
-			config.Checker.RepairExcludedCountryCodes = config.Overlay.RepairExcludedCountryCodes
-		}
-
 		peer.Repair.Observer = checker.NewObserver(
 			peer.Log.Named("repair:checker"),
 			peer.DB.RepairQueue(),
 			peer.Overlay.Service,
-			config.Placement.CreateFilters,
 			config.Checker,
 		)
 	}
@@ -184,10 +165,6 @@ func NewRangedLoop(log *zap.Logger, db DB, metabaseDB *metabase.DB, config *Conf
 
 		if config.Repairer.UseRangedLoop {
 			observers = append(observers, peer.Repair.Observer)
-		}
-
-		if config.PieceTracker.UseRangedLoop {
-			observers = append(observers, peer.PieceTracker.Observer)
 		}
 
 		segments := rangedloop.NewMetabaseRangeSplitter(metabaseDB, config.RangedLoop.AsOfSystemInterval, config.RangedLoop.BatchSize)

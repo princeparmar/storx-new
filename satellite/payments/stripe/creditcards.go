@@ -13,13 +13,6 @@ import (
 	"storj.io/storj/satellite/payments"
 )
 
-var (
-	// ErrCardNotFound is returned when card is not found for a user.
-	ErrCardNotFound = errs.Class("card not found")
-	// ErrDefaultCard is returned when a user tries to delete their default card.
-	ErrDefaultCard = errs.Class("default card")
-)
-
 // creditCards is an implementation of payments.CreditCards.
 //
 // architecture: Service
@@ -163,29 +156,7 @@ func (creditCards *creditCards) Remove(ctx context.Context, userID uuid.UUID, ca
 	if customer.InvoiceSettings != nil &&
 		customer.InvoiceSettings.DefaultPaymentMethod != nil &&
 		customer.InvoiceSettings.DefaultPaymentMethod.ID == cardID {
-		return ErrDefaultCard.New("can not detach default payment method.")
-	}
-
-	cardIter := creditCards.service.stripeClient.PaymentMethods().List(&stripe.PaymentMethodListParams{
-		ListParams: stripe.ListParams{Context: ctx},
-		Customer:   &customerID,
-		Type:       stripe.String(string(stripe.PaymentMethodTypeCard)),
-	})
-
-	isUserCard := false
-	for cardIter.Next() {
-		if cardIter.PaymentMethod().ID == cardID {
-			isUserCard = true
-			break
-		}
-	}
-
-	if err = cardIter.Err(); err != nil {
-		return Error.Wrap(err)
-	}
-
-	if !isUserCard {
-		return ErrCardNotFound.New("this card is not attached to this account.")
+		return Error.Wrap(errs.New("can not detach default payment method."))
 	}
 
 	cardParams := &stripe.PaymentMethodDetachParams{Params: stripe.Params{Context: ctx}}

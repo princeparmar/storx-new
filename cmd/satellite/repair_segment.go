@@ -94,7 +94,7 @@ func cmdRepairSegment(cmd *cobra.Command, args []string) (err error) {
 
 	dialer := rpc.NewDefaultDialer(tlsOptions)
 
-	overlayService, err := overlay.NewService(log.Named("overlay"), db.OverlayCache(), db.NodeEvents(), config.Placement.CreateFilters, config.Console.ExternalAddress, config.Console.SatelliteName, config.Overlay)
+	overlay, err := overlay.NewService(log.Named("overlay"), db.OverlayCache(), db.NodeEvents(), config.Console.ExternalAddress, config.Console.SatelliteName, config.Overlay)
 	if err != nil {
 		return err
 	}
@@ -102,9 +102,8 @@ func cmdRepairSegment(cmd *cobra.Command, args []string) (err error) {
 	orders, err := orders.NewService(
 		log.Named("orders"),
 		signing.SignerFromFullIdentity(identity),
-		overlayService,
+		overlay,
 		orders.NewNoopDB(),
-		config.Placement.CreateFilters,
 		config.Orders,
 	)
 	if err != nil {
@@ -115,7 +114,6 @@ func cmdRepairSegment(cmd *cobra.Command, args []string) (err error) {
 		log.Named("ec-repair"),
 		dialer,
 		signing.SigneeFromPeerIdentity(identity.PeerIdentity()),
-		config.Repairer.DialTimeout,
 		config.Repairer.DownloadTimeout,
 		true) // force inmemory download of pieces
 
@@ -123,10 +121,9 @@ func cmdRepairSegment(cmd *cobra.Command, args []string) (err error) {
 		log.Named("segment-repair"),
 		metabaseDB,
 		orders,
-		overlayService,
+		overlay,
 		nil, // TODO add noop version
 		ecRepairer,
-		config.Placement.CreateFilters,
 		config.Checker.RepairOverrides,
 		config.Repairer,
 	)
@@ -134,7 +131,7 @@ func cmdRepairSegment(cmd *cobra.Command, args []string) (err error) {
 	// TODO reorganize to avoid using peer.
 
 	peer := &satellite.Repairer{}
-	peer.Overlay = overlayService
+	peer.Overlay = overlay
 	peer.Orders.Service = orders
 	peer.EcRepairer = ecRepairer
 	peer.SegmentRepairer = segmentRepairer

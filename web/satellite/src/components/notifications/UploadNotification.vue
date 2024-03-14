@@ -1,8 +1,8 @@
-// Copyright (C) 2023 Storx Labs, Inc.
+// Copyright (C) 2023 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
-    <div class="notification-wrap__content" :class="{ 'notification-wrap__info-colors': infoNotification }">
+    <div class="notification-wrap__content" :class="{ 'notification-wrap__warning-colors': warningNotification}">
         <component :is="notificationIcon" class="notification-wrap__content__icon" />
         <div class="notification-wrap__content__middle">
             <p class="text"><b>{{ wordingBold }}</b> {{ wording }}</p>
@@ -13,14 +13,16 @@
 </template>
 
 <script setup lang="ts">
+import { Component } from 'vue';
+
 import CloseIcon from '@/../static/images/notifications/closeSmall.svg';
 
 const props = defineProps<{
-    wordingBold: string;
-    wording: string;
-    notificationIcon: string;
-    infoNotification: boolean;
-    onCloseClick: () => void;
+  wordingBold: string;
+  wording: string;
+  notificationIcon: Component;
+  warningNotification: boolean;
+  onCloseClick: () => void;
 }>();
 
 </script>
@@ -35,6 +37,7 @@ const props = defineProps<{
             background-color: #fff;
             border: 1px solid rgb(56 75 101 / 40%);
             padding: 16px;
+            margin-bottom: 48px;
             font-family: 'font_regular', sans-serif;
             font-size: 14px;
             border-radius: 16px;
@@ -69,9 +72,9 @@ const props = defineProps<{
             }
         }
 
-        &__info-colors {
-            background-color: var(--c-orange-2);
-            border: 1px solid #a5beff;
+        &__warning-colors {
+            background-color: #fec;
+            border: 1px solid #ffd78a;
         }
     }
 </style>

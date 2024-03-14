@@ -1,9 +1,8 @@
-// Copyright (C) 2019 Storx Labs, Inc.
+// Copyright (C) 2019 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 import { AnalyticsErrorEventSource } from '@/utils/constants/analyticsEventNames';
 import { useNotificationsStore } from '@/store/modules/notificationsStore';
-import { APIError } from '@/utils/error';
 
 /**
  * Exposes UI notifications functionality.
@@ -11,28 +10,9 @@ import { APIError } from '@/utils/error';
 export class Notificator {
     public constructor() {}
 
-    public success(message: string, messageNode?: string): void {
+    public success(message: string): void {
         const notificationsStore = useNotificationsStore();
-        notificationsStore.notifySuccess(message, messageNode);
-    }
-
-    public notifyError(error: Error, source: AnalyticsErrorEventSource | null): void {
-        const notificationsStore = useNotificationsStore();
-
-        if (error instanceof APIError) {
-            let template = `
-            <p class="message-title">${error.message}</p>
-        `;
-            if (error.requestID) {
-                template = `
-            ${template}
-            <p class="message-footer">Request ID: ${error.requestID}</p>
-        `;
-            }
-            notificationsStore.notifyError({ message: '', source }, template);
-            return;
-        }
-        notificationsStore.notifyError({ message: error.message, source });
+        notificationsStore.notifySuccess(message);
     }
 
     public error(message: string, source: AnalyticsErrorEventSource | null): void {

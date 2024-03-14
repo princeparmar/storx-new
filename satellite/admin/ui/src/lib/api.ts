@@ -22,14 +22,6 @@ export class Admin {
 	readonly operations = {
 		APIKeys: [
 			{
-				name: 'get',
-				desc: 'Get information on the specific API key',
-				params: [['API key', new InputText('text', true)]],
-				func: async (apiKey: string): Promise<Record<string, unknown>> => {
-					return this.fetch('GET', `apikeys/${apiKey}`);
-				}
-			},
-			{
 				name: 'delete key',
 				desc: 'Delete an API key',
 				params: [['API key', new InputText('text', true)]],
@@ -205,19 +197,6 @@ export class Admin {
 				}
 			},
 			{
-				name: 'update user agent',
-				desc: 'Update projects user agent',
-				params: [
-					['Project ID', new InputText('text', true)],
-					['User Agent', new InputText('text', true)]
-				],
-				func: async (projectId: string, userAgent: string): Promise<null> => {
-					return this.fetch('PATCH', `projects/${projectId}/useragent`, null, {
-						userAgent
-					}) as Promise<null>;
-				}
-			},
-			{
 				name: 'create API key',
 				desc: 'Create a new API key for a specific project',
 				params: [
@@ -249,7 +228,7 @@ export class Admin {
 				desc: 'Get the API keys of a specific project',
 				params: [['Project ID', new InputText('text', true)]],
 				func: async (projectId: string): Promise<Record<string, unknown>> => {
-					return this.fetch('GET', `projects/${projectId}/apikeys`);
+					return this.fetch('GET', `projects/${projectId}/apiKeys`);
 				}
 			},
 			{
@@ -429,19 +408,6 @@ Blank fields will not be updated.`,
 				}
 			},
 			{
-				name: 'update user agent',
-				desc: `Update user's user agent.`,
-				params: [
-					["current user's email", new InputText('email', true)],
-					['user agent', new InputText('text', true)]
-				],
-				func: async (currentEmail: string, userAgent: string): Promise<null> => {
-					return this.fetch('PATCH', `users/${currentEmail}/useragent`, null, {
-						userAgent
-					}) as Promise<null>;
-				}
-			},
-			{
 				name: 'disable MFA',
 				desc: "Disable user's mulifactor authentication",
 				params: [['email', new InputText('email', true)]],
@@ -463,44 +429,6 @@ Blank fields will not be updated.`,
 				params: [['email', new InputText('email', true)]],
 				func: async (email: string): Promise<null> => {
 					return this.fetch('DELETE', `users/${email}/freeze`) as Promise<null>;
-				}
-			},
-			{
-				name: 'unwarn user',
-				desc: "Remove a user's warning status",
-				params: [['email', new InputText('email', true)]],
-				func: async (email: string): Promise<null> => {
-					return this.fetch('DELETE', `users/${email}/warning`) as Promise<null>;
-				}
-			},
-			{
-				name: 'set geofencing',
-				desc: 'Set account level geofence for a user',
-				params: [
-					['email', new InputText('email', true)],
-					[
-						'Region',
-						new Select(false, true, [
-							{ text: 'European Union', value: 'EU' },
-							{ text: 'European Economic Area', value: 'EEA' },
-							{ text: 'United States', value: 'US' },
-							{ text: 'Germany', value: 'DE' },
-							{ text: 'No Russia and/or other sanctioned country', value: 'NR' }
-						])
-					]
-				],
-				func: async (email: string, region: string): Promise<null> => {
-					return this.fetch('PATCH', `users/${email}/geofence`, null, {
-						region
-					}) as Promise<null>;
-				}
-			},
-			{
-				name: 'delete geofencing',
-				desc: 'Delete account level geofence for a user',
-				params: [['email', new InputText('email', true)]],
-				func: async (email: string): Promise<null> => {
-					return this.fetch('DELETE', `users/${email}/geofence`) as Promise<null>;
 				}
 			}
 		],
@@ -536,7 +464,7 @@ Blank fields will not be updated.`,
 	}
 
 	protected async fetch(
-		method: 'DELETE' | 'GET' | 'POST' | 'PUT' | 'PATCH',
+		method: 'DELETE' | 'GET' | 'POST' | 'PUT',
 		path: string,
 		query?: string,
 		data?: Record<string, unknown>

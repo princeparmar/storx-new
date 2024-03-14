@@ -18,13 +18,10 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/zeebo/errs"
 	"go.uber.org/zap"
-	"golang.org/x/exp/maps"
 
 	"storj.io/common/errs2"
 	"storj.io/common/identity"
-	"storj.io/common/identity/testidentity"
 	"storj.io/common/memory"
-	"storj.io/common/nodetag"
 	"storj.io/common/pb"
 	"storj.io/common/rpc/rpcstatus"
 	"storj.io/common/signing"
@@ -39,9 +36,7 @@ import (
 	"storj.io/storj/satellite/internalpb"
 	"storj.io/storj/satellite/metabase"
 	"storj.io/storj/satellite/metainfo"
-	"storj.io/storj/satellite/overlay"
-	"storj.io/storj/storagenode"
-	"storj.io/storj/storagenode/contact"
+	"storj.io/storj/storagenode/blobstore"
 	"storj.io/uplink"
 	"storj.io/uplink/private/metaclient"
 	"storj.io/uplink/private/object"
@@ -997,9 +992,6 @@ func TestEndpoint_Object_With_StorageNodes(t *testing.T) {
 			require.NoError(t, uplnk.CreateBucket(uplinkCtx, sat, bucketName))
 			require.NoError(t, uplnk.Upload(uplinkCtx, sat, bucketName, "jones", testrand.Bytes(20*memory.KB)))
 
-			jonesSegments, err := planet.Satellites[0].Metabase.DB.TestingAllSegments(ctx)
-			require.NoError(t, err)
-
 			project, err := uplnk.OpenProject(ctx, planet.Satellites[0])
 			require.NoError(t, err)
 			defer ctx.Check(project.Close)
@@ -1015,45 +1007,24 @@ func TestEndpoint_Object_With_StorageNodes(t *testing.T) {
 			copyIPs, err := object.GetObjectIPs(ctx, uplink.Config{}, access, bucketName, "jones_copy")
 			require.NoError(t, err)
 
-			// verify that orignal and copy has the same results
-			require.ElementsMatch(t, ips, copyIPs)
-
-			expectedIPsMap := map[string]struct{}{}
-			for _, segment := range jonesSegments {
-				for _, piece := range segment.Pieces {
-					node, err := planet.Satellites[0].Overlay.Service.Get(ctx, piece.StorageNode)
-					require.NoError(t, err)
-					expectedIPsMap[node.LastIPPort] = struct{}{}
-				}
-			}
-
-			expectedIPs := [][]byte{}
-			for _, ip := range maps.Keys(expectedIPsMap) {
-				expectedIPs = append(expectedIPs, []byte(ip))
-			}
-			require.ElementsMatch(t, expectedIPs, ips)
-
-			// set bucket geofencing
-			_, err = planet.Satellites[0].DB.Buckets().UpdateBucket(ctx, buckets.Bucket{
-				ProjectID: planet.Uplinks[0].Projects[0].ID,
-				Name:      bucketName,
-				Placement: storj.EU,
+			sort.Slice(ips, func(i, j int) bool {
+				return bytes.Compare(ips[i], ips[j]) < 0
 			})
-			require.NoError(t, err)
+			sort.Slice(copyIPs, func(i, j int) bool {
+				return bytes.Compare(copyIPs[i], copyIPs[j]) < 0
+			})
 
-			// set one node to US to filter it out from IP results
-			usNode := planet.FindNode(jonesSegments[0].Pieces[0].StorageNode)
-			require.NoError(t, planet.Satellites[0].Overlay.Service.TestNodeCountryCode(ctx, usNode.ID(), "US"))
-			require.NoError(t, planet.Satellites[0].API.Overlay.Service.DownloadSelectionCache.Refresh(ctx))
+			// verify that orignal and copy has the same results
+			require.Equal(t, ips, copyIPs)
 
-			geoFencedIPs, err := object.GetObjectIPs(ctx, uplink.Config{}, access, bucketName, "jones")
-			require.NoError(t, err)
-
-			require.Len(t, geoFencedIPs, len(expectedIPs)-1)
-			for _, ip := range geoFencedIPs {
-				if string(ip) == usNode.Addr() {
-					t.Fatal("this IP should be removed from results because of geofencing")
-				}
+			// verify it's a real IP with valid host and port
+			for _, ip := range ips {
+				host, port, err := net.SplitHostPort(string(ip))
+				require.NoError(t, err)
+				netIP := net.ParseIP(host)
+				require.NotNil(t, netIP)
+				_, err = strconv.Atoi(port)
+				require.NoError(t, err)
 			}
 		})
 
@@ -1449,9 +1420,42 @@ func TestEndpoint_Object_With_StorageNodes(t *testing.T) {
 			err := planet.Uplinks[0].Upload(ctx, planet.Satellites[0], bucketName, objectName, testrand.Bytes(5*memory.KiB))
 			require.NoError(t, err)
 
+			segments, err := planet.Satellites[0].Metabase.DB.TestingAllSegments(ctx)
+			require.NoError(t, err)
+			require.Len(t, segments, 1)
+			require.NotZero(t, len(segments[0].Pieces))
+
+			for _, piece := range segments[0].Pieces {
+				node := planet.FindNode(piece.StorageNode)
+				pieceID := segments[0].RootPieceID.Derive(piece.StorageNode, int32(piece.Number))
+
+				piece, err := node.DB.Pieces().Stat(ctx, blobstore.BlobRef{
+					Namespace: planet.Satellites[0].ID().Bytes(),
+					Key:       pieceID.Bytes(),
+				})
+				require.NoError(t, err)
+				require.NotNil(t, piece)
+			}
+
+			oldPieces := segments[0].Pieces
 			expectedData := testrand.Bytes(5 * memory.KiB)
 			err = planet.Uplinks[0].Upload(ctx, planet.Satellites[0], bucketName, objectName, expectedData)
 			require.NoError(t, err)
+
+			planet.WaitForStorageNodeDeleters(ctx)
+
+			// verify that old object pieces are not stored on storage nodes anymore
+			for _, piece := range oldPieces {
+				node := planet.FindNode(piece.StorageNode)
+				pieceID := segments[0].RootPieceID.Derive(piece.StorageNode, int32(piece.Number))
+
+				piece, err := node.DB.Pieces().Stat(ctx, blobstore.BlobRef{
+					Namespace: planet.Satellites[0].ID().Bytes(),
+					Key:       pieceID.Bytes(),
+				})
+				require.Error(t, err)
+				require.Nil(t, piece)
+			}
 
 			data, err := planet.Uplinks[0].Download(ctx, planet.Satellites[0], bucketName, objectName)
 			require.NoError(t, err)
@@ -1590,6 +1594,59 @@ func TestEndpoint_DeletePendingObject(t *testing.T) {
 	testDeleteObject(t, createPendingObject, deletePendingObject)
 }
 
+func TestEndpoint_DeleteObjectAnyStatus(t *testing.T) {
+	createCommittedObject := func(ctx context.Context, t *testing.T, planet *testplanet.Planet, bucket, key string, data []byte) {
+		err := planet.Uplinks[0].Upload(ctx, planet.Satellites[0], bucket, key, data)
+		require.NoError(t, err)
+	}
+	deleteCommittedObject := func(ctx context.Context, t *testing.T, planet *testplanet.Planet, bucket, encryptedKey string, streamID uuid.UUID) {
+		projectID := planet.Uplinks[0].Projects[0].ID
+
+		deletedObjects, err := planet.Satellites[0].Metainfo.Endpoint.DeleteObjectAnyStatus(ctx, metabase.ObjectLocation{
+			ProjectID:  projectID,
+			BucketName: bucket,
+			ObjectKey:  metabase.ObjectKey(encryptedKey),
+		})
+		require.NoError(t, err)
+		require.Len(t, deletedObjects, 1)
+
+	}
+	testDeleteObject(t, createCommittedObject, deleteCommittedObject)
+
+	createPendingObject := func(ctx context.Context, t *testing.T, planet *testplanet.Planet, bucket, key string, data []byte) {
+		// TODO This should be replaced by a call to testplanet.Uplink.MultipartUpload when available.
+		project, err := planet.Uplinks[0].OpenProject(ctx, planet.Satellites[0])
+		require.NoError(t, err, "failed to retrieve project")
+		defer func() { require.NoError(t, project.Close()) }()
+
+		_, err = project.EnsureBucket(ctx, bucket)
+		require.NoError(t, err, "failed to create bucket")
+
+		info, err := project.BeginUpload(ctx, bucket, key, &uplink.UploadOptions{})
+		require.NoError(t, err, "failed to start multipart upload")
+
+		upload, err := project.UploadPart(ctx, bucket, key, info.UploadID, 1)
+		require.NoError(t, err, "failed to put object part")
+		_, err = upload.Write(data)
+		require.NoError(t, err, "failed to start multipart upload")
+		require.NoError(t, upload.Commit(), "failed to start multipart upload")
+	}
+
+	deletePendingObject := func(ctx context.Context, t *testing.T, planet *testplanet.Planet, bucket, encryptedKey string, streamID uuid.UUID) {
+		projectID := planet.Uplinks[0].Projects[0].ID
+
+		deletedObjects, err := planet.Satellites[0].Metainfo.Endpoint.DeleteObjectAnyStatus(ctx, metabase.ObjectLocation{
+			ProjectID:  projectID,
+			BucketName: bucket,
+			ObjectKey:  metabase.ObjectKey(encryptedKey),
+		})
+		require.NoError(t, err)
+		require.Len(t, deletedObjects, 1)
+	}
+
+	testDeleteObject(t, createPendingObject, deletePendingObject)
+}
+
 func testDeleteObject(t *testing.T,
 	createObject func(ctx context.Context, t *testing.T, planet *testplanet.Planet, bucket, key string, data []byte),
 	deleteObject func(ctx context.Context, t *testing.T, planet *testplanet.Planet, bucket, encryptedKey string, streamID uuid.UUID),
@@ -1620,6 +1677,9 @@ func testDeleteObject(t *testing.T,
 				),
 			},
 		}, func(t *testing.T, ctx *testcontext.Context, planet *testplanet.Planet) {
+			var (
+				percentExp = 0.75
+			)
 			for _, tc := range testCases {
 				tc := tc
 				t.Run(tc.caseDescription, func(t *testing.T) {
@@ -1650,8 +1710,12 @@ func testDeleteObject(t *testing.T,
 						totalUsedSpaceAfterDelete += piecesTotal
 					}
 
-					// we are not deleting data from SN right away so used space should be the same
-					require.Equal(t, totalUsedSpace, totalUsedSpaceAfterDelete)
+					// At this point we can only guarantee that the 75% of the SNs pieces
+					// are delete due to the success threshold
+					deletedUsedSpace := float64(totalUsedSpace-totalUsedSpaceAfterDelete) / float64(totalUsedSpace)
+					if deletedUsedSpace < percentExp {
+						t.Fatalf("deleted used space is less than %f%%. Got %f", percentExp, deletedUsedSpace)
+					}
 				})
 			}
 		})
@@ -1692,14 +1756,12 @@ func testDeleteObject(t *testing.T,
 			// Shutdown the first numToShutdown storage nodes before we delete the pieces
 			// and collect used space values for those nodes
 			snUsedSpace := make([]int64, len(planet.StorageNodes))
-			for i, node := range planet.StorageNodes {
+			for i := 0; i < numToShutdown; i++ {
 				var err error
-				snUsedSpace[i], _, err = node.Storage2.Store.SpaceUsedForPieces(ctx)
+				snUsedSpace[i], _, err = planet.StorageNodes[i].Storage2.Store.SpaceUsedForPieces(ctx)
 				require.NoError(t, err)
 
-				if i < numToShutdown {
-					require.NoError(t, planet.StopPeer(node))
-				}
+				require.NoError(t, planet.StopPeer(planet.StorageNodes[i]))
 			}
 
 			objects, err := planet.Satellites[0].Metabase.DB.TestingAllObjects(ctx)
@@ -1710,8 +1772,12 @@ func testDeleteObject(t *testing.T,
 
 			planet.WaitForStorageNodeDeleters(ctx)
 
-			// we are not deleting data from SN right away so used space should be the same
-			// for online and shutdown/offline node
+			// Check that storage nodes that were offline when deleting the pieces
+			// they are still holding data
+			// Check that storage nodes which are online when deleting pieces don't
+			// hold any piece
+			// We are comparing used space from before deletion for nodes that were
+			// offline, values for available nodes are 0
 			for i, sn := range planet.StorageNodes {
 				usedSpace, _, err := sn.Storage2.Store.SpaceUsedForPieces(ctx)
 				require.NoError(t, err)
@@ -2401,119 +2467,4 @@ func TestListUploads(t *testing.T) {
 		// test will fail when we will fix uplink and we will need to adjust this test
 		require.Equal(t, 1000, items)
 	})
-}
-
-func TestNodeTagPlacement(t *testing.T) {
-	ctx := testcontext.New(t)
-
-	satelliteIdentity := signing.SignerFromFullIdentity(testidentity.MustPregeneratedSignedIdentity(0, storj.LatestIDVersion()))
-
-	placementRules := overlay.ConfigurablePlacementRule{}
-	tag := fmt.Sprintf(`tag("%s", "certified","true")`, satelliteIdentity.ID())
-	err := placementRules.Set(fmt.Sprintf(`0:exclude(%s);16:%s`, tag, tag))
-	require.NoError(t, err)
-
-	testplanet.Run(t,
-		testplanet.Config{
-			SatelliteCount:   1,
-			StorageNodeCount: 12,
-			UplinkCount:      1,
-			Reconfigure: testplanet.Reconfigure{
-				Satellite: func(log *zap.Logger, index int, config *satellite.Config) {
-					config.Metainfo.RS.Min = 3
-					config.Metainfo.RS.Repair = 4
-					config.Metainfo.RS.Success = 5
-					config.Metainfo.RS.Total = 6
-					config.Metainfo.MaxInlineSegmentSize = 1
-					config.Placement = placementRules
-				},
-				StorageNode: func(index int, config *storagenode.Config) {
-					if index%2 == 0 {
-						tags := &pb.NodeTagSet{
-							NodeId:   testidentity.MustPregeneratedSignedIdentity(index+1, storj.LatestIDVersion()).ID.Bytes(),
-							SignedAt: time.Now().Unix(),
-							Tags: []*pb.Tag{
-								{
-									Name:  "certified",
-									Value: []byte("true"),
-								},
-							},
-						}
-						signed, err := nodetag.Sign(ctx, tags, satelliteIdentity)
-						require.NoError(t, err)
-
-						config.Contact.Tags = contact.SignedTags(pb.SignedNodeTagSets{
-							Tags: []*pb.SignedNodeTagSet{
-								signed,
-							},
-						})
-					}
-
-				},
-			},
-		},
-		func(t *testing.T, ctx *testcontext.Context, planet *testplanet.Planet) {
-			satellite := planet.Satellites[0]
-			buckets := satellite.API.Buckets.Service
-			uplink := planet.Uplinks[0]
-			projectID := uplink.Projects[0].ID
-
-			apiKey := planet.Uplinks[0].APIKey[planet.Satellites[0].ID()]
-			metainfoClient, err := uplink.DialMetainfo(ctx, satellite, apiKey)
-			require.NoError(t, err)
-			defer func() {
-				_ = metainfoClient.Close()
-			}()
-
-			nodeIndex := map[storj.NodeID]int{}
-			for ix, node := range planet.StorageNodes {
-				nodeIndex[node.Identity.ID] = ix
-			}
-			testPlacement := func(bucketName string, placement int, allowedNodes func(int) bool) {
-
-				createGeofencedBucket(t, ctx, buckets, projectID, bucketName, storj.PlacementConstraint(placement))
-
-				objectNo := 10
-				for i := 0; i < objectNo; i++ {
-
-					err := uplink.Upload(ctx, satellite, bucketName, "testobject"+strconv.Itoa(i), make([]byte, 10240))
-					require.NoError(t, err)
-				}
-
-				objects, _, err := metainfoClient.ListObjects(ctx, metaclient.ListObjectsParams{
-					Bucket: []byte(bucketName),
-				})
-				require.NoError(t, err)
-				require.Len(t, objects, objectNo)
-
-				for _, listedObject := range objects {
-					for i := 0; i < 5; i++ {
-						o, err := metainfoClient.DownloadObject(ctx, metaclient.DownloadObjectParams{
-							Bucket:             []byte(bucketName),
-							EncryptedObjectKey: listedObject.EncryptedObjectKey,
-						})
-						require.NoError(t, err)
-
-						for _, limit := range o.DownloadedSegments[0].Limits {
-							if limit != nil {
-								ix := nodeIndex[limit.Limit.StorageNodeId]
-								require.True(t, allowedNodes(ix))
-							}
-						}
-					}
-				}
-			}
-			t.Run("upload to constrained", func(t *testing.T) {
-				testPlacement("constrained", 16, func(i int) bool {
-					return i%2 == 0
-				})
-			})
-			t.Run("upload to generic excluding constrained", func(t *testing.T) {
-				testPlacement("generic", 0, func(i int) bool {
-					return i%2 == 1
-				})
-			})
-
-		},
-	)
 }

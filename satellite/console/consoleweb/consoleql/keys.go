@@ -18,6 +18,4 @@ const (
 	ContactInfoURL = "contactInfoURL"
 	// TermsAndConditionsURL is a key to store terms and conditions URL.
 	TermsAndConditionsURL = "termsAndConditionsURL"
-	// SatelliteRegion is a key to store the satellite's region/name.
-	SatelliteRegion = "satelliteRegion"
 )

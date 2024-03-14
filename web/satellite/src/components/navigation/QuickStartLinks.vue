@@ -1,4 +1,4 @@
-// Copyright (C) 2022 Storx Labs, Inc.
+// Copyright (C) 2022 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -44,15 +44,15 @@
 <script setup lang="ts">
 import { useRoute, useRouter } from 'vue-router';
 
+import { AnalyticsHttpApi } from '@/api/analytics';
 import { AnalyticsEvent } from '@/utils/constants/analyticsEventNames';
-import { RouteConfig } from '@/types/router';
+import { RouteConfig } from '@/router';
 import { User } from '@/types/users';
 import { AccessType } from '@/types/createAccessGrant';
 import { MODALS } from '@/utils/constants/appStatePopUps';
 import { useUsersStore } from '@/store/modules/usersStore';
 import { useAppStore } from '@/store/modules/appStore';
 import { useProjectsStore } from '@/store/modules/projectsStore';
-import { useAnalyticsStore } from '@/store/modules/analyticsStore';
 
 import NewProjectIcon from '@/../static/images/navigation/newProject.svg';
 import CreateAGIcon from '@/../static/images/navigation/createAccessGrant.svg';
@@ -60,7 +60,6 @@ import S3Icon from '@/../static/images/navigation/s3.svg';
 import UploadInCLIIcon from '@/../static/images/navigation/uploadInCLI.svg';
 import UploadInWebIcon from '@/../static/images/navigation/uploadInWeb.svg';
 
-const analyticsStore = useAnalyticsStore();
 const appStore = useAppStore();
 const usersStore = useUsersStore();
 const projectsStore = useProjectsStore();
@@ -73,14 +72,16 @@ const props = withDefaults(defineProps<{
     closeDropdowns: () => {},
 });
 
+const analytics: AnalyticsHttpApi = new AnalyticsHttpApi();
+
 /**
  * Redirects to create project screen.
  */
 function navigateToCreateAG(): void {
-    analyticsStore.eventTriggered(AnalyticsEvent.CREATE_AN_ACCESS_GRANT_CLICKED);
+    analytics.eventTriggered(AnalyticsEvent.CREATE_AN_ACCESS_GRANT_CLICKED);
     props.closeDropdowns();
 
-    analyticsStore.pageVisit(RouteConfig.AccessGrants.with(RouteConfig.CreateAccessModal).path);
+    analytics.pageVisit(RouteConfig.AccessGrants.with(RouteConfig.CreateAccessModal).path);
     router.push({
         name: RouteConfig.CreateAccessModal.name,
         query: { accessType: AccessType.AccessGrant },
@@ -91,10 +92,10 @@ function navigateToCreateAG(): void {
  * Redirects to Create Access Modal with "s3" access type preselected
  */
 function navigateToAccessGrantS3(): void {
-    analyticsStore.eventTriggered(AnalyticsEvent.CREATE_S3_CREDENTIALS_CLICKED);
+    analytics.eventTriggered(AnalyticsEvent.CREATE_S3_CREDENTIALS_CLICKED);
     props.closeDropdowns();
 
-    analyticsStore.pageVisit(RouteConfig.AccessGrants.with(RouteConfig.CreateAccessModal).path);
+    analytics.pageVisit(RouteConfig.AccessGrants.with(RouteConfig.CreateAccessModal).path);
     router.push({
         name: RouteConfig.CreateAccessModal.name,
         query: { accessType: AccessType.S3 },
@@ -105,9 +106,9 @@ function navigateToAccessGrantS3(): void {
  * Redirects to objects screen.
  */
 function navigateToBuckets(): void {
-    analyticsStore.eventTriggered(AnalyticsEvent.UPLOAD_IN_WEB_CLICKED);
+    analytics.eventTriggered(AnalyticsEvent.UPLOAD_IN_WEB_CLICKED);
     props.closeDropdowns();
-    analyticsStore.pageVisit(RouteConfig.Buckets.with(RouteConfig.BucketsManagement).path);
+    analytics.pageVisit(RouteConfig.Buckets.with(RouteConfig.BucketsManagement).path);
     router.push(RouteConfig.Buckets.path).catch(() => {return;});
 }
 
@@ -115,10 +116,10 @@ function navigateToBuckets(): void {
  * Redirects to onboarding CLI flow screen.
  */
 function navigateToCLIFlow(): void {
-    analyticsStore.eventTriggered(AnalyticsEvent.UPLOAD_USING_CLI_CLICKED);
+    analytics.eventTriggered(AnalyticsEvent.UPLOAD_USING_CLI_CLICKED);
     props.closeDropdowns();
     appStore.setOnboardingBackRoute(route.path);
-    analyticsStore.pageVisit(RouteConfig.OnboardingTour.with(RouteConfig.OnbCLIStep.with(RouteConfig.AGName)).path);
+    analytics.pageVisit(RouteConfig.OnboardingTour.with(RouteConfig.OnbCLIStep.with(RouteConfig.AGName)).path);
     router.push({ name: RouteConfig.AGName.name });
 }
 
@@ -127,7 +128,7 @@ function navigateToCLIFlow(): void {
  */
 function navigateToNewProject(): void {
     if (route.name !== RouteConfig.CreateProject.name) {
-        analyticsStore.eventTriggered(AnalyticsEvent.NEW_PROJECT_CLICKED);
+        analytics.eventTriggered(AnalyticsEvent.NEW_PROJECT_CLICKED);
 
         const user: User = usersStore.state.user;
         const ownProjectsCount: number = projectsStore.projectsCount(user.id);
@@ -135,7 +136,7 @@ function navigateToNewProject(): void {
         if (!user.paidTier || user.projectLimit === ownProjectsCount) {
             appStore.updateActiveModal(MODALS.createProjectPrompt);
         } else {
-            analyticsStore.pageVisit(RouteConfig.CreateProject.path);
+            analytics.pageVisit(RouteConfig.CreateProject.path);
             appStore.updateActiveModal(MODALS.newCreateProject);
         }
     }

@@ -360,9 +360,6 @@ func (cc CreateObjectCopy) Run(ctx *testcontext.Context, t testing.TB, db *metab
 		} else {
 			expectedCopySegments[i].InlineData = []byte{}
 		}
-
-		expectedCopySegments[i].Pieces = make(metabase.Pieces, len(expectedOriginalSegments[i].Pieces))
-		copy(expectedCopySegments[i].Pieces, expectedOriginalSegments[i].Pieces)
 	}
 
 	opts := cc.FinishObject
@@ -393,14 +390,4 @@ func SegmentsToRaw(segments []metabase.Segment) []metabase.RawSegment {
 	}
 
 	return rawSegments
-}
-
-// ObjectStreamToPending converts ObjectStream to PendingObjectStream.
-func ObjectStreamToPending(objectStream metabase.ObjectStream) metabase.PendingObjectStream {
-	return metabase.PendingObjectStream{
-		ProjectID:  objectStream.ProjectID,
-		BucketName: objectStream.BucketName,
-		ObjectKey:  objectStream.ObjectKey,
-		StreamID:   objectStream.StreamID,
-	}
 }

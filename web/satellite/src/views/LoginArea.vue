@@ -1,4 +1,4 @@
-// Copyright (C) 2021 Storx Labs, Inc.
+// Copyright (C) 2021 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -11,11 +11,6 @@
                 <p class="login-area__content-area__activation-banner__message">
                     <template v-if="!isActivatedError"><b>Success!</b> Account verified.</template>
                     <template v-else><b>Oops!</b> This account has already been verified.</template>
-                </p>
-            </div>
-            <div v-if="inviteInvalid" class="login-area__content-area__activation-banner error">
-                <p class="login-area__content-area__activation-banner__message">
-                    <b>Oops!</b> The invite link you used has expired or is invalid.
                 </p>
             </div>
             <div class="login-area__content-area__container">
@@ -70,8 +65,6 @@
                         <VInput
                             label="Email Address"
                             placeholder="user@example.com"
-                            :init-value="email"
-                            :disabled="!!pathEmail"
                             :error="emailError"
                             role-description="email"
                             @setData="setEmail"
@@ -130,7 +123,9 @@
                     border-radius="50px"
                     :is-disabled="isLoading"
                     :on-press="onLoginClick"
-                />
+                >
+                    Sign In
+                </v-button>
                 <span v-if="isMFARequired" class="login-area__content-area__container__cancel" :class="{ disabled: isLoading }" @click.prevent="onMFACancelClick">
                     Cancel
                 </span>
@@ -155,11 +150,12 @@ import { useRoute, useRouter } from 'vue-router';
 
 import { AuthHttpApi } from '@/api/auth';
 import { ErrorMFARequired } from '@/api/errors/ErrorMFARequired';
-import { RouteConfig } from '@/types/router';
+import { RouteConfig } from '@/router';
 import { FetchState } from '@/utils/constants/fetchStateEnum';
 import { Validator } from '@/utils/validation';
 import { ErrorUnauthorized } from '@/api/errors/ErrorUnauthorized';
 import { ErrorBadRequest } from '@/api/errors/ErrorBadRequest';
+import { AnalyticsHttpApi } from '@/api/analytics';
 import { TokenInfo } from '@/types/users';
 import { LocalData } from '@/utils/localData';
 import { useNotify } from '@/utils/hooks';
@@ -167,7 +163,6 @@ import { useUsersStore } from '@/store/modules/usersStore';
 import { useAppStore } from '@/store/modules/appStore';
 import { useConfigStore } from '@/store/modules/configStore';
 import { MultiCaptchaConfig, PartneredSatellite } from '@/types/config';
-import { useAnalyticsStore } from '@/store/modules/analyticsStore';
 
 import VButton from '@/components/common/VButton.vue';
 import VInput from '@/components/common/VInput.vue';
@@ -201,20 +196,17 @@ const isRecoveryCodeState = ref(false);
 const isBadLoginMessageShown = ref(false);
 const isDropdownShown = ref(false);
 
-const pathEmail = ref<string | null>(null);
-const inviteInvalid = ref(false);
-
 const returnURL = ref(RouteConfig.ProjectDashboard.path);
 
 const hcaptcha = ref<VueHcaptcha | null>(null);
-const mfaInput = ref<typeof ConfirmMFAInput & ClearInput | null>(null);
+const mfaInput = ref<ConfirmMFAInput & ClearInput | null>(null);
 
 const forgotPasswordPath: string = RouteConfig.ForgotPassword.path;
 const registerPath: string = RouteConfig.Register.path;
 
 const auth = new AuthHttpApi();
+const analytics = new AnalyticsHttpApi();
 
-const analyticsStore = useAnalyticsStore();
 const configStore = useConfigStore();
 const appStore = useAppStore();
 const usersStore = useUsersStore();
@@ -248,12 +240,6 @@ const captchaConfig = computed((): MultiCaptchaConfig => {
  * Makes activated banner visible on successful account activation.
  */
 onMounted(() => {
-    inviteInvalid.value = (route.query.invite_invalid as string ?? null) === 'true';
-    pathEmail.value = route.query.email as string ?? null;
-    if (pathEmail.value) {
-        setEmail(pathEmail.value);
-    }
-
     isActivatedBannerShown.value = !!route.query.activated;
     isActivatedError.value = route.query.activated === 'false';
 
@@ -328,7 +314,7 @@ function setPassword(value: string): void {
 /**
  * Redirects to chosen satellite.
  */
-function clickSatellite(address: string): void {
+function clickSatellite(address): void {
     window.location.href = address + '/login';
 }
 
@@ -336,10 +322,6 @@ function clickSatellite(address: string): void {
  * Toggles satellite selection dropdown visibility (Tardigrade).
  */
 function toggleDropdown(): void {
-    if (pathEmail.value) {
-        // this page was opened from an email link, so don't allow satellite selection.
-        return;
-    }
     isDropdownShown.value = !isDropdownShown.value;
 }
 
@@ -423,7 +405,7 @@ async function login(): Promise<void> {
 
         if (isMFARequired.value) {
             if (error instanceof ErrorBadRequest || error instanceof ErrorUnauthorized) {
-                notify.error(error.message, null);
+                await notify.error(error.message, null);
             }
 
             isMFAError.value = true;
@@ -437,7 +419,7 @@ async function login(): Promise<void> {
             return;
         }
 
-        notify.notifyError(error, null);
+        await notify.error(error.message, null);
         isLoading.value = false;
         return;
     }
@@ -446,7 +428,7 @@ async function login(): Promise<void> {
     appStore.changeState(FetchState.LOADING);
     isLoading.value = false;
 
-    analyticsStore.pageVisit(returnURL.value);
+    analytics.pageVisit(returnURL.value);
     await router.push(returnURL.value);
 }
 
@@ -638,7 +620,7 @@ function validateFields(): boolean {
                     align-self: center;
                     font-size: 16px;
                     line-height: 21px;
-                    color: #ff5560;
+                    color: #0068dc;
                     text-align: center;
                     margin-top: 30px;
                     cursor: pointer;
@@ -647,7 +629,7 @@ function validateFields(): boolean {
                 &__recovery {
                     font-size: 16px;
                     line-height: 19px;
-                    color: #ff5560;
+                    color: #0068dc;
                     cursor: pointer;
                     margin-top: 20px;
                     text-align: center;
@@ -678,7 +660,7 @@ function validateFields(): boolean {
     }
 
     .link {
-        color: #ff5560;
+        color: #376fff;
         font-family: 'font_medium', sans-serif;
     }
 

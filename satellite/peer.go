@@ -43,7 +43,6 @@ import (
 	"storj.io/storj/satellite/console/userinfo"
 	"storj.io/storj/satellite/contact"
 	"storj.io/storj/satellite/gc/bloomfilter"
-	"storj.io/storj/satellite/gc/piecetracker"
 	"storj.io/storj/satellite/gc/sender"
 	"storj.io/storj/satellite/gracefulexit"
 	"storj.io/storj/satellite/mailservice"
@@ -162,8 +161,6 @@ type Config struct {
 	Server   server.Config
 	Debug    debug.Config
 
-	Placement overlay.ConfigurablePlacementRule `help:"detailed placement rules in the form 'id:definition;id:definition;...' where id is a 16 bytes integer (use >10 for backward compatibility), definition is a combination of the following functions:country(2 letter country codes,...), tag(nodeId, key, bytes(value)) all(...,...)."`
-
 	Admin admin.Config
 
 	Contact      contact.Config
@@ -218,10 +215,6 @@ type Config struct {
 	ProjectLimit accounting.ProjectLimitConfig
 
 	Analytics analytics.Config
-
-	PieceTracker piecetracker.Config
-
-	TagAuthorities string `help:"comma-separated paths of additional cert files, used to validate signed node tags"`
 }
 
 func setupMailService(log *zap.Logger, config Config) (*mailservice.Service, error) {

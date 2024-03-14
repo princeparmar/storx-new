@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Storx Labs, Inc.
+// Copyright (C) 2023 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -6,7 +6,7 @@
         <template #content>
             <div v-if="!isSuccess" class="content">
                 <div class="content__top">
-                    <h1 class="content__top__title">Activate your plan</h1>
+                    <h1 class="content__top__title">Activate your account</h1>
                     <div class="content__top__icon">
                         <CheckIcon />
                     </div>
@@ -57,7 +57,7 @@
                     <CircleCheck />
                 </div>
                 <h1 class="content-success__title">Success</h1>
-                <p class="content-success__subtitle">Your plan has been successfully activated.</p>
+                <p class="content-success__subtitle">Your account has been successfully activated.</p>
                 <div class="content-success__info">
                     <ThinCheck class="content-success__info__icon" />
                     <p class="content-success__info__title">
@@ -81,7 +81,7 @@
 import { computed, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 
-import { RouteConfig } from '@/types/router';
+import { RouteConfig } from '@/router';
 import { PricingPlanInfo, PricingPlanType } from '@/types/common';
 import { useNotify } from '@/utils/hooks';
 import { useUsersStore } from '@/store/modules/usersStore';
@@ -135,14 +135,10 @@ const isFree = computed((): boolean => {
 });
 
 /**
- * Closes the modal. If the user has not completed the onboarding tour, advance to the next step.
+ * Closes the modal and advances to the next step in the onboarding tour.
  */
 function onClose(): void {
     appStore.removeActiveModal();
-    // do not reroute if the user has already completed onboarding
-    if (usersStore.state.settings.onboardingEnd) {
-        return;
-    }
     if (isSuccess.value) {
         if (configStore.state.config.allProjectsDashboard) {
             router.push(RouteConfig.AllProjectsDashboard.path);
@@ -187,7 +183,7 @@ async function onCardAdded(token: string): Promise<void> {
         // Fetch cards to hide paid tier banner
         await billingStore.getCreditCards();
     } catch (error) {
-        notify.notifyError(error, null);
+        await notify.error(error.message, null);
     }
 
     isLoading.value = false;
@@ -262,7 +258,7 @@ async function onCardAdded(token: string): Promise<void> {
         }
 
         &__description :deep(a) {
-            color: var(--c-orange-3);
+            color: var(--c-blue-3);
             text-decoration: underline;
         }
 

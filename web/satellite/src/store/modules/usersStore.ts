@@ -1,8 +1,8 @@
-// Copyright (C) 2022 Storx Labs, Inc.
+// Copyright (C) 2022 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 import { defineStore } from 'pinia';
-import { computed, reactive, readonly } from 'vue';
+import { computed, reactive } from 'vue';
 
 import {
     DisableMFARequest,
@@ -15,11 +15,9 @@ import {
 import { AuthHttpApi } from '@/api/auth';
 import { useConfigStore } from '@/store/modules/configStore';
 
-export const DEFAULT_USER_SETTINGS = readonly(new UserSettings());
-
 export class UsersState {
     public user: User = new User();
-    public settings: Readonly<UserSettings> = DEFAULT_USER_SETTINGS;
+    public settings: UserSettings = new UserSettings();
     public userMFASecret = '';
     public userMFARecoveryCodes: string[] = [];
 }
@@ -94,7 +92,7 @@ export const useUsersStore = defineStore('users', () => {
 
     function clear() {
         state.user = new User();
-        state.settings = DEFAULT_USER_SETTINGS;
+        state.settings = new UserSettings();
         state.userMFASecret = '';
         state.userMFARecoveryCodes = [];
     }

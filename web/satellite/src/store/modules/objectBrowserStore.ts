@@ -1,22 +1,9 @@
-// Copyright (C) 2023 Storx Labs, Inc.
+// Copyright (C) 2023 Storj Labs, Inc.
 // See LICENSE for copying information.
 
-import { computed, reactive, UnwrapNestedRefs } from 'vue';
+import { computed, reactive } from 'vue';
 import { defineStore } from 'pinia';
-import {
-    S3Client,
-    CommonPrefix,
-    S3ClientConfig,
-    ListObjectsCommand,
-    ListObjectsV2Command,
-    DeleteObjectCommand,
-    PutObjectCommand,
-    _Object,
-    GetObjectCommand,
-} from '@aws-sdk/client-s3';
-import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
-import { Progress, Upload } from '@aws-sdk/lib-storage';
-import { SignatureV4 } from '@smithy/signature-v4';
+import S3, { CommonPrefix } from 'aws-sdk/clients/s3';
 
 import { AnalyticsErrorEventSource } from '@/utils/constants/analyticsEventNames';
 import { MODALS } from '@/utils/constants/appStatePopUps';
@@ -26,10 +13,12 @@ import { useConfigStore } from '@/store/modules/configStore';
 
 const listCache = new Map();
 
+type Promisable<T> = T | PromiseLike<T>;
+
 export type BrowserObject = {
     Key: string;
     Size: number;
-    LastModified: Date;
+    LastModified: number;
     type?: 'file' | 'folder';
     progress?: number;
     upload?: {
@@ -52,18 +41,12 @@ export enum UploadingStatus {
 
 export type UploadingBrowserObject = BrowserObject & {
     status: UploadingStatus;
-    Bucket: string;
     Body: File;
     failedMessage?: FailedUploadMessage;
 }
 
-export type PreviewCache = {
-    url: string,
-    lastModified: number,
-}
-
 export class FilesState {
-    s3: S3Client | null = null;
+    s3: S3 | null = null;
     accessKey: null | string = null;
     path = '';
     bucket = '';
@@ -76,21 +59,22 @@ export class FilesState {
     selectedFiles: BrowserObject[] = [];
     shiftSelectedFiles: BrowserObject[] = [];
     filesToBeDeleted: BrowserObject[] = [];
+    fetchSharedLink: (arg0: string) => Promisable<string> = () => 'javascript:null';
+    fetchPreviewAndMapUrl: (arg0: string) => Promisable<string> = () => 'javascript:null';
     openedDropdown: null | string = null;
     headingSorted = 'name';
     orderBy: 'asc' | 'desc' = 'asc';
     openModalOnFirstUpload = false;
     objectPathForModal = '';
     objectsCount = 0;
-    cachedObjectPreviewURLs: Map<string, PreviewCache> = new Map<string, PreviewCache>();
 }
 
 type InitializedFilesState = FilesState & {
-  s3: S3Client;
+  s3: S3;
 };
 
 function assertIsInitialized(
-    state: UnwrapNestedRefs<FilesState>,
+    state: FilesState,
 ): asserts state is InitializedFilesState {
     if (state.s3 === null) {
         throw new Error(
@@ -161,6 +145,8 @@ export const useObjectBrowserStore = defineStore('objectBrowser', () => {
         endpoint,
         browserRoot,
         openModalOnFirstUpload = true,
+        fetchSharedLink = () => 'javascript:null',
+        fetchPreviewAndMapUrl = () => 'javascript:null',
     }: {
         accessKey: string;
         secretKey: string;
@@ -168,23 +154,26 @@ export const useObjectBrowserStore = defineStore('objectBrowser', () => {
         endpoint: string;
         browserRoot: string;
         openModalOnFirstUpload?: boolean;
+        fetchSharedLink: (arg0: string) => Promisable<string>;
+        fetchPreviewAndMapUrl: (arg0: string) => Promisable<string>;
     }): void {
-        const s3Config: S3ClientConfig = {
-            credentials: {
-                accessKeyId: accessKey,
-                secretAccessKey: secretKey,
-            },
+        const s3Config = {
+            accessKeyId: accessKey,
+            secretAccessKey: secretKey,
             endpoint,
-            forcePathStyle: true,
-            signerConstructor: SignatureV4,
-            region: 'us-east-1',
+            s3ForcePathStyle: true,
+            signatureVersion: 'v4',
+            connectTimeout: 0,
+            httpOptions: { timeout: 0 },
         };
 
-        state.s3 = new S3Client(s3Config);
+        state.s3 = new S3(s3Config);
         state.accessKey = accessKey;
         state.bucket = bucket;
         state.browserRoot = browserRoot;
         state.openModalOnFirstUpload = openModalOnFirstUpload;
+        state.fetchSharedLink = fetchSharedLink;
+        state.fetchPreviewAndMapUrl = fetchPreviewAndMapUrl;
         state.path = '';
         state.files = [];
     }
@@ -198,19 +187,18 @@ export const useObjectBrowserStore = defineStore('objectBrowser', () => {
         secretKey: string;
         endpoint: string;
     }): void {
-        const s3Config: S3ClientConfig = {
-            credentials: {
-                accessKeyId: accessKey,
-                secretAccessKey: secretKey,
-            },
+        const s3Config = {
+            accessKeyId: accessKey,
+            secretAccessKey: secretKey,
             endpoint,
-            forcePathStyle: true,
-            signerConstructor: SignatureV4,
-            region: 'us-east-1',
+            s3ForcePathStyle: true,
+            signatureVersion: 'v4',
+            connectTimeout: 0,
+            httpOptions: { timeout: 0 },
         };
 
         state.files = [];
-        state.s3 = new S3Client(s3Config);
+        state.s3 = new S3(s3Config);
         state.accessKey = accessKey;
     }
 
@@ -226,20 +214,24 @@ export const useObjectBrowserStore = defineStore('objectBrowser', () => {
 
         assertIsInitialized(state);
 
-        const response = await state.s3.send(new ListObjectsCommand({
-            Bucket: state.bucket,
-            Delimiter: '/',
-            Prefix: path,
-        }));
+        const response = await state.s3
+            .listObjects({
+                Bucket: state.bucket,
+                Delimiter: '/',
+                Prefix: path,
+            })
+            .promise();
 
-        let { Contents, CommonPrefixes } = response;
+        const { Contents, CommonPrefixes } = response;
 
         if (Contents === undefined) {
-            Contents = [];
+            throw new Error('Bad S3 listObjects() response: "Contents" undefined');
         }
 
         if (CommonPrefixes === undefined) {
-            CommonPrefixes = [];
+            throw new Error(
+                'Bad S3 listObjects() response: "CommonPrefixes" undefined',
+            );
         }
 
         Contents.sort((a, b) => {
@@ -270,7 +262,7 @@ export const useObjectBrowserStore = defineStore('objectBrowser', () => {
             Prefix: string;
         }): BrowserObject => ({
             Key: Prefix.slice(path.length, -1),
-            LastModified: new Date(),
+            LastModified: 0,
             Size: 0,
             type: 'folder',
         });
@@ -310,9 +302,11 @@ export const useObjectBrowserStore = defineStore('objectBrowser', () => {
     async function getObjectCount(): Promise<void> {
         assertIsInitialized(state);
 
-        const responseV2 = await state.s3.send(new ListObjectsV2Command({
-            Bucket: state.bucket,
-        }));
+        const responseV2 = await state.s3
+            .listObjectsV2({
+                Bucket: state.bucket,
+            })
+            .promise();
 
         state.objectsCount = responseV2.KeyCount === undefined ? 0 : responseV2.KeyCount;
     }
@@ -321,7 +315,6 @@ export const useObjectBrowserStore = defineStore('objectBrowser', () => {
         assertIsInitialized(state);
 
         type Item = DataTransferItem | FileSystemEntry;
-        type TraverseResult = { path: string, file: File };
 
         const items: Item[] = 'dataTransfer' in e && e.dataTransfer
             ? [...e.dataTransfer.items]
@@ -329,7 +322,7 @@ export const useObjectBrowserStore = defineStore('objectBrowser', () => {
                 ? ((e.target as unknown) as { files: FileSystemEntry[] }).files
                 : [];
 
-        async function* traverse(item: Item | Item[], path = ''): AsyncGenerator<TraverseResult, void, void> {
+        async function* traverse(item: Item | Item[], path = '') {
             if ('isFile' in item && item.isFile) {
                 const file = await new Promise(item.file.bind(item));
                 yield { path, file };
@@ -382,7 +375,7 @@ export const useObjectBrowserStore = defineStore('objectBrowser', () => {
 
         const fileNames = state.files.map((file) => file.Key);
 
-        function getUniqueFileName(fileName: string): string {
+        function getUniqueFileName(fileName) {
             for (let count = 1; fileNames.includes(fileName); count++) {
                 if (count > 1) {
                     fileName = fileName.replace(/\((\d+)\)(.*)/, `(${count})$2`);
@@ -394,196 +387,205 @@ export const useObjectBrowserStore = defineStore('objectBrowser', () => {
             return fileName;
         }
 
+        const appStore = useAppStore();
+        const config = useConfigStore();
+        const { notifyError } = useNotificationsStore();
+
         for await (const { path, file } of traverse(iterator)) {
             const directories = path.split('/');
             directories[0] = getUniqueFileName(directories[0]);
 
             const fileName = getUniqueFileName(directories.join('/') + file.name);
-            const key = state.path + fileName;
 
-            await enqueueUpload(key, file);
+            const params = {
+                Bucket: state.bucket,
+                Key: state.path + fileName,
+                Body: file,
+            };
+
+            if (config.state.config.newUploadModalEnabled) {
+                if (state.uploading.some(f => f.Key === params.Key && f.status === UploadingStatus.InProgress)) {
+                    notifyError({ message: `${params.Key} is already uploading`, source: AnalyticsErrorEventSource.OBJECT_UPLOAD_ERROR });
+                    continue;
+                }
+            }
+
+            // If file size exceeds 1 GB, show warning notification
+            if (file.size > (1024 * 1024 * 1024)) {
+                appStore.setLargeUploadWarningNotification(true);
+            }
+
+            const upload = state.s3.upload(
+                { ...params },
+                { partSize: 64 * 1024 * 1024 },
+            );
+
+            upload.on('httpUploadProgress', async (progress) => {
+                const file = state.uploading.find(file => file.Key === params.Key);
+                if (!file) {
+                    throw new Error(`No file found with key ${JSON.stringify(params.Key)}`);
+                }
+
+                file.progress = Math.round((progress.loaded / progress.total) * 100);
+            });
+
+            if (config.state.config.newUploadModalEnabled) {
+                if (state.uploading.some(f => f.Key === params.Key && f.status === UploadingStatus.Cancelled)) {
+                    state.uploading = state.uploading.filter(f => f.Key !== params.Key);
+                }
+
+                // If file size exceeds 30 GB, abort the upload attempt
+                if (file.size > (30 * 1024 * 1024 * 1024)) {
+                    state.uploading.push({
+                        ...params,
+                        upload,
+                        progress: 0,
+                        Size: 0,
+                        LastModified: 0,
+                        Body: file,
+                        status: UploadingStatus.Failed,
+                        failedMessage: FailedUploadMessage.TooBig,
+                    });
+
+                    appStore.setUploadingModal(true);
+                    continue;
+                }
+            }
+
+            state.uploading.push({
+                ...params,
+                upload,
+                progress: 0,
+                Size: 0,
+                LastModified: 0,
+                status: UploadingStatus.InProgress,
+            });
+
+            if (config.state.config.newUploadModalEnabled && !appStore.state.isUploadingModal) {
+                appStore.setUploadingModal(true);
+            }
+
+            state.uploadChain = state.uploadChain.then(async () => {
+                const index = state.uploading.findIndex(f => f.Key === params.Key);
+                if (index === -1) {
+                    // upload cancelled or removed
+                    return;
+                }
+
+                try {
+                    await upload.promise();
+                    state.uploading[index].status = UploadingStatus.Finished;
+                } catch (error) {
+                    handleUploadError(error.message, index);
+                    return;
+                }
+
+                await list();
+
+                const uploadedFiles = state.files.filter(f => f.type === 'file');
+                if (uploadedFiles.length === 1 && !path && state.openModalOnFirstUpload) {
+                    state.objectPathForModal = params.Key;
+                    appStore.updateActiveModal(MODALS.objectDetails);
+                }
+
+                if (!config.state.config.newUploadModalEnabled) {
+                    state.uploading = state.uploading.filter((file) => file.Key !== params.Key);
+                }
+            });
         }
     }
 
-    async function retryUpload(key: string): Promise<void> {
+    async function retryUpload(item: UploadingBrowserObject): Promise<void> {
         assertIsInitialized(state);
 
-        const item = state.uploading.find(file => file.Key === key);
-        if (!item) {
-            throw new Error(`No uploads found with key '${key}'`);
+        const index = state.uploading.findIndex(f => f.Key === item.Key);
+        if (index === -1) {
+            throw new Error(`No file found with key ${JSON.stringify(item.Key)}`);
         }
-
-        return await enqueueUpload(item.Key, item.Body);
-    }
-
-    async function enqueueUpload(key: string, body: File): Promise<void> {
-        assertIsInitialized(state);
-
-        const appStore = useAppStore();
-        const config = useConfigStore();
-        const { notifyError } = useNotificationsStore();
 
         const params = {
             Bucket: state.bucket,
-            Key: key,
-            Body: body,
+            Key: item.Key,
+            Body: item.Body,
         };
 
-        if (config.state.config.newUploadModalEnabled) {
-            if (state.uploading.some(f => f.Key === key && f.status === UploadingStatus.InProgress)) {
-                notifyError({ message: `${key} is already uploading`, source: AnalyticsErrorEventSource.OBJECT_UPLOAD_ERROR });
-                return;
+        const upload = state.s3.upload(
+            { ...params },
+            { partSize: 64 * 1024 * 1024 },
+        );
+
+        upload.on('httpUploadProgress', async (progress) => {
+            const file = state.uploading.find(file => file.Key === params.Key);
+            if (!file) {
+                throw new Error(`No file found with key ${JSON.stringify(params.Key)}`);
             }
 
-            appStore.setUploadingModal(true);
-
-            const index = state.uploading.findIndex(file => file.Key === key);
-            if (index !== -1) {
-                state.uploading.splice(index, 1);
-            }
-
-            // If file size exceeds 30 GB, abort the upload attempt
-            if (body.size > (30 * 1024 * 1024 * 1024)) {
-                state.uploading.push({
-                    ...params,
-                    progress: 0,
-                    Size: 0,
-                    LastModified: new Date(),
-                    Body: body,
-                    status: UploadingStatus.Failed,
-                    failedMessage: FailedUploadMessage.TooBig,
-                });
-
-                return;
-            }
-        }
-
-        // If file size exceeds 5 GB, show warning notification
-        if (body.size > (5 * 1024 * 1024 * 1024)) {
-            appStore.setLargeUploadWarningNotification(true);
-        }
-
-        // Upload 4 parts at a time.
-        const queueSize = 4;
-        // For now use a 64mb part size. This may be configurable in the future to enhance performance.
-        const partSize = 64 * 1024 * 1024;
-
-        const upload = new Upload({
-            client: state.s3,
-            queueSize,
-            partSize,
-            params,
+            file.progress = Math.round((progress.loaded / progress.total) * 100);
         });
 
-        const progressListener = async (progress: Progress) => {
-            const item = state.uploading.find(f => f.Key === key);
-            if (!item) {
-                upload.off('httpUploadProgress', progressListener);
-                notifyError({
-                    message: `Error updating progress. No file found with key '${key}'`,
-                    source: AnalyticsErrorEventSource.OBJECT_UPLOAD_ERROR,
-                });
-                return;
-            }
-
-            let p = 0;
-            if (progress.loaded && progress.total) {
-                p = Math.round((progress.loaded / progress.total) * 100);
-            }
-            item.progress = p;
-        };
-        upload.on('httpUploadProgress', progressListener);
-
-        state.uploading.push({
+        state.uploading[index] = {
             ...params,
             upload,
             progress: 0,
             Size: 0,
-            LastModified: new Date(),
+            LastModified: 0,
             status: UploadingStatus.InProgress,
-        });
+        };
 
-        state.uploadChain = state.uploadChain.then(async () => {
-            const item = state.uploading.find(f => f.Key === key && f.status !== UploadingStatus.Cancelled);
-            if (!item) return;
+        try {
+            await upload.promise();
+            state.uploading[index].status = UploadingStatus.Finished;
+        } catch (error) {
+            handleUploadError(error.message, index);
+        }
 
-            try {
-                await upload.done();
-                item.status = UploadingStatus.Finished;
-            } catch (error) {
-                handleUploadError(item, error);
-                return;
-            } finally {
-                upload.off('httpUploadProgress', progressListener);
-            }
-
-            await list();
-
-            const uploadedFiles = state.files.filter(f => f.type === 'file');
-            if (uploadedFiles.length === 1 && !key.includes('/') && state.openModalOnFirstUpload) {
-                state.objectPathForModal = key;
-
-                if (config.state.config.galleryViewEnabled) {
-                    appStore.setGalleryView(true);
-                } else {
-                    appStore.updateActiveModal(MODALS.objectDetails);
-                }
-            }
-
-            if (!config.state.config.newUploadModalEnabled) {
-                state.uploading = state.uploading.filter(file => file.Key !== key);
-            }
-        });
+        await list();
     }
 
-    function handleUploadError(item: UploadingBrowserObject, error: Error): void {
-        if (error.name === 'AbortError' && item.status === UploadingStatus.Cancelled) return;
-
+    function handleUploadError(message: string, index: number): void {
         const config = useConfigStore();
-        if (config.state.config.newUploadModalEnabled) {
-            item.status = UploadingStatus.Failed;
-            item.failedMessage = FailedUploadMessage.Failed;
 
-            // If file size exceeds 1 GB, show warning notification.
-            if (item.Size > (1024 * 1024 * 1024)) {
-                const appStore = useAppStore();
-                appStore.setLargeUploadWarningNotification(true);
-            }
+        if (config.state.config.newUploadModalEnabled) {
+            state.uploading[index].status = UploadingStatus.Failed;
+            state.uploading[index].failedMessage = FailedUploadMessage.Failed;
         }
 
         const { notifyError } = useNotificationsStore();
 
         const limitExceededError = 'storage limit exceeded';
-        if (error.message.includes(limitExceededError)) {
+        if (message.includes(limitExceededError)) {
             notifyError({ message: `Error: ${limitExceededError}`, source: AnalyticsErrorEventSource.OBJECT_UPLOAD_ERROR });
         } else {
-            notifyError({ message: error.message, source: AnalyticsErrorEventSource.OBJECT_UPLOAD_ERROR });
+            notifyError({ message, source: AnalyticsErrorEventSource.OBJECT_UPLOAD_ERROR });
         }
     }
 
     async function createFolder(name): Promise<void> {
         assertIsInitialized(state);
 
-        await state.s3.send(new PutObjectCommand({
-            Bucket: state.bucket,
-            Key: state.path + name + '/.file_placeholder',
-            Body: '',
-        }));
+        await state.s3
+            .putObject({
+                Bucket: state.bucket,
+                Key: state.path + name + '/.file_placeholder',
+            })
+            .promise();
 
         list();
     }
 
-    async function deleteObject(path: string, file?: _Object | BrowserObject, isFolder = false): Promise<void> {
+    async function deleteObject(path: string, file?: S3.Object | BrowserObject, isFolder = false): Promise<void> {
         if (!file) {
             return;
         }
 
         assertIsInitialized(state);
 
-        await state.s3.send(new DeleteObjectCommand({
-            Bucket: state.bucket,
-            Key: path + file.Key,
-        }));
+        await state.s3
+            .deleteObject({
+                Bucket: state.bucket,
+                Key: path + file.Key,
+            })
+            .promise();
 
         const config = useConfigStore();
         if (config.state.config.newUploadModalEnabled) {
@@ -602,23 +604,31 @@ export const useObjectBrowserStore = defineStore('objectBrowser', () => {
         async function recurse(filePath) {
             assertIsInitialized(state);
 
-            let { Contents, CommonPrefixes } = await state.s3.send(new ListObjectsCommand({
-                Bucket: state.bucket,
-                Delimiter: '/',
-                Prefix: filePath,
-            }));
+            const { Contents, CommonPrefixes } = await state.s3
+                .listObjects({
+                    Bucket: state.bucket,
+                    Delimiter: '/',
+                    Prefix: filePath,
+                })
+                .promise();
 
             if (Contents === undefined) {
-                Contents = [];
+                throw new Error(
+                    'Bad S3 listObjects() response: "Contents" undefined',
+                );
             }
 
             if (CommonPrefixes === undefined) {
-                CommonPrefixes = [];
+                throw new Error(
+                    'Bad S3 listObjects() response: "CommonPrefixes" undefined',
+                );
             }
 
             async function thread() {
                 if (Contents === undefined) {
-                    Contents = [];
+                    throw new Error(
+                        'Bad S3 listObjects() response: "Contents" undefined',
+                    );
                 }
 
                 while (Contents.length) {
@@ -666,14 +676,14 @@ export const useObjectBrowserStore = defineStore('objectBrowser', () => {
         clearAllSelectedFiles();
     }
 
-    async function download(file): Promise<void> {
+    function download(file): void {
         assertIsInitialized(state);
 
-        const url = await getSignedUrl(state.s3, new GetObjectCommand({
+        const url = state.s3.getSignedUrl('getObject', {
             Bucket: state.bucket,
             Key: state.path + file.Key,
-        }));
-        const downloadURL = function(data: string, fileName: string) {
+        });
+        const downloadURL = function(data, fileName) {
             const a = document.createElement('a');
             a.href = data;
             a.download = fileName;
@@ -723,13 +733,17 @@ export const useObjectBrowserStore = defineStore('objectBrowser', () => {
         state.openedDropdown = 'FileBrowser';
     }
 
-    function cancelUpload(key: string): void {
-        const file = state.uploading.find(f => f.Key === key);
-        if (!file) {
-            throw new Error(`File '${key}' not found`);
+    function cancelUpload(key): void {
+        const index = state.uploading.findIndex(f => f.Key === key);
+        if (index === -1) {
+            throw new Error(`File ${JSON.stringify(key)} not found`);
         }
-        file.upload?.abort();
-        file.status = UploadingStatus.Cancelled;
+
+        const file = state.uploading[index];
+        if (file.progress !== undefined && file.upload && file.progress > 0) {
+            file.upload.abort();
+            state.uploading[index].status = UploadingStatus.Cancelled;
+        }
     }
 
     function sort(headingSorted: string): void {
@@ -741,14 +755,6 @@ export const useObjectBrowserStore = defineStore('objectBrowser', () => {
 
     function setObjectPathForModal(path: string): void {
         state.objectPathForModal = path;
-    }
-
-    function cacheObjectPreviewURL(path: string, cacheValue: PreviewCache): void {
-        state.cachedObjectPreviewURLs.set(path, cacheValue);
-    }
-
-    function removeFromObjectPreviewCache(path: string): void {
-        state.cachedObjectPreviewURLs.delete(path);
     }
 
     function setSelectedAnchorFile(file: BrowserObject | null): void {
@@ -777,12 +783,13 @@ export const useObjectBrowserStore = defineStore('objectBrowser', () => {
         state.selectedFiles = [];
         state.shiftSelectedFiles = [];
         state.filesToBeDeleted = [];
+        state.fetchSharedLink = () => 'javascript:null';
+        state.fetchPreviewAndMapUrl = () => 'javascript:null';
         state.openedDropdown = null;
         state.headingSorted = 'name';
         state.orderBy = 'asc';
         state.openModalOnFirstUpload = false;
         state.objectPathForModal = '';
-        state.cachedObjectPreviewURLs = new Map<string, PreviewCache>();
     }
 
     return {
@@ -815,8 +822,6 @@ export const useObjectBrowserStore = defineStore('objectBrowser', () => {
         setSelectedAnchorFile,
         setUnselectedAnchorFile,
         cancelUpload,
-        cacheObjectPreviewURL,
-        removeFromObjectPreviewCache,
         clearUploading,
         clear,
     };

@@ -1,5 +1,5 @@
 VERSION 0.6
-FROM golang:1.19
+FROM golang:1.18
 WORKDIR /go/storj
 
 multinode-web:
@@ -36,13 +36,6 @@ satellite-web:
     COPY +wasm/wasm static/wasm
     SAVE ARTIFACT dist AS LOCAL web/satellite/dist
     SAVE ARTIFACT static AS LOCAL web/satellite/static
-
-satellite-admin:
-    FROM node:16
-    WORKDIR /build
-    COPY satellite/admin/ui .
-    RUN ./build.sh
-    SAVE ARTIFACT build AS LOCAL satellite/admin/ui/build
 
 storagenode-bin:
     COPY go.mod go.mod
@@ -119,7 +112,6 @@ build-tagged-image:
     FROM img.dev.storj.io/storjup/base:20230208-1
     COPY +multinode-web/dist /var/lib/storj/storj/web/multinode/dist
     COPY +satellite-web/dist /var/lib/storj/storj/web/satellite/dist
-    COPY +satellite-admin/build /app/satellite-admin/
     COPY +satellite-web/static /var/lib/storj/storj/web/satellite/static
     COPY +storagenode-web/dist /var/lib/storj/storj/web/storagenode/dist
     COPY +storagenode-web/static /var/lib/storj/storj/web/storagenode/static

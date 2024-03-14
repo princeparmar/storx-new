@@ -1,4 +1,4 @@
-// Copyright (C) 2022 Storx Labs, Inc.
+// Copyright (C) 2022 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -43,21 +43,26 @@
 import { computed, onMounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
-import { RouteConfig } from '@/types/router';
+import { RouteConfig } from '@/router';
+import { AnalyticsHttpApi } from '@/api/analytics';
 import { AnalyticsErrorEventSource } from '@/utils/constants/analyticsEventNames';
 import { APP_STATE_DROPDOWNS } from '@/utils/constants/appStatePopUps';
 import { NavigationLink } from '@/types/navigation';
 import { useNotify } from '@/utils/hooks';
 import { useBillingStore } from '@/store/modules/billingStore';
 import { useAppStore } from '@/store/modules/appStore';
-import { useAnalyticsStore } from '@/store/modules/analyticsStore';
+import { useConfigStore } from '@/store/modules/configStore';
+import { useProjectsStore } from '@/store/modules/projectsStore';
 
-const analyticsStore = useAnalyticsStore();
 const appStore = useAppStore();
 const billingStore = useBillingStore();
+const configStore = useConfigStore();
+const projectsStore = useProjectsStore();
 const notify = useNotify();
 const router = useRouter();
 const route = useRoute();
+
+const analytics: AnalyticsHttpApi = new AnalyticsHttpApi();
 
 /**
  * Indicates if free credits dropdown shown.
@@ -113,7 +118,7 @@ function closeDropdown(): void {
 function routeToOverview(): void {
     const overviewPath = baseAccountRoute.value.with(RouteConfig.Billing).with(RouteConfig.BillingOverview).path;
     if (route.path !== overviewPath) {
-        analyticsStore.pageVisit(overviewPath);
+        analytics.pageVisit(overviewPath);
         router.push(overviewPath);
     }
 }
@@ -121,7 +126,7 @@ function routeToOverview(): void {
 function routeToPaymentMethods(): void {
     const payMethodsPath = baseAccountRoute.value.with(RouteConfig.Billing).with(RouteConfig.BillingPaymentMethods).path;
     if (route.path !== payMethodsPath) {
-        analyticsStore.pageVisit(payMethodsPath);
+        analytics.pageVisit(payMethodsPath);
         router.push(payMethodsPath);
     }
 }
@@ -129,7 +134,7 @@ function routeToPaymentMethods(): void {
 function routeToBillingHistory(): void {
     const billingPath = baseAccountRoute.value.with(RouteConfig.Billing).with(RouteConfig.BillingHistory).path;
     if (route.path !== billingPath) {
-        analyticsStore.pageVisit(billingPath);
+        analytics.pageVisit(billingPath);
         router.push(billingPath);
     }
 }
@@ -137,7 +142,7 @@ function routeToBillingHistory(): void {
 function routeToCoupons(): void {
     const couponsPath = baseAccountRoute.value.with(RouteConfig.Billing).with(RouteConfig.BillingCoupons).path;
     if (route.path !== couponsPath) {
-        analyticsStore.pageVisit(couponsPath);
+        analytics.pageVisit(couponsPath);
         router.push(couponsPath);
     }
 }
@@ -147,10 +152,15 @@ function routeToCoupons(): void {
  * Fetches account balance.
  */
 onMounted(async (): Promise<void> => {
+    if (!isOnAllDashboardSettings.value && !projectsStore.state.selectedProject.id) {
+        await router.push(RouteConfig.AllProjectsDashboard.path);
+        return;
+    }
+
     try {
         await billingStore.getBalance();
     } catch (error) {
-        notify.notifyError(error, AnalyticsErrorEventSource.BILLING_AREA);
+        notify.error(error.message, AnalyticsErrorEventSource.BILLING_AREA);
     }
 });
 </script>

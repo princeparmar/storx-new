@@ -12,7 +12,6 @@ import (
 	pgxerrcode "github.com/jackc/pgerrcode"
 	"github.com/zeebo/errs"
 	"go.uber.org/zap"
-	"golang.org/x/exp/slices"
 
 	"storj.io/common/memory"
 	"storj.io/common/storj"
@@ -47,11 +46,6 @@ type BeginObjectNextVersion struct {
 	EncryptedMetadataEncryptedKey []byte // optional
 
 	Encryption storj.EncryptionParameters
-
-	// UsePendingObjectsTable was added to options not metabase configuration
-	// to be able to test scenarios with pending object in pending_objects and
-	// objects table with the same test case.
-	UsePendingObjectsTable bool
 }
 
 // Verify verifies get object request fields.
@@ -73,7 +67,6 @@ func (opts *BeginObjectNextVersion) Verify() error {
 }
 
 // BeginObjectNextVersion adds a pending object to the database, with automatically assigned version.
-// TODO at the end of transition to pending_objects table we can rename this metod to just BeginObject.
 func (db *DB) BeginObjectNextVersion(ctx context.Context, opts BeginObjectNextVersion) (object Object, err error) {
 	defer mon.Task()(&ctx)(&err)
 
@@ -98,59 +91,31 @@ func (db *DB) BeginObjectNextVersion(ctx context.Context, opts BeginObjectNextVe
 		ZombieDeletionDeadline: opts.ZombieDeletionDeadline,
 	}
 
-	if opts.UsePendingObjectsTable {
-		object.Status = Pending
-		object.Version = DefaultVersion
-
-		if err := db.db.QueryRowContext(ctx, `
-			INSERT INTO pending_objects (
-				project_id, bucket_name, object_key, stream_id,
-				expires_at, encryption,
-				zombie_deletion_deadline,
-				encrypted_metadata, encrypted_metadata_nonce, encrypted_metadata_encrypted_key
-			) VALUES (
-				$1, $2, $3, $4,
-				$5, $6,
-				$7,
-				$8, $9, $10)
-			RETURNING created_at
-		`, opts.ProjectID, []byte(opts.BucketName), opts.ObjectKey, opts.StreamID,
-			opts.ExpiresAt, encryptionParameters{&opts.Encryption},
-			opts.ZombieDeletionDeadline,
-			opts.EncryptedMetadata, opts.EncryptedMetadataNonce, opts.EncryptedMetadataEncryptedKey,
-		).Scan(&object.CreatedAt); err != nil {
-			if code := pgerrcode.FromError(err); code == pgxerrcode.UniqueViolation {
-				return Object{}, Error.Wrap(ErrObjectAlreadyExists.New(""))
-			}
-			return Object{}, Error.New("unable to insert object: %w", err)
-		}
-	} else {
-		if err := db.db.QueryRowContext(ctx, `
-			INSERT INTO objects (
-				project_id, bucket_name, object_key, version, stream_id,
-				expires_at, encryption,
-				zombie_deletion_deadline,
-				encrypted_metadata, encrypted_metadata_nonce, encrypted_metadata_encrypted_key
-			) VALUES (
-				$1, $2, $3,
-					coalesce((
-						SELECT version + 1
-						FROM objects
-						WHERE project_id = $1 AND bucket_name = $2 AND object_key = $3
-						ORDER BY version DESC
-						LIMIT 1
-					), 1),
-				$4, $5, $6,
-				$7,
-				$8, $9, $10)
-			RETURNING status, version, created_at
-		`, opts.ProjectID, []byte(opts.BucketName), opts.ObjectKey, opts.StreamID,
-			opts.ExpiresAt, encryptionParameters{&opts.Encryption},
-			opts.ZombieDeletionDeadline,
-			opts.EncryptedMetadata, opts.EncryptedMetadataNonce, opts.EncryptedMetadataEncryptedKey,
-		).Scan(&object.Status, &object.Version, &object.CreatedAt); err != nil {
-			return Object{}, Error.New("unable to insert object: %w", err)
-		}
+	if err := db.db.QueryRowContext(ctx, `
+		INSERT INTO objects (
+			project_id, bucket_name, object_key, version, stream_id,
+			expires_at, encryption,
+			zombie_deletion_deadline,
+			encrypted_metadata, encrypted_metadata_nonce, encrypted_metadata_encrypted_key
+		) VALUES (
+			$1, $2, $3,
+				coalesce((
+					SELECT version + 1
+					FROM objects
+					WHERE project_id = $1 AND bucket_name = $2 AND object_key = $3
+					ORDER BY version DESC
+					LIMIT 1
+				), 1),
+			$4, $5, $6,
+			$7,
+			$8, $9, $10)
+		RETURNING status, version, created_at
+	`, opts.ProjectID, []byte(opts.BucketName), opts.ObjectKey, opts.StreamID,
+		opts.ExpiresAt, encryptionParameters{&opts.Encryption},
+		opts.ZombieDeletionDeadline,
+		opts.EncryptedMetadata, opts.EncryptedMetadataNonce, opts.EncryptedMetadataEncryptedKey,
+	).Scan(&object.Status, &object.Version, &object.CreatedAt); err != nil {
+		return Object{}, Error.New("unable to insert object: %w", err)
 	}
 
 	mon.Meter("object_begin").Mark(1)
@@ -258,8 +223,6 @@ type BeginSegment struct {
 	RootPieceID storj.PieceID
 
 	Pieces Pieces
-
-	UsePendingObjectsTable bool
 }
 
 // BeginSegment verifies, whether a new segment upload can be started.
@@ -283,17 +246,7 @@ func (db *DB) BeginSegment(ctx context.Context, opts BeginSegment) (err error) {
 
 	// Verify that object exists and is partial.
 	var value int
-	if opts.UsePendingObjectsTable {
-		err = db.db.QueryRowContext(ctx, `
-			SELECT 1
-			FROM pending_objects WHERE
-				project_id   = $1 AND
-				bucket_name  = $2 AND
-				object_key   = $3 AND
-				stream_id    = $4
-		`, opts.ProjectID, []byte(opts.BucketName), opts.ObjectKey, opts.StreamID).Scan(&value)
-	} else {
-		err = db.db.QueryRowContext(ctx, `
+	err = db.db.QueryRowContext(ctx, `
 			SELECT 1
 			FROM objects WHERE
 				project_id   = $1 AND
@@ -302,8 +255,7 @@ func (db *DB) BeginSegment(ctx context.Context, opts BeginSegment) (err error) {
 				version      = $4 AND
 				stream_id    = $5 AND
 				status       = `+pendingStatus,
-			opts.ProjectID, []byte(opts.BucketName), opts.ObjectKey, opts.Version, opts.StreamID).Scan(&value)
-	}
+		opts.ProjectID, []byte(opts.BucketName), opts.ObjectKey, opts.Version, opts.StreamID).Scan(&value)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrPendingObjectMissing.New("")
@@ -339,8 +291,6 @@ type CommitSegment struct {
 	Pieces Pieces
 
 	Placement storj.PlacementConstraint
-
-	UsePendingObjectsTable bool
 }
 
 // CommitSegment commits segment to the database.
@@ -381,89 +331,47 @@ func (db *DB) CommitSegment(ctx context.Context, opts CommitSegment) (err error)
 		return Error.New("unable to convert pieces to aliases: %w", err)
 	}
 
-	// second part will be removed when there will be no pending_objects in objects table.
 	// Verify that object exists and is partial.
-	if opts.UsePendingObjectsTable {
-		_, err = db.db.ExecContext(ctx, `
-			INSERT INTO segments (
-				stream_id, position, expires_at,
-				root_piece_id, encrypted_key_nonce, encrypted_key,
-				encrypted_size, plain_offset, plain_size, encrypted_etag,
-				redundancy,
-				remote_alias_pieces,
-				placement
-			) VALUES (
-				(SELECT stream_id
-					FROM pending_objects WHERE
-						project_id   = $12 AND
-						bucket_name  = $13 AND
-						object_key   = $14 AND
-						stream_id    = $15
-				), $1, $2,
-				$3, $4, $5,
-				$6, $7, $8, $9,
-				$10,
-				$11,
-				$16
-			)
-			ON CONFLICT(stream_id, position)
-			DO UPDATE SET
-				expires_at = $2,
-				root_piece_id = $3, encrypted_key_nonce = $4, encrypted_key = $5,
-				encrypted_size = $6, plain_offset = $7, plain_size = $8, encrypted_etag = $9,
-				redundancy = $10,
-				remote_alias_pieces = $11,
-				placement = $16
+	_, err = db.db.ExecContext(ctx, `
+		INSERT INTO segments (
+			stream_id, position, expires_at,
+			root_piece_id, encrypted_key_nonce, encrypted_key,
+			encrypted_size, plain_offset, plain_size, encrypted_etag,
+			redundancy,
+			remote_alias_pieces,
+			placement
+		) VALUES (
+			(SELECT stream_id
+				FROM objects WHERE
+					project_id   = $12 AND
+					bucket_name  = $13 AND
+					object_key   = $14 AND
+					version      = $15 AND
+					stream_id    = $16 AND
+					status       = `+pendingStatus+
+		`	), $1, $2,
+			$3, $4, $5,
+			$6, $7, $8, $9,
+			$10,
+			$11,
+			$17
+		)
+		ON CONFLICT(stream_id, position)
+		DO UPDATE SET
+			expires_at = $2,
+			root_piece_id = $3, encrypted_key_nonce = $4, encrypted_key = $5,
+			encrypted_size = $6, plain_offset = $7, plain_size = $8, encrypted_etag = $9,
+			redundancy = $10,
+			remote_alias_pieces = $11,
+			placement = $17
 		`, opts.Position, opts.ExpiresAt,
-			opts.RootPieceID, opts.EncryptedKeyNonce, opts.EncryptedKey,
-			opts.EncryptedSize, opts.PlainOffset, opts.PlainSize, opts.EncryptedETag,
-			redundancyScheme{&opts.Redundancy},
-			aliasPieces,
-			opts.ProjectID, []byte(opts.BucketName), opts.ObjectKey, opts.StreamID,
-			opts.Placement,
-		)
-	} else {
-		_, err = db.db.ExecContext(ctx, `
-			INSERT INTO segments (
-				stream_id, position, expires_at,
-				root_piece_id, encrypted_key_nonce, encrypted_key,
-				encrypted_size, plain_offset, plain_size, encrypted_etag,
-				redundancy,
-				remote_alias_pieces,
-				placement
-			) VALUES (
-				(SELECT stream_id
-					FROM objects WHERE
-						project_id   = $12 AND
-						bucket_name  = $13 AND
-						object_key   = $14 AND
-						version      = $15 AND
-						stream_id    = $16 AND
-						status       = `+pendingStatus+
-			`	), $1, $2,
-				$3, $4, $5,
-				$6, $7, $8, $9,
-				$10,
-				$11,
-				$17
-			)
-			ON CONFLICT(stream_id, position)
-			DO UPDATE SET
-				expires_at = $2,
-				root_piece_id = $3, encrypted_key_nonce = $4, encrypted_key = $5,
-				encrypted_size = $6, plain_offset = $7, plain_size = $8, encrypted_etag = $9,
-				redundancy = $10,
-				remote_alias_pieces = $11,
-				placement = $17
-			`, opts.Position, opts.ExpiresAt,
-			opts.RootPieceID, opts.EncryptedKeyNonce, opts.EncryptedKey,
-			opts.EncryptedSize, opts.PlainOffset, opts.PlainSize, opts.EncryptedETag,
-			redundancyScheme{&opts.Redundancy},
-			aliasPieces,
-			opts.ProjectID, []byte(opts.BucketName), opts.ObjectKey, opts.Version, opts.StreamID,
-			opts.Placement,
-		)
-	}
+		opts.RootPieceID, opts.EncryptedKeyNonce, opts.EncryptedKey,
+		opts.EncryptedSize, opts.PlainOffset, opts.PlainSize, opts.EncryptedETag,
+		redundancyScheme{&opts.Redundancy},
+		aliasPieces,
+		opts.ProjectID, []byte(opts.BucketName), opts.ObjectKey, opts.Version, opts.StreamID,
+		opts.Placement,
+	)
 	if err != nil {
 		if code := pgerrcode.FromError(err); code == pgxerrcode.NotNullViolation {
 			return ErrPendingObjectMissing.New("")
@@ -493,8 +401,6 @@ type CommitInlineSegment struct {
 	EncryptedETag []byte
 
 	InlineData []byte
-
-	UsePendingObjectsTable bool
 }
 
 // CommitInlineSegment commits inline segment to the database.
@@ -519,71 +425,39 @@ func (db *DB) CommitInlineSegment(ctx context.Context, opts CommitInlineSegment)
 		return ErrInvalidRequest.New("PlainOffset negative")
 	}
 
-	if opts.UsePendingObjectsTable {
-		_, err = db.db.ExecContext(ctx, `
-			INSERT INTO segments (
-				stream_id, position, expires_at,
-				root_piece_id, encrypted_key_nonce, encrypted_key,
-				encrypted_size, plain_offset, plain_size, encrypted_etag,
-				inline_data
-			) VALUES (
-				(SELECT stream_id
-					FROM pending_objects WHERE
-						project_id   = $11 AND
-						bucket_name  = $12 AND
-						object_key   = $13 AND
-						stream_id    = $14
-				), $1, $2,
-				$3, $4, $5,
-				$6, $7, $8, $9,
-				$10
-			)
-			ON CONFLICT(stream_id, position)
-			DO UPDATE SET
-				expires_at = $2,
-				root_piece_id = $3, encrypted_key_nonce = $4, encrypted_key = $5,
-				encrypted_size = $6, plain_offset = $7, plain_size = $8, encrypted_etag = $9,
-				inline_data = $10
+	// Verify that object exists and is partial.
+	_, err = db.db.ExecContext(ctx, `
+		INSERT INTO segments (
+			stream_id, position, expires_at,
+			root_piece_id, encrypted_key_nonce, encrypted_key,
+			encrypted_size, plain_offset, plain_size, encrypted_etag,
+			inline_data
+		) VALUES (
+			(SELECT stream_id
+				FROM objects WHERE
+					project_id   = $11 AND
+					bucket_name  = $12 AND
+					object_key   = $13 AND
+					version      = $14 AND
+					stream_id    = $15 AND
+					status       = `+pendingStatus+
+		`	), $1, $2,
+			$3, $4, $5,
+			$6, $7, $8, $9,
+			$10
+		)
+		ON CONFLICT(stream_id, position)
+		DO UPDATE SET
+			expires_at = $2,
+			root_piece_id = $3, encrypted_key_nonce = $4, encrypted_key = $5,
+			encrypted_size = $6, plain_offset = $7, plain_size = $8, encrypted_etag = $9,
+			inline_data = $10
 		`, opts.Position, opts.ExpiresAt,
-			storj.PieceID{}, opts.EncryptedKeyNonce, opts.EncryptedKey,
-			len(opts.InlineData), opts.PlainOffset, opts.PlainSize, opts.EncryptedETag,
-			opts.InlineData,
-			opts.ProjectID, []byte(opts.BucketName), opts.ObjectKey, opts.StreamID,
-		)
-	} else {
-		_, err = db.db.ExecContext(ctx, `
-					INSERT INTO segments (
-						stream_id, position, expires_at,
-						root_piece_id, encrypted_key_nonce, encrypted_key,
-						encrypted_size, plain_offset, plain_size, encrypted_etag,
-						inline_data
-					) VALUES (
-						(SELECT stream_id
-							FROM objects WHERE
-								project_id   = $11 AND
-								bucket_name  = $12 AND
-								object_key   = $13 AND
-								version      = $14 AND
-								stream_id    = $15 AND
-								status       = `+pendingStatus+
-			`	), $1, $2,
-						$3, $4, $5,
-						$6, $7, $8, $9,
-						$10
-					)
-					ON CONFLICT(stream_id, position)
-					DO UPDATE SET
-						expires_at = $2,
-						root_piece_id = $3, encrypted_key_nonce = $4, encrypted_key = $5,
-						encrypted_size = $6, plain_offset = $7, plain_size = $8, encrypted_etag = $9,
-						inline_data = $10
-				`, opts.Position, opts.ExpiresAt,
-			storj.PieceID{}, opts.EncryptedKeyNonce, opts.EncryptedKey,
-			len(opts.InlineData), opts.PlainOffset, opts.PlainSize, opts.EncryptedETag,
-			opts.InlineData,
-			opts.ProjectID, []byte(opts.BucketName), opts.ObjectKey, opts.Version, opts.StreamID,
-		)
-	}
+		storj.PieceID{}, opts.EncryptedKeyNonce, opts.EncryptedKey,
+		len(opts.InlineData), opts.PlainOffset, opts.PlainSize, opts.EncryptedETag,
+		opts.InlineData,
+		opts.ProjectID, []byte(opts.BucketName), opts.ObjectKey, opts.Version, opts.StreamID,
+	)
 	if err != nil {
 		if code := pgerrcode.FromError(err); code == pgxerrcode.NotNullViolation {
 			return ErrPendingObjectMissing.New("")
@@ -613,8 +487,10 @@ type CommitObject struct {
 	EncryptedMetadataEncryptedKey []byte // optional
 
 	DisallowDelete bool
-
-	UsePendingObjectsTable bool
+	// OnDelete will be triggered when/if existing object will be overwritten on commit.
+	// Wil be only executed after succesfull commit + delete DB operation.
+	// Error on this function won't revert back committed object.
+	OnDelete func(segments []DeletedSegmentInfo)
 }
 
 // Verify verifies reqest fields.
@@ -645,6 +521,8 @@ func (db *DB) CommitObject(ctx context.Context, opts CommitObject) (object Objec
 	if err := opts.Verify(); err != nil {
 		return Object{}, err
 	}
+
+	deletedSegments := []DeletedSegmentInfo{}
 
 	err = txutil.WithTx(ctx, db.db, nil, func(ctx context.Context, tx tagsql.Tx) error {
 		segments, err := fetchSegmentsForCommit(ctx, tx, opts.StreamID)
@@ -693,6 +571,20 @@ func (db *DB) CommitObject(ctx context.Context, opts CommitObject) (object Objec
 			encryptionParameters{&opts.Encryption},
 		}
 
+		metadataColumns := ""
+		if opts.OverrideEncryptedMetadata {
+			args = append(args,
+				opts.EncryptedMetadataNonce,
+				opts.EncryptedMetadata,
+				opts.EncryptedMetadataEncryptedKey,
+			)
+			metadataColumns = `,
+				encrypted_metadata_nonce         = $11,
+				encrypted_metadata               = $12,
+				encrypted_metadata_encrypted_key = $13
+			`
+		}
+
 		versionsToDelete := []Version{}
 		if err := withRows(tx.QueryContext(ctx, `
 			SELECT version
@@ -728,139 +620,39 @@ func (db *DB) CommitObject(ctx context.Context, opts CommitObject) (object Objec
 			return ErrPermissionDenied.New("no permissions to delete existing object")
 		}
 
-		if opts.UsePendingObjectsTable {
-			opts.Version = 1
+		err = tx.QueryRowContext(ctx, `
+			UPDATE objects SET
+				status =`+committedStatus+`,
+				segment_count = $6,
 
-			// we remove from deletion list object with version 1 as we will
-			// override/update instead deleting and inserting new one.
-			index := slices.Index(versionsToDelete, opts.Version)
-			if index != -1 {
-				versionsToDelete = slices.Delete(versionsToDelete, index, index+1)
-			}
+				total_plain_size     = $7,
+				total_encrypted_size = $8,
+				fixed_segment_size   = $9,
+				zombie_deletion_deadline = NULL,
 
-			args = append(args,
-				opts.EncryptedMetadataNonce,
-				opts.EncryptedMetadata,
-				opts.EncryptedMetadataEncryptedKey,
-				opts.OverrideEncryptedMetadata,
-			)
-
-			err = tx.QueryRowContext(ctx, `
-				WITH delete_pending_object AS (
-					DELETE FROM pending_objects WHERE
-						project_id   = $1 AND
-						bucket_name  = $2 AND
-						object_key   = $3 AND
-						stream_id    = $5
-					RETURNING
-						project_id, bucket_name, object_key, $4::INT4 as version, stream_id,
-						`+committedStatus+` as status, $6::INT4 as segment_count, $7::INT8 as total_plain_size, $8::INT8 as total_encrypted_size, $9::INT4 as fixed_segment_size,
-						NULL::timestamp as zombie_deletion_deadline,
-						CASE
-							WHEN encryption = 0 AND $10 <> 0 THEN $10
-							WHEN encryption = 0 AND $10 = 0 THEN NULL
-							ELSE encryption
-						END as
-						encryption,
-						encrypted_metadata_nonce, encrypted_metadata, encrypted_metadata_encrypted_key
-				), object_to_commit AS (
-					SELECT
-						project_id, bucket_name, object_key, version, stream_id,
-						status, segment_count, total_plain_size, total_encrypted_size, fixed_segment_size,
-						zombie_deletion_deadline, encryption,
-						CASE
-							WHEN $14::BOOL = true THEN $11
-							ELSE delete_pending_object.encrypted_metadata_nonce
-						END as
-						encrypted_metadata_nonce,
-						CASE
-							WHEN $14::BOOL = true THEN $12
-							ELSE delete_pending_object.encrypted_metadata
-						END as
-						encrypted_metadata,
-						CASE
-							WHEN $14::BOOL = true THEN $13
-							ELSE delete_pending_object.encrypted_metadata_encrypted_key
-						END as
-						encrypted_metadata_encrypted_key
-					FROM delete_pending_object
-				)
-				INSERT INTO objects (
-					project_id, bucket_name, object_key, version, stream_id,
-					status, segment_count, total_plain_size, total_encrypted_size, fixed_segment_size, zombie_deletion_deadline,
-					encryption,
-					encrypted_metadata_nonce, encrypted_metadata, encrypted_metadata_encrypted_key
-				)
-				SELECT * FROM object_to_commit
-				ON CONFLICT (project_id, bucket_name, object_key, version)
-				DO UPDATE SET (
-					stream_id,
-					status, segment_count, total_plain_size, total_encrypted_size, fixed_segment_size, zombie_deletion_deadline,
-					encryption,
-					encrypted_metadata_nonce, encrypted_metadata, encrypted_metadata_encrypted_key
-				) = (SELECT
-						stream_id,
-						status, segment_count, total_plain_size, total_encrypted_size, fixed_segment_size, zombie_deletion_deadline,
-						encryption,
-						encrypted_metadata_nonce, encrypted_metadata, encrypted_metadata_encrypted_key
-					FROM object_to_commit)
-				RETURNING
-					created_at, expires_at,
-					encrypted_metadata, encrypted_metadata_encrypted_key, encrypted_metadata_nonce,
-					encryption
+				-- TODO should we allow to override existing encryption parameters or return error if don't match with opts?
+				encryption = CASE
+					WHEN objects.encryption = 0 AND $10 <> 0 THEN $10
+					WHEN objects.encryption = 0 AND $10 = 0 THEN NULL
+					ELSE objects.encryption
+				END
+			    `+metadataColumns+`
+			WHERE
+				project_id   = $1 AND
+				bucket_name  = $2 AND
+				object_key   = $3 AND
+				version      = $4 AND
+				stream_id    = $5 AND
+				status       = `+pendingStatus+`
+			RETURNING
+				created_at, expires_at,
+				encrypted_metadata, encrypted_metadata_encrypted_key, encrypted_metadata_nonce,
+				encryption
 			`, args...).Scan(
-				&object.CreatedAt, &object.ExpiresAt,
-				&object.EncryptedMetadata, &object.EncryptedMetadataEncryptedKey, &object.EncryptedMetadataNonce,
-				encryptionParameters{&object.Encryption},
-			)
-		} else {
-			metadataColumns := ""
-			if opts.OverrideEncryptedMetadata {
-				args = append(args,
-					opts.EncryptedMetadataNonce,
-					opts.EncryptedMetadata,
-					opts.EncryptedMetadataEncryptedKey,
-				)
-				metadataColumns = `,
-					encrypted_metadata_nonce         = $11,
-					encrypted_metadata               = $12,
-					encrypted_metadata_encrypted_key = $13
-				`
-			}
-			err = tx.QueryRowContext(ctx, `
-				UPDATE objects SET
-					status =`+committedStatus+`,
-					segment_count = $6,
-
-					total_plain_size     = $7,
-					total_encrypted_size = $8,
-					fixed_segment_size   = $9,
-					zombie_deletion_deadline = NULL,
-
-					-- TODO should we allow to override existing encryption parameters or return error if don't match with opts?
-					encryption = CASE
-						WHEN objects.encryption = 0 AND $10 <> 0 THEN $10
-						WHEN objects.encryption = 0 AND $10 = 0 THEN NULL
-						ELSE objects.encryption
-					END
-					`+metadataColumns+`
-				WHERE
-					project_id   = $1 AND
-					bucket_name  = $2 AND
-					object_key   = $3 AND
-					version      = $4 AND
-					stream_id    = $5 AND
-					status       = `+pendingStatus+`
-				RETURNING
-					created_at, expires_at,
-					encrypted_metadata, encrypted_metadata_encrypted_key, encrypted_metadata_nonce,
-					encryption
-				`, args...).Scan(
-				&object.CreatedAt, &object.ExpiresAt,
-				&object.EncryptedMetadata, &object.EncryptedMetadataEncryptedKey, &object.EncryptedMetadataNonce,
-				encryptionParameters{&object.Encryption},
-			)
-		}
+			&object.CreatedAt, &object.ExpiresAt,
+			&object.EncryptedMetadata, &object.EncryptedMetadataEncryptedKey, &object.EncryptedMetadataNonce,
+			encryptionParameters{&object.Encryption},
+		)
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return ErrObjectNotFound.Wrap(Error.New("object with specified version and pending status is missing"))
@@ -872,7 +664,7 @@ func (db *DB) CommitObject(ctx context.Context, opts CommitObject) (object Objec
 		}
 
 		for _, version := range versionsToDelete {
-			_, err := db.deleteObjectExactVersion(ctx, DeleteObjectExactVersion{
+			deleteResult, err := db.deleteObjectExactVersion(ctx, DeleteObjectExactVersion{
 				ObjectLocation: ObjectLocation{
 					ProjectID:  opts.ProjectID,
 					BucketName: opts.BucketName,
@@ -883,6 +675,8 @@ func (db *DB) CommitObject(ctx context.Context, opts CommitObject) (object Objec
 			if err != nil {
 				return Error.New("failed to delete existing object: %w", err)
 			}
+
+			deletedSegments = append(deletedSegments, deleteResult.Segments...)
 		}
 
 		object.StreamID = opts.StreamID
@@ -899,6 +693,11 @@ func (db *DB) CommitObject(ctx context.Context, opts CommitObject) (object Objec
 	})
 	if err != nil {
 		return Object{}, err
+	}
+
+	// we can execute this only when whole transaction is committed without any error
+	if len(deletedSegments) > 0 && opts.OnDelete != nil {
+		opts.OnDelete(deletedSegments)
 	}
 
 	mon.Meter("object_commit").Mark(1)

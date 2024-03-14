@@ -1,4 +1,4 @@
-// Copyright (C) 2021 Storx Labs, Inc.
+// Copyright (C) 2021 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -17,10 +17,12 @@
 </template>
 
 <script setup lang="ts">
+import { Component } from 'vue';
+
 import VLoader from '@/components/common/VLoader.vue';
 
 const props = withDefaults(defineProps<{
-    icon: string,
+    icon: Component,
     isDataFetching: boolean,
     title: string,
     subtitle: string,

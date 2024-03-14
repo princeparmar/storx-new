@@ -1,4 +1,4 @@
-// Copyright (C) 2021 Storx Labs, Inc.
+// Copyright (C) 2021 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -74,12 +74,12 @@ const props = withDefaults(defineProps<{
 
     .mx-calendar-content .cell.in-range {
         color: var(--c-black);
-        background-color: var(--c-orange-1);
+        background-color: var(--c-blue-1);
         border-radius: 999px;
     }
 
     .mx-calendar-content .cell.active {
-        background-color: var(--c-orange-3);
+        background-color: var(--c-blue-3);
         border-radius: 999px;
     }
 

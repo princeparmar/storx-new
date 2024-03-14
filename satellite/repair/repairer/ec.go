@@ -46,7 +46,6 @@ type ECRepairer struct {
 	log             *zap.Logger
 	dialer          rpc.Dialer
 	satelliteSignee signing.Signee
-	dialTimeout     time.Duration
 	downloadTimeout time.Duration
 	inmemory        bool
 
@@ -55,12 +54,11 @@ type ECRepairer struct {
 }
 
 // NewECRepairer creates a new repairer for interfacing with storagenodes.
-func NewECRepairer(log *zap.Logger, dialer rpc.Dialer, satelliteSignee signing.Signee, dialTimeout time.Duration, downloadTimeout time.Duration, inmemory bool) *ECRepairer {
+func NewECRepairer(log *zap.Logger, dialer rpc.Dialer, satelliteSignee signing.Signee, downloadTimeout time.Duration, inmemory bool) *ECRepairer {
 	return &ECRepairer{
 		log:             log,
 		dialer:          dialer,
 		satelliteSignee: satelliteSignee,
-		dialTimeout:     dialTimeout,
 		downloadTimeout: downloadTimeout,
 		inmemory:        inmemory,
 	}
@@ -295,10 +293,10 @@ func (ec *ECRepairer) downloadAndVerifyPiece(ctx context.Context, limit *pb.Addr
 	defer mon.Task()(&ctx)(&err)
 
 	// contact node
-	dialCtx, dialCancel := context.WithTimeout(ctx, ec.dialTimeout)
-	defer dialCancel()
+	downloadCtx, cancel := context.WithTimeout(ctx, ec.downloadTimeout)
+	defer cancel()
 
-	ps, err := ec.dialPiecestore(dialCtx, storj.NodeURL{
+	ps, err := ec.dialPiecestore(downloadCtx, storj.NodeURL{
 		ID:      limit.GetLimit().StorageNodeId,
 		Address: address,
 	})
@@ -306,9 +304,6 @@ func (ec *ECRepairer) downloadAndVerifyPiece(ctx context.Context, limit *pb.Addr
 		return nil, nil, nil, err
 	}
 	defer func() { err = errs.Combine(err, ps.Close()) }()
-
-	downloadCtx, cancel := context.WithTimeout(ctx, ec.downloadTimeout)
-	defer cancel()
 
 	downloader, err := ps.Download(downloadCtx, limit.GetLimit(), privateKey, 0, pieceSize)
 	if err != nil {
@@ -549,11 +544,7 @@ func (ec *ECRepairer) putPiece(ctx, parent context.Context, limit *pb.AddressedO
 
 	storageNodeID := limit.GetLimit().StorageNodeId
 	pieceID := limit.GetLimit().PieceId
-
-	dialCtx, dialCancel := context.WithTimeout(ctx, ec.dialTimeout)
-	defer dialCancel()
-
-	ps, err := ec.dialPiecestore(dialCtx, storj.NodeURL{
+	ps, err := ec.dialPiecestore(ctx, storj.NodeURL{
 		ID:      storageNodeID,
 		Address: limit.GetStorageNodeAddress().Address,
 	})

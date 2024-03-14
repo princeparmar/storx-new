@@ -34,7 +34,6 @@ import (
 	"storj.io/storj/satellite/console/consoleauth"
 	"storj.io/storj/satellite/console/dbcleanup"
 	"storj.io/storj/satellite/console/emailreminders"
-	"storj.io/storj/satellite/gc/sender"
 	"storj.io/storj/satellite/mailservice"
 	"storj.io/storj/satellite/metabase"
 	"storj.io/storj/satellite/metabase/zombiedeletion"
@@ -143,10 +142,6 @@ type Core struct {
 	ConsoleDBCleanup struct {
 		Chore *dbcleanup.Chore
 	}
-
-	GarbageCollection struct {
-		Sender *sender.Service
-	}
 }
 
 // New creates a new satellite.
@@ -249,7 +244,7 @@ func New(log *zap.Logger, full *identity.FullIdentity, db DB,
 
 	{ // setup overlay
 		peer.Overlay.DB = peer.DB.OverlayCache()
-		peer.Overlay.Service, err = overlay.NewService(peer.Log.Named("overlay"), peer.Overlay.DB, peer.DB.NodeEvents(), config.Placement.CreateFilters, config.Console.ExternalAddress, config.Console.SatelliteName, config.Overlay)
+		peer.Overlay.Service, err = overlay.NewService(peer.Log.Named("overlay"), peer.Overlay.DB, peer.DB.NodeEvents(), config.Console.ExternalAddress, config.Console.SatelliteName, config.Overlay)
 		if err != nil {
 			return nil, errs.Combine(err, peer.Close())
 		}
@@ -496,9 +491,7 @@ func New(log *zap.Logger, full *identity.FullIdentity, db DB,
 		peer.Payments.StorjscanService = storjscan.NewService(log.Named("storjscan-service"),
 			peer.DB.Wallets(),
 			peer.DB.StorjscanPayments(),
-			peer.Payments.StorjscanClient,
-			pc.Storjscan.Confirmations,
-			pc.BonusRate)
+			peer.Payments.StorjscanClient)
 		if err != nil {
 			return nil, errs.Combine(err, peer.Close())
 		}
@@ -519,10 +512,6 @@ func New(log *zap.Logger, full *identity.FullIdentity, db DB,
 			debug.Cycle("Payments Storjscan", peer.Payments.StorjscanChore.TransactionCycle),
 		)
 
-		choreObservers := billing.ChoreObservers{
-			UpgradeUser: console.NewUpgradeUserObserver(peer.DB.Console(), peer.DB.Billing(), config.Console.UsageLimits, config.Console.UserBalanceForUpgrade),
-		}
-
 		peer.Payments.BillingChore = billing.NewChore(
 			peer.Log.Named("payments.billing:chore"),
 			[]billing.PaymentType{peer.Payments.StorjscanService},
@@ -530,7 +519,6 @@ func New(log *zap.Logger, full *identity.FullIdentity, db DB,
 			config.Payments.BillingConfig.Interval,
 			config.Payments.BillingConfig.DisableLoop,
 			config.Payments.BonusRate,
-			choreObservers,
 		)
 		peer.Services.Add(lifecycle.Item{
 			Name:  "billing:chore",
@@ -546,8 +534,6 @@ func New(log *zap.Logger, full *identity.FullIdentity, db DB,
 				peer.DB.StripeCoinPayments(),
 				peer.Payments.Accounts,
 				peer.DB.Console().Users(),
-				peer.DB.Wallets(),
-				peer.DB.StorjscanPayments(),
 				console.NewAccountFreezeService(db.Console().AccountFreezeEvents(), db.Console().Users(), db.Console().Projects(), peer.Analytics.Service),
 				peer.Analytics.Service,
 				config.AccountFreeze,
@@ -574,22 +560,6 @@ func New(log *zap.Logger, full *identity.FullIdentity, db DB,
 			Run:   peer.ConsoleDBCleanup.Chore.Run,
 			Close: peer.ConsoleDBCleanup.Chore.Close,
 		})
-	}
-
-	{ // setup garbage collection
-		peer.GarbageCollection.Sender = sender.NewService(
-			peer.Log.Named("gc-sender"),
-			config.GarbageCollection,
-			peer.Dialer,
-			peer.Overlay.DB,
-		)
-
-		peer.Services.Add(lifecycle.Item{
-			Name: "gc-sender",
-			Run:  peer.GarbageCollection.Sender.Run,
-		})
-		peer.Debug.Server.Panel.Add(
-			debug.Cycle("Garbage Collection", peer.GarbageCollection.Sender.Loop))
 	}
 
 	return peer, nil

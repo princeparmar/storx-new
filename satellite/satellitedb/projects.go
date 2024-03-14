@@ -12,7 +12,6 @@ import (
 	"github.com/zeebo/errs"
 
 	"storj.io/common/memory"
-	"storj.io/common/storj"
 	"storj.io/common/uuid"
 	"storj.io/storj/satellite/console"
 	"storj.io/storj/satellite/satellitedb/dbx"
@@ -66,40 +65,12 @@ func (projects *projects) GetCreatedBefore(ctx context.Context, before time.Time
 // GetByUserID is a method for querying all projects from the database by userID.
 func (projects *projects) GetByUserID(ctx context.Context, userID uuid.UUID) (_ []console.Project, err error) {
 	defer mon.Task()(&ctx)(&err)
-
-	rows, err := projects.sdb.Query(ctx, projects.sdb.Rebind(`
-		SELECT projects.id, projects.public_id, projects.name, projects.description, projects.owner_id, projects.rate_limit, projects.max_buckets, projects.created_at,
-			(SELECT COUNT(*) FROM project_members WHERE project_id = projects.id) AS member_count
-			FROM projects
-			JOIN project_members ON projects.id = project_members.project_id
-			WHERE project_members.member_id = ?
-			ORDER BY name ASC
-		`), userID)
+	projectsDbx, err := projects.db.All_Project_By_ProjectMember_MemberId_OrderBy_Asc_Project_Name(ctx, dbx.ProjectMember_MemberId(userID[:]))
 	if err != nil {
 		return nil, err
 	}
-	defer func() { err = errs.Combine(err, rows.Close()) }()
 
-	nextProject := &console.Project{}
-	var rateLimit, maxBuckets sql.NullInt32
-	projectsToSend := make([]console.Project, 0)
-	for rows.Next() {
-		err = rows.Scan(&nextProject.ID, &nextProject.PublicID, &nextProject.Name, &nextProject.Description, &nextProject.OwnerID, &rateLimit, &maxBuckets, &nextProject.CreatedAt, &nextProject.MemberCount)
-		if err != nil {
-			return nil, err
-		}
-		if rateLimit.Valid {
-			nextProject.RateLimit = new(int)
-			*nextProject.RateLimit = int(rateLimit.Int32)
-		}
-		if maxBuckets.Valid {
-			nextProject.MaxBuckets = new(int)
-			*nextProject.MaxBuckets = int(maxBuckets.Int32)
-		}
-		projectsToSend = append(projectsToSend, *nextProject)
-	}
-
-	return projectsToSend, rows.Err()
+	return projectsFromDbxSlice(ctx, projectsDbx)
 }
 
 // Get is a method for querying project from the database by id.
@@ -182,7 +153,6 @@ func (projects *projects) Insert(ctx context.Context, project *console.Project) 
 	createFields.MaxBuckets = dbx.Project_MaxBuckets_Raw(project.MaxBuckets)
 	createFields.PublicId = dbx.Project_PublicId(publicID[:])
 	createFields.Salt = dbx.Project_Salt(salt[:])
-	createFields.DefaultPlacement = dbx.Project_DefaultPlacement(int(project.DefaultPlacement))
 
 	createdProject, err := projects.db.Create_Project(ctx,
 		dbx.Project_Id(projectID[:]),
@@ -218,10 +188,6 @@ func (projects *projects) Update(ctx context.Context, project *console.Project) 
 		RateLimit:   dbx.Project_RateLimit_Raw(project.RateLimit),
 		BurstLimit:  dbx.Project_BurstLimit_Raw(project.BurstLimit),
 	}
-	//boris
-	updateFields.CreatedAt = dbx.Project_CreatedAt(project.CreatedAt)
-	updateFields.PrevDaysUntilExpiration = dbx.Project_PrevDays_UntilExpiration(project.PrevDaysUntilExpiration)
-
 	if project.StorageLimit != nil {
 		updateFields.UsageLimit = dbx.Project_UsageLimit(project.StorageLimit.Int64())
 	}
@@ -238,9 +204,6 @@ func (projects *projects) Update(ctx context.Context, project *console.Project) 
 		updateFields.SegmentLimit = dbx.Project_SegmentLimit(*project.SegmentLimit)
 	}
 
-	if project.DefaultPlacement > 0 {
-		updateFields.DefaultPlacement = dbx.Project_DefaultPlacement(int(project.DefaultPlacement))
-	}
 	_, err = projects.db.Update_Project_By_Id(ctx,
 		dbx.Project_Id(project.ID[:]),
 		updateFields)
@@ -290,19 +253,6 @@ func (projects *projects) UpdateBucketLimit(ctx context.Context, id uuid.UUID, n
 		dbx.Project_Id(id[:]),
 		dbx.Project_Update_Fields{
 			MaxBuckets: dbx.Project_MaxBuckets(newLimit),
-		})
-
-	return err
-}
-
-// UpdateUserAgent is a method for updating projects user agent.
-func (projects *projects) UpdateUserAgent(ctx context.Context, id uuid.UUID, userAgent []byte) (err error) {
-	defer mon.Task()(&ctx)(&err)
-
-	_, err = projects.db.Update_Project_By_Id(ctx,
-		dbx.Project_Id(id[:]),
-		dbx.Project_Update_Fields{
-			UserAgent: dbx.Project_UserAgent(userAgent),
 		})
 
 	return err
@@ -445,27 +395,20 @@ func projectFromDBX(ctx context.Context, project *dbx.Project) (_ *console.Proje
 		return nil, err
 	}
 
-	var placement storj.PlacementConstraint
-	if project.DefaultPlacement != nil {
-		placement = storj.PlacementConstraint(*project.DefaultPlacement)
-	}
-
 	return &console.Project{
-		ID:                      id,
-		PublicID:                publicID,
-		Name:                    project.Name,
-		Description:             project.Description,
-		UserAgent:               userAgent,
-		OwnerID:                 ownerID,
-		RateLimit:               project.RateLimit,
-		BurstLimit:              project.BurstLimit,
-		MaxBuckets:              project.MaxBuckets,
-		CreatedAt:               project.CreatedAt,
-		StorageLimit:            (*memory.Size)(project.UsageLimit),
-		BandwidthLimit:          (*memory.Size)(project.BandwidthLimit),
-		SegmentLimit:            project.SegmentLimit,
-		DefaultPlacement:        placement,
-		PrevDaysUntilExpiration: project.PrevDaysUntilExpiration,
+		ID:             id,
+		PublicID:       publicID,
+		Name:           project.Name,
+		Description:    project.Description,
+		UserAgent:      userAgent,
+		OwnerID:        ownerID,
+		RateLimit:      project.RateLimit,
+		BurstLimit:     project.BurstLimit,
+		MaxBuckets:     project.MaxBuckets,
+		CreatedAt:      project.CreatedAt,
+		StorageLimit:   (*memory.Size)(project.UsageLimit),
+		BandwidthLimit: (*memory.Size)(project.BandwidthLimit),
+		SegmentLimit:   project.SegmentLimit,
 	}, nil
 }
 
@@ -473,14 +416,20 @@ func projectFromDBX(ctx context.Context, project *dbx.Project) (_ *console.Proje
 func projectsFromDbxSlice(ctx context.Context, projectsDbx []*dbx.Project) (_ []console.Project, err error) {
 	defer mon.Task()(&ctx)(&err)
 
-	projects, errors := convertSliceWithErrors(projectsDbx,
-		func(v *dbx.Project) (r console.Project, _ error) {
-			p, err := projectFromDBX(ctx, v)
-			if err != nil {
-				return r, err
-			}
-			return *p, nil
-		})
+	var projects []console.Project
+	var errors []error
+
+	// Generating []dbo from []dbx and collecting all errors
+	for _, projectDbx := range projectsDbx {
+		project, err := projectFromDBX(ctx, projectDbx)
+		if err != nil {
+			errors = append(errors, err)
+			continue
+		}
+
+		projects = append(projects, *project)
+	}
+
 	return projects, errs.Combine(errors...)
 }
 

@@ -1,4 +1,4 @@
-// Copyright (C) 2019 Storx Labs, Inc.
+// Copyright (C) 2019 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 import { ErrorConflict } from './errors/ErrorConflict';
@@ -15,11 +15,9 @@ import {
     TokenAmount,
     NativePaymentHistoryItem,
     Wallet,
-    PaymentWithConfirmations,
 } from '@/types/payments';
 import { HttpClient } from '@/utils/httpClient';
 import { Time } from '@/utils/time';
-import { APIError } from '@/utils/error';
 
 /**
  * PaymentsHttpApi is a http implementation of Payments API.
@@ -40,11 +38,7 @@ export class PaymentsHttpApi implements PaymentsApi {
         const response = await this.client.get(path);
 
         if (!response.ok) {
-            throw new APIError({
-                status: response.status,
-                message: 'Can not get account balance',
-                requestID: response.headers.get('x-request-id'),
-            });
+            throw new Error('Can not get account balance');
         }
 
         const balance = await response.json();
@@ -69,11 +63,7 @@ export class PaymentsHttpApi implements PaymentsApi {
             return couponType;
         }
 
-        throw new APIError({
-            status: response.status,
-            message: 'Can not setup account',
-            requestID: response.headers.get('x-request-id'),
-        });
+        throw new Error('can not setup account');
     }
 
     /**
@@ -86,11 +76,7 @@ export class PaymentsHttpApi implements PaymentsApi {
         const response = await this.client.get(path);
 
         if (!response.ok) {
-            throw new APIError({
-                status: response.status,
-                message: 'Can not get projects charges',
-                requestID: response.headers.get('x-request-id'),
-            });
+            throw new Error('can not get projects charges');
         }
 
         return ProjectCharges.fromJSON(await response.json());
@@ -104,11 +90,7 @@ export class PaymentsHttpApi implements PaymentsApi {
         const response = await this.client.get(path);
 
         if (!response.ok) {
-            throw new APIError({
-                status: response.status,
-                message: 'Can not get project usage price model',
-                requestID: response.headers.get('x-request-id'),
-            });
+            throw new Error('cannot get project usage price model');
         }
 
         const model = await response.json();
@@ -133,11 +115,7 @@ export class PaymentsHttpApi implements PaymentsApi {
             return;
         }
 
-        throw new APIError({
-            status: response.status,
-            message: 'Can not add credit card',
-            requestID: response.headers.get('x-request-id'),
-        });
+        throw new Error('can not add credit card');
     }
 
     /**
@@ -148,17 +126,13 @@ export class PaymentsHttpApi implements PaymentsApi {
      */
     public async removeCreditCard(cardId: string): Promise<void> {
         const path = `${this.ROOT_PATH}/cards/${cardId}`;
-        const response = await this.client.delete(path, null);
+        const response = await this.client.delete(path);
 
         if (response.ok) {
             return;
         }
 
-        throw new APIError({
-            status: response.status,
-            message: 'Can not remove credit card',
-            requestID: response.headers.get('x-request-id'),
-        });
+        throw new Error('can not remove credit card');
     }
 
     /**
@@ -172,11 +146,7 @@ export class PaymentsHttpApi implements PaymentsApi {
         const response = await this.client.get(path);
 
         if (!response.ok) {
-            throw new APIError({
-                status: response.status,
-                message: 'can not list credit cards',
-                requestID: response.headers.get('x-request-id'),
-            });
+            throw new Error('can not list credit cards');
         }
 
         const creditCards = await response.json();
@@ -202,11 +172,7 @@ export class PaymentsHttpApi implements PaymentsApi {
             return;
         }
 
-        throw new APIError({
-            status: response.status,
-            message: 'Can not make credit card default',
-            requestID: response.headers.get('x-request-id'),
-        });
+        throw new Error('can not make credit card default');
     }
 
     /**
@@ -220,11 +186,7 @@ export class PaymentsHttpApi implements PaymentsApi {
         const response = await this.client.get(path);
 
         if (!response.ok) {
-            throw new APIError({
-                status: response.status,
-                message: 'Can not list billing history',
-                requestID: response.headers.get('x-request-id'),
-            });
+            throw new Error('can not list billing history');
         }
 
         const paymentsHistoryItems = await response.json();
@@ -259,11 +221,7 @@ export class PaymentsHttpApi implements PaymentsApi {
         const response = await this.client.get(path);
 
         if (!response.ok) {
-            throw new APIError({
-                status: response.status,
-                message: 'Can not list token payment history',
-                requestID: response.headers.get('x-request-id'),
-            });
+            throw new Error('Can not list token payment history');
         }
 
         const json = await response.json();
@@ -279,39 +237,6 @@ export class PaymentsHttpApi implements PaymentsApi {
                     item.Status,
                     item.Link,
                     new Date(item.Timestamp),
-                ),
-            );
-        }
-
-        return [];
-    }
-
-    /**
-     * Returns a list of STORJ token payments with confirmations.
-     *
-     * @returns list of native token payment items with confirmations
-     * @throws Error
-     */
-    public async paymentsWithConfirmations(): Promise<PaymentWithConfirmations[]> {
-        const path = `${this.ROOT_PATH}/wallet/payments-with-confirmations`;
-        const response = await this.client.get(path);
-
-        if (!response.ok) {
-            throw new Error('Can not list token payment with confirmations');
-        }
-
-        const json = await response.json();
-        if (json && json.length) {
-            return json.map(item =>
-                new PaymentWithConfirmations(
-                    item.to,
-                    parseFloat(item.tokenValue),
-                    parseFloat(item.usdValue),
-                    item.transaction,
-                    new Date(item.timestamp),
-                    parseFloat(item.bonusTokens),
-                    item.status,
-                    item.confirmations,
                 ),
             );
         }
@@ -344,11 +269,7 @@ export class PaymentsHttpApi implements PaymentsApi {
         const coupon = await response.json();
 
         if (!coupon) {
-            throw new APIError({
-                status: response.status,
-                message: errMsg,
-                requestID: response.headers.get('x-request-id'),
-            });
+            throw new Error(errMsg);
         }
 
         return new Coupon(
@@ -373,11 +294,7 @@ export class PaymentsHttpApi implements PaymentsApi {
         const path = `${this.ROOT_PATH}/coupon`;
         const response = await this.client.get(path);
         if (!response.ok) {
-            throw new APIError({
-                status: response.status,
-                message: 'Can not retrieve coupon',
-                requestID: response.headers.get('x-request-id'),
-            });
+            throw new Error('cannot retrieve coupon');
         }
 
         const coupon = await response.json();
@@ -414,11 +331,7 @@ export class PaymentsHttpApi implements PaymentsApi {
             case 404:
                 return new Wallet();
             default:
-                throw new APIError({
-                    status: response.status,
-                    message: 'Can not get wallet',
-                    requestID: response.headers.get('x-request-id'),
-                });
+                throw new Error('Can not get wallet');
             }
         }
 
@@ -441,11 +354,7 @@ export class PaymentsHttpApi implements PaymentsApi {
         const response = await this.client.post(path, null);
 
         if (!response.ok) {
-            throw new APIError({
-                status: response.status,
-                message: 'Can not claim wallet',
-                requestID: response.headers.get('x-request-id'),
-            });
+            throw new Error('Can not claim wallet');
         }
 
         const wallet = await response.json();
@@ -470,11 +379,7 @@ export class PaymentsHttpApi implements PaymentsApi {
             return;
         }
 
-        throw new APIError({
-            status: response.status,
-            message: 'Can not purchase pricing package',
-            requestID: response.headers.get('x-request-id'),
-        });
+        throw new Error('Could not purchase pricing package');
     }
 
     /**
@@ -490,10 +395,6 @@ export class PaymentsHttpApi implements PaymentsApi {
             return await response.json();
         }
 
-        throw new APIError({
-            status: response.status,
-            message: 'Could not check pricing package availability',
-            requestID: response.headers.get('x-request-id'),
-        });
+        throw new Error('Could not check pricing package availability');
     }
 }

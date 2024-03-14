@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Copyright (C) 2022 Storx Labs, Inc.
+# Copyright (C) 2022 Storj Labs, Inc.
 # See LICENSE for copying information.
 
 cd "$(dirname "${BASH_SOURCE[0]}")"

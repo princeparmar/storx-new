@@ -19,10 +19,7 @@ import (
 
 	"storj.io/common/testcontext"
 	"storj.io/common/uuid"
-	"storj.io/storj/private/apigen"
 	"storj.io/storj/private/testplanet"
-	"storj.io/storj/satellite/accounting"
-	"storj.io/storj/satellite/console"
 	"storj.io/storj/satellite/payments/storjscan/blockchaintest"
 )
 
@@ -370,30 +367,6 @@ func TestBuckets(t *testing.T) {
 						}`}))
 			require.Contains(t, body, "bucketUsagePage")
 			require.Equal(t, http.StatusOK, resp.StatusCode)
-
-			params := url.Values{
-				"projectID": {test.defaultProjectID()},
-				"before":    {time.Now().Add(time.Second).Format(apigen.DateFormat)},
-				"limit":     {"1"},
-				"search":    {""},
-				"page":      {"1"},
-			}
-
-			resp, body = test.request(http.MethodGet, "/buckets/usage-totals?"+params.Encode(), nil)
-			require.Equal(t, http.StatusOK, resp.StatusCode)
-			var page accounting.BucketUsagePage
-			require.NoError(t, json.Unmarshal([]byte(body), &page))
-			require.Empty(t, page.BucketUsages)
-
-			const bucketName = "my-bucket"
-			require.NoError(t, planet.Uplinks[0].CreateBucket(ctx, planet.Satellites[0], bucketName))
-
-			resp, body = test.request(http.MethodGet, "/buckets/usage-totals?"+params.Encode(), nil)
-			require.Equal(t, http.StatusOK, resp.StatusCode)
-
-			require.NoError(t, json.Unmarshal([]byte(body), &page))
-			require.NotEmpty(t, page.BucketUsages)
-			require.Equal(t, bucketName, page.BucketUsages[0].BucketName)
 		}
 	})
 }
@@ -465,49 +438,6 @@ func TestAPIKeys(t *testing.T) {
 			require.Contains(t, body, "apiKeysPage")
 			require.Equal(t, http.StatusOK, resp.StatusCode)
 		}
-
-		{ // Get_ProjectAPIKeys
-			var projects console.APIKeyPage
-			path := "/api-keys/list-paged?projectID=" + test.defaultProjectID() + "&search=''&limit=6&page=1&order=1&orderDirection=1"
-			resp, body := test.request(http.MethodGet, path, nil)
-			require.Equal(t, http.StatusOK, resp.StatusCode)
-			require.NoError(t, json.Unmarshal([]byte(body), &projects))
-			require.Contains(t, body, "apiKeys")
-		}
-
-		{ // Post_Create_APIKey
-			var response console.CreateAPIKeyResponse
-			path := "/api-keys/create/" + test.defaultProjectID()
-			resp, body := test.request(http.MethodPost, path,
-				test.toJSON(map[string]interface{}{
-					"name": "testCreatedKey",
-				}))
-			require.Equal(t, http.StatusOK, resp.StatusCode)
-			err := json.Unmarshal([]byte(body), &response)
-			require.NoError(t, err)
-			require.Contains(t, body, "key")
-			require.Contains(t, body, "keyInfo")
-			require.NotNil(t, response.KeyInfo)
-		}
-
-		{ // Delete_APIKeys_By_IDs
-			var response *console.CreateAPIKeyResponse
-			path := "/api-keys/create/" + test.defaultProjectID()
-			resp, body := test.request(http.MethodPost, path,
-				test.toJSON(map[string]interface{}{
-					"name": "testCreatedKey1",
-				}))
-			require.Equal(t, http.StatusOK, resp.StatusCode)
-			require.NoError(t, json.Unmarshal([]byte(body), &response))
-
-			path = "/api-keys/delete-by-ids"
-			resp, body = test.request(http.MethodDelete, path,
-				test.toJSON(map[string]interface{}{
-					"ids": []string{response.KeyInfo.ID.String()},
-				}))
-			require.Equal(t, http.StatusOK, resp.StatusCode)
-			require.Empty(t, body)
-		}
 	})
 }
 
@@ -555,22 +485,6 @@ func TestProjects(t *testing.T) {
 			require.Equal(t, b64Salt, base64.StdEncoding.EncodeToString(salt))
 		}
 
-		{ // Get_User_Projects
-
-			var projects []struct {
-				ID          uuid.UUID `json:"id"`
-				Name        string    `json:"name"`
-				OwnerID     uuid.UUID `json:"ownerId"`
-				Description string    `json:"description"`
-				MemberCount int       `json:"memberCount"`
-				CreatedAt   time.Time `json:"createdAt"`
-			}
-			resp, body := test.request(http.MethodGet, "/projects", nil)
-			require.Equal(t, http.StatusOK, resp.StatusCode)
-			require.NoError(t, json.Unmarshal([]byte(body), &projects))
-			require.NotEmpty(t, projects)
-		}
-
 		{ // Get_ProjectInfo
 			resp, body := test.request(http.MethodPost, "/graphql",
 				test.toJSON(map[string]interface{}{
@@ -614,14 +528,6 @@ func TestProjects(t *testing.T) {
 			resp, body := test.request(http.MethodGet, `/projects/`+test.defaultProjectID()+`/usage-limits`, nil)
 			require.Equal(t, http.StatusOK, resp.StatusCode)
 			require.Contains(t, body, "storageLimit")
-		}
-
-		{ // Get_OwnedProjects - HTTP
-			var projects console.ProjectInfoPage
-			resp, body := test.request(http.MethodGet, "/projects/paged?limit=6&page=1", nil)
-			require.Equal(t, http.StatusOK, resp.StatusCode)
-			require.NoError(t, json.Unmarshal([]byte(body), &projects))
-			require.NotEmpty(t, projects.Projects)
 		}
 
 		{ // Get_OwnedProjects
@@ -669,7 +575,7 @@ func TestProjects(t *testing.T) {
 					"query": `
 						query ($projectId: String!, $limit: Int!, $search: String!, $page: Int!, $order: Int!, $orderDirection: Int!) {
 							project(id: $projectId) {
-								membersAndInvitations(cursor: {limit: $limit, search: $search, page: $page, order: $order, orderDirection: $orderDirection}) {
+								members(cursor: {limit: $limit, search: $search, page: $page, order: $order, orderDirection: $orderDirection}) {
 									projectMembers {
 										user {
 											id
@@ -692,7 +598,7 @@ func TestProjects(t *testing.T) {
 								__typename
 							}
 						}`}))
-			require.Contains(t, body, "projectMembersAndInvitationsPage")
+			require.Contains(t, body, "projectMembersPage")
 			require.Equal(t, http.StatusOK, resp.StatusCode)
 		}
 
@@ -787,13 +693,6 @@ func TestProjects(t *testing.T) {
 			require.Contains(t, body, "error")
 			// TODO: this should return a better error
 			require.Equal(t, http.StatusInternalServerError, resp.StatusCode)
-
-			resp, body = test.request(http.MethodPatch, fmt.Sprintf("/projects/%s", test.defaultProjectID()),
-				test.toJSON(map[string]interface{}{
-					"name": "My Second Project with a long name",
-				}))
-			require.Contains(t, body, "error")
-			require.Equal(t, http.StatusInternalServerError, resp.StatusCode)
 		}
 
 		{ // Post_ProjectRename
@@ -812,12 +711,6 @@ func TestProjects(t *testing.T) {
 							}
 						}`}))
 			require.Contains(t, body, "updateProject")
-			require.Equal(t, http.StatusOK, resp.StatusCode)
-
-			resp, _ = test.request(http.MethodPatch, fmt.Sprintf("/projects/%s", test.defaultProjectID()),
-				test.toJSON(map[string]interface{}{
-					"name": "new name",
-				}))
 			require.Equal(t, http.StatusOK, resp.StatusCode)
 		}
 	})
@@ -894,7 +787,7 @@ func TestWrongUser(t *testing.T) {
 					"query": `
 						query ($projectId: String!, $limit: Int!, $search: String!, $page: Int!, $order: Int!, $orderDirection: Int!) {
 							project(id: $projectId) {
-								membersAndInvitations(cursor: {limit: $limit, search: $search, page: $page, order: $order, orderDirection: $orderDirection}) {
+								members(cursor: {limit: $limit, search: $search, page: $page, order: $order, orderDirection: $orderDirection}) {
 									projectMembers {
 										user {
 											id
@@ -977,7 +870,7 @@ func TestWrongUser(t *testing.T) {
 						}`}))
 			require.Contains(t, body, "not authorized")
 			// TODO: wrong error code
-			require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+			require.Equal(t, http.StatusInternalServerError, resp.StatusCode)
 		}
 
 		{ // get bucket usages

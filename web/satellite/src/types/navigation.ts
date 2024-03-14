@@ -1,12 +1,14 @@
-// Copyright (C) 2019 Storx Labs, Inc.
+// Copyright (C) 2019 Storj Labs, Inc.
 // See LICENSE for copying information.
+
+import { Component } from 'vue';
 
 export class NavigationLink {
     private readonly _path: string;
     private readonly _name: string;
-    private readonly _icon: string | undefined;
+    private readonly _icon: Component | undefined;
 
-    public constructor(path: string, name: string, icon?: string) {
+    public constructor(path: string, name: string, icon?: Component) {
         this._path = path;
         this._name = name;
         this._icon = icon;
@@ -20,7 +22,7 @@ export class NavigationLink {
         return this._name;
     }
 
-    public get icon(): string | undefined {
+    public get icon(): Component | undefined {
         return this._icon;
     }
 
@@ -28,7 +30,7 @@ export class NavigationLink {
         return this._path[0] !== '/';
     }
 
-    public withIcon(icon: string): NavigationLink {
+    public withIcon(icon: Component): NavigationLink {
         return new NavigationLink(this._path, this._name, icon);
     }
 

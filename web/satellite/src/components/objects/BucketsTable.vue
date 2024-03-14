@@ -1,9 +1,14 @@
-// Copyright (C) 2022 Storx Labs, Inc.
+// Copyright (C) 2022 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
     <div class="buckets-table">
-        <VSearch class="buckets-table__search" :search="searchBuckets" />
+        <VHeader
+            class="buckets-table__search"
+            placeholder="Buckets"
+            :search="searchBuckets"
+            style-type="access"
+        />
         <VLoader
             v-if="isLoading || searchLoading"
             width="100px"
@@ -38,7 +43,7 @@
             <template #head>
                 <th class="align-left">Name</th>
                 <th class="align-left">Storage</th>
-                <th class="align-left">Egress</th>
+                <th class="align-left">Bandwidth</th>
                 <th class="align-left">Objects</th>
                 <th class="align-left">Segments</th>
                 <th class="align-left">Date Added</th>
@@ -66,7 +71,8 @@ import { computed, onBeforeUnmount, ref } from 'vue';
 import { useRouter } from 'vue-router';
 
 import { BucketPage } from '@/types/buckets';
-import { RouteConfig } from '@/types/router';
+import { RouteConfig } from '@/router';
+import { AnalyticsHttpApi } from '@/api/analytics';
 import { useNotify } from '@/utils/hooks';
 import { AnalyticsErrorEventSource, AnalyticsEvent } from '@/utils/constants/analyticsEventNames';
 import { MODALS } from '@/utils/constants/appStatePopUps';
@@ -74,13 +80,12 @@ import { EdgeCredentials } from '@/types/accessGrants';
 import { useAppStore } from '@/store/modules/appStore';
 import { useBucketsStore } from '@/store/modules/bucketsStore';
 import { useProjectsStore } from '@/store/modules/projectsStore';
-import { useAnalyticsStore } from '@/store/modules/analyticsStore';
 
 import VTable from '@/components/common/VTable.vue';
 import BucketItem from '@/components/objects/BucketItem.vue';
 import VLoader from '@/components/common/VLoader.vue';
+import VHeader from '@/components/common/VHeader.vue';
 import VOverallLoader from '@/components/common/VOverallLoader.vue';
-import VSearch from '@/components/common/VSearch.vue';
 
 import WhitePlusIcon from '@/../static/images/common/plusWhite.svg';
 import EmptyBucketIcon from '@/../static/images/objects/emptyBucket.svg';
@@ -95,8 +100,8 @@ const props = withDefaults(defineProps<{
 const activeDropdown = ref<number>(-1);
 const overallLoading = ref<boolean>(false);
 const searchLoading = ref<boolean>(false);
+const analytics: AnalyticsHttpApi = new AnalyticsHttpApi();
 
-const analyticsStore = useAnalyticsStore();
 const bucketsStore = useBucketsStore();
 const appStore = useAppStore();
 const projectsStore = useProjectsStore();
@@ -166,7 +171,7 @@ async function fetchBuckets(page = 1, limit: number): Promise<void> {
     try {
         await bucketsStore.getBuckets(page, projectsStore.state.selectedProject.id, limit);
     } catch (error) {
-        notify.error(`Unable to fetch buckets. ${error.message}`, AnalyticsErrorEventSource.BUCKET_TABLE);
+        await notify.error(`Unable to fetch buckets. ${error.message}`, AnalyticsErrorEventSource.BUCKET_TABLE);
     }
 }
 
@@ -175,14 +180,14 @@ async function fetchBuckets(page = 1, limit: number): Promise<void> {
  */
 async function searchBuckets(searchQuery: string): Promise<void> {
     bucketsStore.setBucketsSearch(searchQuery);
-    analyticsStore.eventTriggered(AnalyticsEvent.SEARCH_BUCKETS);
+    await analytics.eventTriggered(AnalyticsEvent.SEARCH_BUCKETS);
 
     searchLoading.value = true;
 
     try {
         await bucketsStore.getBuckets(1, projectsStore.state.selectedProject.id);
     } catch (error) {
-        notify.error(`Unable to fetch buckets: ${error.message}`, AnalyticsErrorEventSource.BUCKET_TABLE);
+        await notify.error(`Unable to fetch buckets: ${error.message}`, AnalyticsErrorEventSource.BUCKET_TABLE);
     }
 
     searchLoading.value = false;
@@ -214,19 +219,19 @@ async function openBucket(bucketName: string): Promise<void> {
                 await bucketsStore.setS3Client(projectsStore.state.selectedProject.id);
                 overallLoading.value = false;
             } catch (error) {
-                notify.notifyError(error, AnalyticsErrorEventSource.BUCKET_TABLE);
+                await notify.error(error.message, AnalyticsErrorEventSource.BUCKET_TABLE);
                 overallLoading.value = false;
                 return;
             }
         }
 
-        analyticsStore.pageVisit(RouteConfig.Buckets.with(RouteConfig.UploadFile).path);
+        analytics.pageVisit(RouteConfig.Buckets.with(RouteConfig.UploadFile).path);
         router.push(RouteConfig.Buckets.with(RouteConfig.UploadFile).path);
 
         return;
     }
 
-    appStore.updateActiveModal(MODALS.enterBucketPassphrase);
+    appStore.updateActiveModal(MODALS.openBucket);
 }
 
 onBeforeUnmount(() => {
@@ -240,6 +245,7 @@ onBeforeUnmount(() => {
 
         &__search {
             margin-bottom: 20px;
+            height: 56px;
         }
 
         &__loader {
@@ -319,7 +325,7 @@ onBeforeUnmount(() => {
         display: flex;
         align-items: center;
         justify-content: center;
-        background-color: var(--c-orange-3);
+        background-color: var(--c-blue-3);
         border-radius: 8px;
         cursor: pointer;
 

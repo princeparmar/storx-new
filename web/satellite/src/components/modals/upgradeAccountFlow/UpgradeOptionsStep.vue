@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Storx Labs, Inc.
+// Copyright (C) 2023 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -57,7 +57,7 @@ const props = defineProps<{
     font-family: 'font_regular', sans-serif;
     font-size: 14px;
     line-height: 20px;
-    color: var(--c-orange-6);
+    color: var(--c-blue-6);
     padding-bottom: 16px;
     border-bottom: 1px solid var(--c-grey-2);
     margin-bottom: 16px;

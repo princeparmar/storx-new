@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Storx Labs, Inc.
+// Copyright (C) 2023 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -102,7 +102,7 @@
 import { computed } from 'vue';
 
 import { AccessType, FUNCTIONAL_CONTAINER_ICON_AND_TITLE, FunctionalContainer } from '@/types/createAccessGrant';
-import { useAnalyticsStore } from '@/store/modules/analyticsStore';
+import { AnalyticsHttpApi } from '@/api/analytics';
 
 import ContainerWithIcon from '@/components/accessGrants/createFlow/components/ContainerWithIcon.vue';
 import ButtonsContainer from '@/components/accessGrants/createFlow/components/ButtonsContainer.vue';
@@ -119,7 +119,7 @@ const props = defineProps<{
     onContinue: () => void;
 }>();
 
-const analyticsStore = useAnalyticsStore();
+const analytics: AnalyticsHttpApi = new AnalyticsHttpApi();
 
 /**
  * Indicates if button should be disabled.
@@ -132,7 +132,7 @@ const isButtonDisabled = computed((): boolean => {
  * Sends "trackPageVisit" event to segment.
  */
 function trackPageVisit(link: string): void {
-    analyticsStore.pageVisit(link);
+    analytics.pageVisit(link);
 }
 </script>
 

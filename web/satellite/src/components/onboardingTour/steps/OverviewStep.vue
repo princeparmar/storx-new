@@ -1,4 +1,4 @@
-// Copyright (C) 2020 Storx Labs, Inc.
+// Copyright (C) 2020 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -30,7 +30,8 @@
 import { onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 
-import { RouteConfig } from '@/types/router';
+import { AnalyticsHttpApi } from '@/api/analytics';
+import { RouteConfig } from '@/router';
 import { AnalyticsErrorEventSource, AnalyticsEvent } from '@/utils/constants/analyticsEventNames';
 import { MODALS } from '@/utils/constants/appStatePopUps';
 import { useNotify } from '@/utils/hooks';
@@ -38,11 +39,9 @@ import { useUsersStore } from '@/store/modules/usersStore';
 import { useAppStore } from '@/store/modules/appStore';
 import { useConfigStore } from '@/store/modules/configStore';
 import { PartneredSatellite } from '@/types/config';
-import { useAnalyticsStore } from '@/store/modules/analyticsStore';
 
 import OverviewContainer from '@/components/onboardingTour/steps/common/OverviewContainer.vue';
 
-const analyticsStore = useAnalyticsStore();
 const configStore = useConfigStore();
 const appStore = useAppStore();
 const usersStore = useUsersStore();
@@ -50,6 +49,7 @@ const notify = useNotify();
 const router = useRouter();
 
 const projectDashboardPath = RouteConfig.ProjectDashboard.path;
+const analytics: AnalyticsHttpApi = new AnalyticsHttpApi();
 
 const titleLabel = ref<string>('');
 
@@ -68,8 +68,8 @@ async function onSkip(): Promise<void> {
  */
 function onUplinkCLIClick(): void {
     router.push(RouteConfig.OnboardingTour.with(RouteConfig.OnbCLIStep).with(RouteConfig.AGName).path);
-    analyticsStore.linkEventTriggered(AnalyticsEvent.PATH_SELECTED, 'CLI');
-    analyticsStore.pageVisit(RouteConfig.OnboardingTour.with(RouteConfig.OnbCLIStep).with(RouteConfig.AGName).path);
+    analytics.linkEventTriggered(AnalyticsEvent.PATH_SELECTED, 'CLI');
+    analytics.pageVisit(RouteConfig.OnboardingTour.with(RouteConfig.OnbCLIStep).with(RouteConfig.AGName).path);
 }
 
 /**
@@ -84,7 +84,7 @@ async function endOnboarding(): Promise<void> {
     try {
         await usersStore.updateSettings({ onboardingEnd: true });
     } catch (error) {
-        notify.notifyError(error, AnalyticsErrorEventSource.ONBOARDING_OVERVIEW_STEP);
+        notify.error(error.message, AnalyticsErrorEventSource.ONBOARDING_OVERVIEW_STEP);
     }
 }
 
@@ -98,7 +98,7 @@ onMounted(async (): Promise<void> => {
             await usersStore.updateSettings({ onboardingStart: true });
         }
     } catch (error) {
-        notify.notifyError(error, AnalyticsErrorEventSource.ONBOARDING_OVERVIEW_STEP);
+        notify.error(error.message, AnalyticsErrorEventSource.ONBOARDING_OVERVIEW_STEP);
     }
 
     const config = configStore.state.config;

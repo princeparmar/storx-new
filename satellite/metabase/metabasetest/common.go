@@ -4,6 +4,7 @@
 package metabasetest
 
 import (
+	"bytes"
 	"sort"
 	"testing"
 	"time"
@@ -36,10 +37,10 @@ func (step Verify) Check(ctx *testcontext.Context, t testing.TB, db *metabase.DB
 
 	sortRawObjects(state.Objects)
 	sortRawObjects(step.Objects)
-	sortRawPendingObjects(state.PendingObjects)
-	sortRawPendingObjects(step.PendingObjects)
 	sortRawSegments(state.Segments)
 	sortRawSegments(step.Segments)
+	sortRawCopies(state.Copies)
+	sortRawCopies(step.Copies)
 
 	diff := cmp.Diff(metabase.RawState(step), *state,
 		DefaultTimeDiff(),
@@ -68,18 +69,24 @@ func sortRawObjects(objects []metabase.RawObject) {
 	})
 }
 
-func sortRawPendingObjects(objects []metabase.RawPendingObject) {
-	sort.Slice(objects, func(i, j int) bool {
-		return objects[i].StreamID.Less(objects[j].StreamID)
-	})
-}
-
 func sortRawSegments(segments []metabase.RawSegment) {
 	sort.Slice(segments, func(i, j int) bool {
 		if segments[i].StreamID == segments[j].StreamID {
 			return segments[i].Position.Less(segments[j].Position)
 		}
 		return segments[i].StreamID.Less(segments[j].StreamID)
+	})
+}
+
+func sortRawCopies(copies []metabase.RawCopy) {
+	sort.Slice(copies, func(i, j int) bool {
+		return copies[i].StreamID.Less(copies[j].StreamID)
+	})
+}
+
+func sortDeletedSegments(segments []metabase.DeletedSegmentInfo) {
+	sort.Slice(segments, func(i, j int) bool {
+		return bytes.Compare(segments[i].RootPieceID[:], segments[j].RootPieceID[:]) < 0
 	})
 }
 

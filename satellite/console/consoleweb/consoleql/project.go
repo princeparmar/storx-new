@@ -32,13 +32,13 @@ const (
 	BucketUsageCursorInputType = "bucketUsageCursor"
 	// BucketUsageType is a graphql type name for bucket usage.
 	BucketUsageType = "bucketUsage"
-	// BucketUsagePageType is a graphql type name for bucket usage page.
+	// BucketUsagePageType is a field name for bucket usage page.
 	BucketUsagePageType = "bucketUsagePage"
-	// ProjectMembersAndInvitationsPageType is a graphql type name for a page of project members and invitations.
-	ProjectMembersAndInvitationsPageType = "projectMembersAndInvitationsPage"
+	// ProjectMembersPageType is a field name for project members page.
+	ProjectMembersPageType = "projectMembersPage"
 	// ProjectMembersCursorInputType is a graphql type name for project members.
 	ProjectMembersCursorInputType = "projectMembersCursor"
-	// APIKeysPageType is a graphql type name for api keys page.
+	// APIKeysPageType is a field name for api keys page.
 	APIKeysPageType = "apiKeysPage"
 	// APIKeysCursorInputType is a graphql type name for api keys.
 	APIKeysCursorInputType = "apiKeysCursor"
@@ -52,8 +52,8 @@ const (
 	FieldBucketName = "bucketName"
 	// FieldDescription is a field name for description.
 	FieldDescription = "description"
-	// FieldMembersAndInvitations is field name for members and invitations.
-	FieldMembersAndInvitations = "membersAndInvitations"
+	// FieldMembers is field name for members.
+	FieldMembers = "members"
 	// FieldAPIKeys is a field name for api keys.
 	FieldAPIKeys = "apiKeys"
 	// FieldUsage is a field name for usage rollup.
@@ -84,8 +84,6 @@ const (
 	FieldProjects = "projects"
 	// FieldProjectMembers is a field name for project members.
 	FieldProjectMembers = "projectMembers"
-	// FieldProjectInvitations is a field name for project member invitations.
-	FieldProjectInvitations = "projectInvitations"
 	// CursorArg is an argument name for cursor.
 	CursorArg = "cursor"
 	// PageArg ia an argument name for page number.
@@ -132,8 +130,8 @@ func graphqlProject(service *console.Service, types *TypeCreator) *graphql.Objec
 			FieldMemberCount: &graphql.Field{
 				Type: graphql.Int,
 			},
-			FieldMembersAndInvitations: &graphql.Field{
-				Type: types.projectMembersAndInvitationsPage,
+			FieldMembers: &graphql.Field{
+				Type: types.projectMemberPage,
 				Args: graphql.FieldConfigArgument{
 					CursorArg: &graphql.ArgumentConfig{
 						Type: graphql.NewNonNull(types.projectMembersCursor),
@@ -148,7 +146,7 @@ func graphqlProject(service *console.Service, types *TypeCreator) *graphql.Objec
 					}
 
 					cursor := cursorArgsToProjectMembersCursor(p.Args[CursorArg].(map[string]interface{}))
-					page, err := service.GetProjectMembersAndInvitations(p.Context, project.ID, cursor)
+					page, err := service.GetProjectMembers(p.Context, project.ID, cursor)
 					if err != nil {
 						return nil, err
 					}
@@ -166,26 +164,16 @@ func graphqlProject(service *console.Service, types *TypeCreator) *graphql.Objec
 						})
 					}
 
-					var invites []projectInvitation
-					for _, invite := range page.ProjectInvitations {
-						invites = append(invites, projectInvitation{
-							Email:     invite.Email,
-							CreatedAt: invite.CreatedAt,
-							Expired:   service.IsProjectInvitationExpired(&invite),
-						})
-					}
-
 					projectMembersPage := projectMembersPage{
-						ProjectMembers:     users,
-						ProjectInvitations: invites,
-						TotalCount:         page.TotalCount,
-						Offset:             page.Offset,
-						Limit:              page.Limit,
-						Order:              int(page.Order),
-						OrderDirection:     int(page.OrderDirection),
-						Search:             page.Search,
-						CurrentPage:        page.CurrentPage,
-						PageCount:          page.PageCount,
+						ProjectMembers: users,
+						TotalCount:     page.TotalCount,
+						Offset:         page.Offset,
+						Limit:          page.Limit,
+						Order:          int(page.Order),
+						OrderDirection: int(page.OrderDirection),
+						Search:         page.Search,
+						CurrentPage:    page.CurrentPage,
+						PageCount:      page.PageCount,
 					}
 					return projectMembersPage, nil
 				},
@@ -450,16 +438,16 @@ func graphqlProjectUsage() *graphql.Object {
 	})
 }
 
-// fromMapProjectInfo creates console.UpsertProjectInfo from input args.
-func fromMapProjectInfo(args map[string]interface{}) (project console.UpsertProjectInfo) {
+// fromMapProjectInfo creates console.ProjectInfo from input args.
+func fromMapProjectInfo(args map[string]interface{}) (project console.ProjectInfo) {
 	project.Name, _ = args[FieldName].(string)
 	project.Description, _ = args[FieldDescription].(string)
 
 	return
 }
 
-// fromMapProjectInfoProjectLimits creates console.UpsertProjectInfo from input args.
-func fromMapProjectInfoProjectLimits(projectInfo, projectLimits map[string]interface{}) (project console.UpsertProjectInfo, err error) {
+// fromMapProjectInfoProjectLimits creates console.ProjectInfo from input args.
+func fromMapProjectInfoProjectLimits(projectInfo, projectLimits map[string]interface{}) (project console.ProjectInfo, err error) {
 	project.Name, _ = projectInfo[FieldName].(string)
 	project.Description, _ = projectInfo[FieldDescription].(string)
 	storageLimit, err := strconv.Atoi(projectLimits[FieldStorageLimit].(string))

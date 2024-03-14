@@ -255,15 +255,12 @@ func (db *DB) IterateLoopSegments(ctx context.Context, opts IterateLoopSegments,
 		return err
 	}
 
-	loopIteratorBatchSizeLimit.Ensure(&opts.BatchSize)
-
 	it := &loopSegmentIterator{
 		db: db,
 
 		asOfSystemTime:     opts.AsOfSystemTime,
 		asOfSystemInterval: opts.AsOfSystemInterval,
 		batchSize:          opts.BatchSize,
-		batchPieces:        make([]Pieces, opts.BatchSize),
 
 		curIndex: 0,
 		cursor: loopSegmentIteratorCursor{
@@ -279,6 +276,8 @@ func (db *DB) IterateLoopSegments(ctx context.Context, opts IterateLoopSegments,
 	if it.cursor.EndStreamID.IsZero() {
 		it.cursor.EndStreamID = uuid.Max()
 	}
+
+	loopIteratorBatchSizeLimit.Ensure(&it.batchSize)
 
 	it.curRows, err = it.doNextQuery(ctx)
 	if err != nil {
@@ -299,10 +298,7 @@ func (db *DB) IterateLoopSegments(ctx context.Context, opts IterateLoopSegments,
 type loopSegmentIterator struct {
 	db *DB
 
-	batchSize int
-	// batchPieces are reused between result pages to reduce memory consumption
-	batchPieces []Pieces
-
+	batchSize          int
 	asOfSystemTime     time.Time
 	asOfSystemInterval time.Duration
 
@@ -403,14 +399,7 @@ func (it *loopSegmentIterator) scanItem(ctx context.Context, item *LoopSegmentEn
 		return Error.New("failed to scan segments: %w", err)
 	}
 
-	// allocate new Pieces only if existing have not enough capacity
-	if cap(it.batchPieces[it.curIndex]) < len(item.AliasPieces) {
-		it.batchPieces[it.curIndex] = make(Pieces, len(item.AliasPieces))
-	} else {
-		it.batchPieces[it.curIndex] = it.batchPieces[it.curIndex][:len(item.AliasPieces)]
-	}
-
-	item.Pieces, err = it.db.aliasCache.convertAliasesToPieces(ctx, item.AliasPieces, it.batchPieces[it.curIndex])
+	item.Pieces, err = it.db.aliasCache.ConvertAliasesToPieces(ctx, item.AliasPieces)
 	if err != nil {
 		return Error.New("failed to convert aliases to pieces: %w", err)
 	}
@@ -422,8 +411,7 @@ func (it *loopSegmentIterator) scanItem(ctx context.Context, item *LoopSegmentEn
 type BucketTally struct {
 	BucketLocation
 
-	ObjectCount        int64
-	PendingObjectCount int64
+	ObjectCount int64
 
 	TotalSegments int64
 	TotalBytes    int64
@@ -464,17 +452,14 @@ func (db *DB) CollectBucketTallies(ctx context.Context, opts CollectBucketTallie
 	}
 
 	err = withRows(db.db.QueryContext(ctx, `
-			SELECT
-				project_id, bucket_name,
-				SUM(total_encrypted_size), SUM(segment_count), COALESCE(SUM(length(encrypted_metadata)), 0),
-				count(*), count(*) FILTER (WHERE status = 1)
+			SELECT project_id, bucket_name, SUM(total_encrypted_size), SUM(segment_count), COALESCE(SUM(length(encrypted_metadata)), 0), count(*)
 			FROM objects
 			`+db.asOfTime(opts.AsOfSystemTime, opts.AsOfSystemInterval)+`
 			WHERE (project_id, bucket_name) BETWEEN ($1, $2) AND ($3, $4) AND
 			(expires_at IS NULL OR expires_at > $5)
 			GROUP BY (project_id, bucket_name)
 			ORDER BY (project_id, bucket_name) ASC
-		`, opts.From.ProjectID, []byte(opts.From.BucketName), opts.To.ProjectID, []byte(opts.To.BucketName), opts.Now))(func(rows tagsql.Rows) error {
+		`, opts.From.ProjectID, opts.From.BucketName, opts.To.ProjectID, opts.To.BucketName, opts.Now))(func(rows tagsql.Rows) error {
 		for rows.Next() {
 			var bucketTally BucketTally
 
@@ -482,7 +467,6 @@ func (db *DB) CollectBucketTallies(ctx context.Context, opts CollectBucketTallie
 				&bucketTally.ProjectID, &bucketTally.BucketName,
 				&bucketTally.TotalBytes, &bucketTally.TotalSegments,
 				&bucketTally.MetadataSize, &bucketTally.ObjectCount,
-				&bucketTally.PendingObjectCount,
 			); err != nil {
 				return Error.New("unable to query bucket tally: %w", err)
 			}

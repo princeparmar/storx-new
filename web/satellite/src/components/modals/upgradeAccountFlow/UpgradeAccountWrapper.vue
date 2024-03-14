@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Storx Labs, Inc.
+// Copyright (C) 2023 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -12,8 +12,10 @@
 </template>
 
 <script setup lang="ts">
+import { Component } from 'vue';
+
 const props = defineProps<{
-    icon?: string;
+    icon?: Component;
     title: string;
 }>();
 </script>

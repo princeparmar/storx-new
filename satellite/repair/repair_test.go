@@ -2458,7 +2458,6 @@ func ecRepairerWithMockConnector(t testing.TB, sat *testplanet.Satellite, mock *
 		zaptest.NewLogger(t).Named("a-special-repairer"),
 		newDialer,
 		signing.SigneeFromPeerIdentity(sat.Identity.PeerIdentity()),
-		sat.Config.Repairer.DialTimeout,
 		sat.Config.Repairer.DownloadTimeout,
 		sat.Config.Repairer.InMemoryRepair,
 	)
@@ -3284,10 +3283,10 @@ func TestRepairClumpedPieces(t *testing.T) {
 			Capacity:   &local.Capacity,
 			Version:    &local.Version,
 		}
-
-		require.NoError(t, satellite.DB.OverlayCache().UpdateCheckIn(ctx, checkInInfo, time.Now().UTC(), overlay.NodeSelectionConfig{}))
-
-		require.NoError(t, satellite.RangedLoop.Repair.Observer.RefreshReliabilityCache(ctx))
+		err = satellite.DB.OverlayCache().UpdateCheckIn(ctx, checkInInfo, time.Now().UTC(), overlay.NodeSelectionConfig{})
+		require.NoError(t, err)
+		err = satellite.RangedLoop.Overlay.Service.DownloadSelectionCache.Refresh(ctx)
+		require.NoError(t, err)
 
 		// running repair checker again should put the segment into the repair queue
 		_, err = satellite.RangedLoop.RangedLoop.Service.RunOnce(ctx)

@@ -53,10 +53,18 @@ func (db *StoragenodeAccounting) SaveTallies(ctx context.Context, latestTally ti
 func (db *StoragenodeAccounting) GetTallies(ctx context.Context) (_ []*accounting.StoragenodeStorageTally, err error) {
 	defer mon.Task()(&ctx)(&err)
 	raws, err := db.db.All_StoragenodeStorageTally(ctx)
-	if err != nil {
-		return nil, Error.Wrap(err)
+	out := make([]*accounting.StoragenodeStorageTally, len(raws))
+	for i, r := range raws {
+		nodeID, err := storj.NodeIDFromBytes(r.NodeId)
+		if err != nil {
+			return nil, Error.Wrap(err)
+		}
+		out[i] = &accounting.StoragenodeStorageTally{
+			NodeID:          nodeID,
+			IntervalEndTime: r.IntervalEndTime,
+			DataTotal:       r.DataTotal,
+		}
 	}
-	out, err := convertSlice(raws, fromDBXStoragenodeStorageTally)
 	return out, Error.Wrap(err)
 }
 
@@ -64,10 +72,18 @@ func (db *StoragenodeAccounting) GetTallies(ctx context.Context) (_ []*accountin
 func (db *StoragenodeAccounting) GetTalliesSince(ctx context.Context, latestRollup time.Time) (_ []*accounting.StoragenodeStorageTally, err error) {
 	defer mon.Task()(&ctx)(&err)
 	raws, err := db.db.All_StoragenodeStorageTally_By_IntervalEndTime_GreaterOrEqual(ctx, dbx.StoragenodeStorageTally_IntervalEndTime(latestRollup))
-	if err != nil {
-		return nil, Error.Wrap(err)
+	out := make([]*accounting.StoragenodeStorageTally, len(raws))
+	for i, r := range raws {
+		nodeID, err := storj.NodeIDFromBytes(r.NodeId)
+		if err != nil {
+			return nil, Error.Wrap(err)
+		}
+		out[i] = &accounting.StoragenodeStorageTally{
+			NodeID:          nodeID,
+			IntervalEndTime: r.IntervalEndTime,
+			DataTotal:       r.DataTotal,
+		}
 	}
-	out, err := convertSlice(raws, fromDBXStoragenodeStorageTally)
 	return out, Error.Wrap(err)
 }
 
@@ -116,11 +132,16 @@ func (db *StoragenodeAccounting) getBandwidthByNodeSince(ctx context.Context, la
 		}
 		cursor = next
 		for _, r := range rollups {
-			v, err := fromDBXStoragenodeBandwidthRollup(r)
+			nodeID, err := storj.NodeIDFromBytes(r.StoragenodeId)
 			if err != nil {
-				return err
+				return Error.Wrap(err)
 			}
-			err = cb(ctx, &v)
+			err = cb(ctx, &accounting.StoragenodeBandwidthRollup{
+				NodeID:        nodeID,
+				IntervalStart: r.IntervalStart,
+				Action:        r.Action,
+				Settled:       r.Settled,
+			})
 			if err != nil {
 				return err
 			}
@@ -150,11 +171,16 @@ func (db *StoragenodeAccounting) getBandwidthPhase2ByNodeSince(ctx context.Conte
 		}
 		cursor = next
 		for _, r := range rollups {
-			v, err := fromDBXStoragenodeBandwidthRollupPhase2(r)
+			nodeID, err := storj.NodeIDFromBytes(r.StoragenodeId)
 			if err != nil {
 				return Error.Wrap(err)
 			}
-			err = cb(ctx, &v)
+			err = cb(ctx, &accounting.StoragenodeBandwidthRollup{
+				NodeID:        nodeID,
+				IntervalStart: r.IntervalStart,
+				Action:        r.Action,
+				Settled:       r.Settled,
+			})
 			if err != nil {
 				return err
 			}
@@ -616,13 +642,18 @@ func (db *StoragenodeAccounting) GetRollupsSince(ctx context.Context, since time
 			return nil, Error.Wrap(err)
 		}
 		cursor = next
-
-		rollups, err := convertSlice(dbxRollups, fromDBXStoragenodeBandwidthRollup)
-		if err != nil {
-			return nil, Error.Wrap(err)
+		for _, dbxRollup := range dbxRollups {
+			id, err := storj.NodeIDFromBytes(dbxRollup.StoragenodeId)
+			if err != nil {
+				return nil, Error.Wrap(err)
+			}
+			bwRollups = append(bwRollups, accounting.StoragenodeBandwidthRollup{
+				NodeID:        id,
+				IntervalStart: dbxRollup.IntervalStart,
+				Action:        dbxRollup.Action,
+				Settled:       dbxRollup.Settled,
+			})
 		}
-		bwRollups = append(bwRollups, rollups...)
-
 		if cursor == nil {
 			return bwRollups, nil
 		}
@@ -647,66 +678,20 @@ func (db *StoragenodeAccounting) GetArchivedRollupsSince(ctx context.Context, si
 			return nil, Error.Wrap(err)
 		}
 		cursor = next
-
-		rollups, err := convertSlice(dbxRollups, fromDBXStoragenodeBandwidthRollupArchive)
-		if err != nil {
-			return nil, Error.Wrap(err)
+		for _, dbxRollup := range dbxRollups {
+			id, err := storj.NodeIDFromBytes(dbxRollup.StoragenodeId)
+			if err != nil {
+				return nil, Error.Wrap(err)
+			}
+			bwRollups = append(bwRollups, accounting.StoragenodeBandwidthRollup{
+				NodeID:        id,
+				IntervalStart: dbxRollup.IntervalStart,
+				Action:        dbxRollup.Action,
+				Settled:       dbxRollup.Settled,
+			})
 		}
-		bwRollups = append(bwRollups, rollups...)
-
 		if cursor == nil {
 			return bwRollups, nil
 		}
 	}
-}
-
-func fromDBXStoragenodeStorageTally(r *dbx.StoragenodeStorageTally) (*accounting.StoragenodeStorageTally, error) {
-	nodeID, err := storj.NodeIDFromBytes(r.NodeId)
-	if err != nil {
-		return nil, Error.Wrap(err)
-	}
-	return &accounting.StoragenodeStorageTally{
-		NodeID:          nodeID,
-		IntervalEndTime: r.IntervalEndTime,
-		DataTotal:       r.DataTotal,
-	}, nil
-}
-
-func fromDBXStoragenodeBandwidthRollup(v *dbx.StoragenodeBandwidthRollup) (r accounting.StoragenodeBandwidthRollup, _ error) {
-	id, err := storj.NodeIDFromBytes(v.StoragenodeId)
-	if err != nil {
-		return r, Error.Wrap(err)
-	}
-	return accounting.StoragenodeBandwidthRollup{
-		NodeID:        id,
-		IntervalStart: v.IntervalStart,
-		Action:        v.Action,
-		Settled:       v.Settled,
-	}, nil
-}
-
-func fromDBXStoragenodeBandwidthRollupPhase2(v *dbx.StoragenodeBandwidthRollupPhase2) (r accounting.StoragenodeBandwidthRollup, _ error) {
-	id, err := storj.NodeIDFromBytes(v.StoragenodeId)
-	if err != nil {
-		return r, Error.Wrap(err)
-	}
-	return accounting.StoragenodeBandwidthRollup{
-		NodeID:        id,
-		IntervalStart: v.IntervalStart,
-		Action:        v.Action,
-		Settled:       v.Settled,
-	}, nil
-}
-
-func fromDBXStoragenodeBandwidthRollupArchive(v *dbx.StoragenodeBandwidthRollupArchive) (r accounting.StoragenodeBandwidthRollup, _ error) {
-	id, err := storj.NodeIDFromBytes(v.StoragenodeId)
-	if err != nil {
-		return r, Error.Wrap(err)
-	}
-	return accounting.StoragenodeBandwidthRollup{
-		NodeID:        id,
-		IntervalStart: v.IntervalStart,
-		Action:        v.Action,
-		Settled:       v.Settled,
-	}, nil
 }

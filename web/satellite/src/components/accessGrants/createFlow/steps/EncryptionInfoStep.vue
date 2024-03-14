@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Storx Labs, Inc.
+// Copyright (C) 2023 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -46,7 +46,7 @@
 import { ref } from 'vue';
 
 import { LocalData } from '@/utils/localData';
-import { useAnalyticsStore } from '@/store/modules/analyticsStore';
+import { AnalyticsHttpApi } from '@/api/analytics';
 
 import ButtonsContainer from '@/components/accessGrants/createFlow/components/ButtonsContainer.vue';
 import Toggle from '@/components/accessGrants/createFlow/components/Toggle.vue';
@@ -57,15 +57,15 @@ const props = defineProps<{
     onContinue: () => void;
 }>();
 
-const analyticsStore = useAnalyticsStore();
-
 const isDontShow = ref<boolean>(false);
+
+const analytics: AnalyticsHttpApi = new AnalyticsHttpApi();
 
 /**
  * Sends "trackPageVisit" event to segment.
  */
 function trackPageVisit(): void {
-    analyticsStore.pageVisit('https://docs.storj.io/dcs/concepts/encryption-key/design-decision-server-side-encryption/');
+    analytics.pageVisit('https://docs.storj.io/dcs/concepts/encryption-key/design-decision-server-side-encryption/');
 }
 
 /**
@@ -103,14 +103,14 @@ function backClick(): void {
     &__info {
         font-size: 16px;
         line-height: 24px;
-        color: var(--c-orange-6);
+        color: var(--c-blue-6);
         padding: 16px 0;
         text-align: left;
 
         &__link {
             font-size: 16px;
             line-height: 24px;
-            color: var(--c-orange-6);
+            color: var(--c-blue-6);
             text-decoration: underline !important;
             text-underline-position: under;
         }

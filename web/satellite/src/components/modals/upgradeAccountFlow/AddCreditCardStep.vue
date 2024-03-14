@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Storx Labs, Inc.
+// Copyright (C) 2023 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -34,12 +34,12 @@ import { ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
 import { AnalyticsErrorEventSource, AnalyticsEvent } from '@/utils/constants/analyticsEventNames';
-import { RouteConfig } from '@/types/router';
+import { RouteConfig } from '@/router';
 import { useNotify } from '@/utils/hooks';
 import { useBillingStore } from '@/store/modules/billingStore';
 import { useUsersStore } from '@/store/modules/usersStore';
 import { useProjectsStore } from '@/store/modules/projectsStore';
-import { useAnalyticsStore } from '@/store/modules/analyticsStore';
+import { AnalyticsHttpApi } from '@/api/analytics';
 
 import UpgradeAccountWrapper from '@/components/modals/upgradeAccountFlow/UpgradeAccountWrapper.vue';
 import StripeCardInput from '@/components/account/billing/paymentMethods/StripeCardInput.vue';
@@ -49,7 +49,6 @@ interface StripeForm {
     onSubmit(): Promise<void>;
 }
 
-const analyticsStore = useAnalyticsStore();
 const usersStore = useUsersStore();
 const billingStore = useBillingStore();
 const projectsStore = useProjectsStore();
@@ -60,6 +59,8 @@ const route = useRoute();
 const props = defineProps<{
     setSuccess: () => void;
 }>();
+
+const analytics: AnalyticsHttpApi = new AnalyticsHttpApi();
 
 const loading = ref<boolean>(false);
 const stripeCardInput = ref<typeof StripeCardInput & StripeForm | null>(null);
@@ -75,7 +76,7 @@ async function onSaveCardClick(): Promise<void> {
     try {
         await stripeCardInput.value.onSubmit();
     } catch (error) {
-        notify.notifyError(error, AnalyticsErrorEventSource.UPGRADE_ACCOUNT_MODAL);
+        notify.error(error.message, AnalyticsErrorEventSource.UPGRADE_ACCOUNT_MODAL);
         loading.value = false;
     }
 }
@@ -100,12 +101,12 @@ async function addCardToDB(token: string): Promise<void> {
             await billingStore.getCreditCards();
         }
 
-        analyticsStore.eventTriggered(AnalyticsEvent.MODAL_ADD_CARD);
+        analytics.eventTriggered(AnalyticsEvent.MODAL_ADD_CARD);
 
         loading.value = false;
         props.setSuccess();
     } catch (error) {
-        notify.notifyError(error, AnalyticsErrorEventSource.UPGRADE_ACCOUNT_MODAL);
+        notify.error(error.message, AnalyticsErrorEventSource.UPGRADE_ACCOUNT_MODAL);
         loading.value = false;
     }
 }
@@ -116,7 +117,7 @@ async function addCardToDB(token: string): Promise<void> {
     font-family: 'font_regular', sans-serif;
     font-size: 14px;
     line-height: 20px;
-    color: var(--c-orange-6);
+    color: var(--c-blue-6);
     padding-bottom: 16px;
     margin-bottom: 16px;
     border-bottom: 1px solid var(--c-grey-2);

@@ -157,9 +157,11 @@ type SatelliteUsage struct {
 
 // Config is configuration for Store.
 type Config struct {
-	WritePreallocSize    memory.Size `help:"file preallocated for uploading" default:"4MiB"`
-	DeleteToTrash        bool        `help:"move pieces to trash upon deletion. Warning: if set to false, you risk disqualification for failed audits if a satellite database is restored from backup." default:"true"`
-	EnableLazyFilewalker bool        `help:"run garbage collection and used-space calculation filewalkers as a separate subprocess with lower IO priority" default:"true"`
+	WritePreallocSize memory.Size `help:"file preallocated for uploading" default:"4MiB"`
+	DeleteToTrash     bool        `help:"move pieces to trash upon deletion. Warning: if set to false, you risk disqualification for failed audits if a satellite database is restored from backup." default:"true"`
+	// TODO(clement): default is set to false for now.
+	//  I will test and monitor on my node for some time before changing the default to true.
+	EnableLazyFilewalker bool `help:"run garbage collection and used-space calculation filewalkers as a separate subprocess with lower IO priority" releaseDefault:"false" devDefault:"true" testDefault:"false"`
 }
 
 // DefaultConfig is the default value for the Config.
@@ -739,7 +741,6 @@ func (store *Store) GetV0PieceInfo(ctx context.Context, satellite storj.NodeID, 
 // StorageStatus contains information about the disk store is using.
 type StorageStatus struct {
 	DiskUsed int64
-	// DiskFree is the actual amount of free space on the whole disk, not just allocated disk space, in bytes.
 	DiskFree int64
 }
 

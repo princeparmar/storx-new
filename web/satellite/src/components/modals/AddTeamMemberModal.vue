@@ -1,4 +1,4 @@
-// Copyright (C) 2022 Storx Labs, Inc.
+// Copyright (C) 2022 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -24,7 +24,6 @@
                         placeholder="email@email.com"
                         role-description="email"
                         :error="formError"
-                        :max-symbols="72"
                         @setData="(str) => setInput(index, str)"
                     />
                 </div>
@@ -68,13 +67,13 @@ import { computed, ref } from 'vue';
 
 import { EmailInput } from '@/types/EmailInput';
 import { Validator } from '@/utils/validation';
+import { AnalyticsHttpApi } from '@/api/analytics';
 import { AnalyticsErrorEventSource, AnalyticsEvent } from '@/utils/constants/analyticsEventNames';
 import { useNotify } from '@/utils/hooks';
 import { useUsersStore } from '@/store/modules/usersStore';
 import { useProjectMembersStore } from '@/store/modules/projectMembersStore';
 import { useAppStore } from '@/store/modules/appStore';
 import { useProjectsStore } from '@/store/modules/projectsStore';
-import { useAnalyticsStore } from '@/store/modules/analyticsStore';
 
 import VButton from '@/components/common/VButton.vue';
 import VModal from '@/components/common/VModal.vue';
@@ -83,7 +82,6 @@ import VInput from '@/components/common/VInput.vue';
 import TeamMembersIcon from '@/../static/images/team/teamMembers.svg';
 import AddCircleIcon from '@/../static/images/common/addCircle.svg';
 
-const analyticsStore = useAnalyticsStore();
 const appStore = useAppStore();
 const pmStore = useProjectMembersStore();
 const usersStore = useUsersStore();
@@ -91,6 +89,7 @@ const projectsStore = useProjectsStore();
 const notify = useNotify();
 
 const FIRST_PAGE = 1;
+const analytics: AnalyticsHttpApi = new AnalyticsHttpApi();
 
 const inputs = ref<EmailInput[]>([new EmailInput()]);
 const formError = ref<string>('');
@@ -146,8 +145,6 @@ async function onAddUsersClick(): Promise<void> {
     let areAllEmailsValid = true;
     const emailArray: string[] = [];
 
-    inputs.value.forEach(elem => elem.value = elem.value.trim());
-
     for (let i = 0; i < length; i++) {
         const element = inputs.value[i];
         const isEmail = Validator.email(element.value);
@@ -188,31 +185,29 @@ async function onAddUsersClick(): Promise<void> {
     }
 
     if (emailArray.includes(usersStore.state.user.email)) {
-        notify.error(`Error adding project members. You can't add yourself to the project`, AnalyticsErrorEventSource.ADD_PROJECT_MEMBER_MODAL);
+        await notify.error(`Error during adding project members. You can't add yourself to the project`, AnalyticsErrorEventSource.ADD_PROJECT_MEMBER_MODAL);
         isLoading.value = false;
 
         return;
     }
 
     try {
-        await pmStore.inviteMembers(emailArray, projectsStore.state.selectedProject.id);
-    } catch (error) {
-        error.message = `Error adding project members. ${error.message}`;
-        notify.notifyError(error, AnalyticsErrorEventSource.ADD_PROJECT_MEMBER_MODAL);
+        await pmStore.addProjectMembers(emailArray, projectsStore.state.selectedProject.id);
+    } catch (_) {
+        await notify.error(`Error during adding project members.`, AnalyticsErrorEventSource.ADD_PROJECT_MEMBER_MODAL);
         isLoading.value = false;
 
         return;
     }
 
-    analyticsStore.eventTriggered(AnalyticsEvent.PROJECT_MEMBERS_INVITE_SENT);
-    notify.notify('Invites sent!');
+    analytics.eventTriggered(AnalyticsEvent.PROJECT_MEMBERS_INVITE_SENT);
+    await notify.notify('Invites sent!');
     pmStore.setSearchQuery('');
 
     try {
         await pmStore.getProjectMembers(FIRST_PAGE, projectsStore.state.selectedProject.id);
     } catch (error) {
-        error.message = `Unable to fetch project members. ${error.message}`;
-        notify.notifyError(error, AnalyticsErrorEventSource.ADD_PROJECT_MEMBER_MODAL);
+        await notify.error(`Unable to fetch project members. ${error.message}`, AnalyticsErrorEventSource.ADD_PROJECT_MEMBER_MODAL);
     }
 
     closeModal();
@@ -228,6 +223,18 @@ function addInput(): void {
     if (inputsLength < 10) {
         inputs.value.push(new EmailInput());
     }
+}
+
+/**
+ * Deletes selected email input from list.
+ * @param index
+ */
+function deleteInput(index: number): void {
+    if (inputs.value.length === 1) return;
+
+    resetFormErrors(index);
+
+    inputs.value = inputs.value.filter((input, i) => i !== index);
 }
 
 /**
@@ -329,7 +336,7 @@ function resetFormErrors(index: number): void {
                     }
 
                     :deep(path) {
-                        fill: var(--c-orange-3);
+                        fill: var(--c-blue-3);
                     }
                 }
 
@@ -338,7 +345,7 @@ function resetFormErrors(index: number): void {
                     font-size: 16px;
                     text-decoration: underline;
                     text-align: center;
-                    color: var(--c-orange-3);
+                    color: var(--c-blue-3);
 
                     &.inactive {
                         color: var(--c-grey-5);

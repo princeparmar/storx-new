@@ -11,7 +11,6 @@ import (
 
 	"github.com/zeebo/errs"
 	"go.uber.org/zap"
-	"golang.org/x/exp/maps"
 
 	"storj.io/common/pb"
 	"storj.io/common/storj"
@@ -21,7 +20,6 @@ import (
 	"storj.io/storj/satellite/geoip"
 	"storj.io/storj/satellite/metabase"
 	"storj.io/storj/satellite/nodeevents"
-	"storj.io/storj/satellite/nodeselection"
 )
 
 // ErrEmptyNode is returned when the nodeID is empty.
@@ -49,23 +47,31 @@ var ErrLowDifficulty = errs.Class("node id difficulty too low")
 //
 // architecture: Database
 type DB interface {
+	// GetOnlineNodesForGetDelete returns a map of nodes for the supplied nodeIDs
+	GetOnlineNodesForGetDelete(ctx context.Context, nodeIDs []storj.NodeID, onlineWindow time.Duration, asOf AsOfSystemTimeConfig) (map[storj.NodeID]*SelectedNode, error)
 	// GetOnlineNodesForAuditRepair returns a map of nodes for the supplied nodeIDs.
 	// The return value contains necessary information to create orders as well as nodes'
 	// current reputation status.
 	GetOnlineNodesForAuditRepair(ctx context.Context, nodeIDs []storj.NodeID, onlineWindow time.Duration) (map[storj.NodeID]*NodeReputation, error)
 	// SelectStorageNodes looks up nodes based on criteria
-	SelectStorageNodes(ctx context.Context, totalNeededNodes, newNodeCount int, criteria *NodeCriteria) ([]*nodeselection.SelectedNode, error)
+	SelectStorageNodes(ctx context.Context, totalNeededNodes, newNodeCount int, criteria *NodeCriteria) ([]*SelectedNode, error)
 	// SelectAllStorageNodesUpload returns all nodes that qualify to store data, organized as reputable nodes and new nodes
-	SelectAllStorageNodesUpload(ctx context.Context, selectionCfg NodeSelectionConfig) (reputable, new []*nodeselection.SelectedNode, err error)
+	SelectAllStorageNodesUpload(ctx context.Context, selectionCfg NodeSelectionConfig) (reputable, new []*SelectedNode, err error)
 	// SelectAllStorageNodesDownload returns a nodes that are ready for downloading
-	SelectAllStorageNodesDownload(ctx context.Context, onlineWindow time.Duration, asOf AsOfSystemTimeConfig) ([]*nodeselection.SelectedNode, error)
+	SelectAllStorageNodesDownload(ctx context.Context, onlineWindow time.Duration, asOf AsOfSystemTimeConfig) ([]*SelectedNode, error)
 
 	// Get looks up the node by nodeID
 	Get(ctx context.Context, nodeID storj.NodeID) (*NodeDossier, error)
+	// KnownOffline filters a set of nodes to offline nodes
+	KnownOffline(context.Context, *NodeCriteria, storj.NodeIDList) (storj.NodeIDList, error)
+	// KnownUnreliableOrOffline filters a set of nodes to unhealth or offlines node, independent of new
+	KnownUnreliableOrOffline(context.Context, *NodeCriteria, storj.NodeIDList) (storj.NodeIDList, error)
+	// KnownReliableInExcludedCountries filters healthy nodes that are in excluded countries.
+	KnownReliableInExcludedCountries(context.Context, *NodeCriteria, storj.NodeIDList) (storj.NodeIDList, error)
 	// KnownReliable filters a set of nodes to reliable (online and qualified) nodes.
-	KnownReliable(ctx context.Context, nodeIDs storj.NodeIDList, onlineWindow, asOfSystemInterval time.Duration) (online []nodeselection.SelectedNode, offline []nodeselection.SelectedNode, err error)
-	// Reliable returns all nodes that are reliable (separated by whether they are currently online or offline).
-	Reliable(ctx context.Context, onlineWindow, asOfSystemInterval time.Duration) (online []nodeselection.SelectedNode, offline []nodeselection.SelectedNode, err error)
+	KnownReliable(ctx context.Context, onlineWindow time.Duration, nodeIDs storj.NodeIDList) ([]*pb.Node, error)
+	// Reliable returns all nodes that are reliable
+	Reliable(context.Context, *NodeCriteria) (storj.NodeIDList, error)
 	// UpdateReputation updates the DB columns for all reputation fields in ReputationStatus.
 	UpdateReputation(ctx context.Context, id storj.NodeID, request ReputationUpdate) error
 	// UpdateNodeInfo updates node dossier with info requested from the node itself like node type, email, wallet, capacity, and version.
@@ -130,15 +136,9 @@ type DB interface {
 	OneTimeFixLastNets(ctx context.Context) error
 
 	// IterateAllContactedNodes will call cb on all known nodes (used in restore trash contexts).
-	IterateAllContactedNodes(context.Context, func(context.Context, *nodeselection.SelectedNode) error) error
+	IterateAllContactedNodes(context.Context, func(context.Context, *SelectedNode) error) error
 	// IterateAllNodeDossiers will call cb on all known nodes (used for invoice generation).
 	IterateAllNodeDossiers(context.Context, func(context.Context, *NodeDossier) error) error
-
-	// UpdateNodeTags insert (or refresh) node tags.
-	UpdateNodeTags(ctx context.Context, tags nodeselection.NodeTags) error
-
-	// GetNodeTags returns all nodes for a specific node.
-	GetNodeTags(ctx context.Context, id storj.NodeID) (nodeselection.NodeTags, error)
 }
 
 // DisqualificationReason is disqualification reason enum type.
@@ -197,6 +197,7 @@ type NodeCriteria struct {
 	MinimumVersion     string   // semver or empty
 	OnlineWindow       time.Duration
 	AsOfSystemInterval time.Duration // only used for CRDB queries
+	ExcludedCountries  []string
 }
 
 // ReputationStatus indicates current reputation status for a node.
@@ -277,6 +278,15 @@ type NodeLastContact struct {
 	LastContactFailure time.Time
 }
 
+// SelectedNode is used as a result for creating orders limits.
+type SelectedNode struct {
+	ID          storj.NodeID
+	Address     *pb.NodeAddress
+	LastNet     string
+	LastIPPort  string
+	CountryCode location.CountryCode
+}
+
 // NodeReputation is used as a result for creating orders limits for audits.
 type NodeReputation struct {
 	ID         storj.NodeID
@@ -284,6 +294,18 @@ type NodeReputation struct {
 	LastNet    string
 	LastIPPort string
 	Reputation ReputationStatus
+}
+
+// Clone returns a deep clone of the selected node.
+func (node *SelectedNode) Clone() *SelectedNode {
+	copy := pb.CopyNode(&pb.Node{Id: node.ID, Address: node.Address})
+	return &SelectedNode{
+		ID:          copy.Id,
+		Address:     copy.Address,
+		LastNet:     node.LastNet,
+		LastIPPort:  node.LastIPPort,
+		CountryCode: node.CountryCode,
+	}
 }
 
 // Service is used to store and handle node information.
@@ -301,14 +323,13 @@ type Service struct {
 	UploadSelectionCache   *UploadSelectionCache
 	DownloadSelectionCache *DownloadSelectionCache
 	LastNetFunc            LastNetFunc
-	placementRules         PlacementRules
 }
 
 // LastNetFunc is the type of a function that will be used to derive a network from an ip and port.
 type LastNetFunc func(config NodeSelectionConfig, ip net.IP, port string) (string, error)
 
 // NewService returns a new Service.
-func NewService(log *zap.Logger, db DB, nodeEvents nodeevents.DB, placementRules PlacementRules, satelliteAddr, satelliteName string, config Config) (*Service, error) {
+func NewService(log *zap.Logger, db DB, nodeEvents nodeevents.DB, satelliteAddr, satelliteName string, config Config) (*Service, error) {
 	err := config.Node.AsOfSystemTime.isValid()
 	if err != nil {
 		return nil, errs.Wrap(err)
@@ -322,34 +343,17 @@ func NewService(log *zap.Logger, db DB, nodeEvents nodeevents.DB, placementRules
 		}
 	}
 
-	defaultSelection := nodeselection.NodeFilters{}
-
-	if len(config.Node.UploadExcludedCountryCodes) > 0 {
-		set := location.NewFullSet()
-		for _, country := range config.Node.UploadExcludedCountryCodes {
-			countryCode := location.ToCountryCode(country)
-			if countryCode == location.None {
-				return nil, Error.New("invalid country %q", country)
-			}
-			set.Remove(countryCode)
-		}
-		defaultSelection = defaultSelection.WithCountryFilter(set)
-	}
-
 	uploadSelectionCache, err := NewUploadSelectionCache(log, db,
 		config.NodeSelectionCache.Staleness, config.Node,
-		defaultSelection, placementRules,
 	)
 	if err != nil {
 		return nil, errs.Wrap(err)
 	}
-	downloadSelectionCache, err := NewDownloadSelectionCache(log, db,
-		placementRules,
-		DownloadSelectionCacheConfig{
-			Staleness:      config.NodeSelectionCache.Staleness,
-			OnlineWindow:   config.Node.OnlineWindow,
-			AsOfSystemTime: config.Node.AsOfSystemTime,
-		})
+	downloadSelectionCache, err := NewDownloadSelectionCache(log, db, DownloadSelectionCacheConfig{
+		Staleness:      config.NodeSelectionCache.Staleness,
+		OnlineWindow:   config.Node.OnlineWindow,
+		AsOfSystemTime: config.Node.AsOfSystemTime,
+	})
 	if err != nil {
 		return nil, errs.Wrap(err)
 	}
@@ -367,8 +371,6 @@ func NewService(log *zap.Logger, db DB, nodeEvents nodeevents.DB, placementRules
 		UploadSelectionCache:   uploadSelectionCache,
 		DownloadSelectionCache: downloadSelectionCache,
 		LastNetFunc:            MaskOffLastNet,
-
-		placementRules: placementRules,
 	}, nil
 }
 
@@ -394,8 +396,15 @@ func (service *Service) Get(ctx context.Context, nodeID storj.NodeID) (_ *NodeDo
 	return service.db.Get(ctx, nodeID)
 }
 
+// GetOnlineNodesForGetDelete returns a map of nodes for the supplied nodeIDs.
+func (service *Service) GetOnlineNodesForGetDelete(ctx context.Context, nodeIDs []storj.NodeID) (_ map[storj.NodeID]*SelectedNode, err error) {
+	defer mon.Task()(&ctx)(&err)
+
+	return service.db.GetOnlineNodesForGetDelete(ctx, nodeIDs, service.config.Node.OnlineWindow, service.config.Node.AsOfSystemTime)
+}
+
 // CachedGetOnlineNodesForGet returns a map of nodes from the download selection cache from the suppliedIDs.
-func (service *Service) CachedGetOnlineNodesForGet(ctx context.Context, nodeIDs []storj.NodeID) (_ map[storj.NodeID]*nodeselection.SelectedNode, err error) {
+func (service *Service) CachedGetOnlineNodesForGet(ctx context.Context, nodeIDs []storj.NodeID) (_ map[storj.NodeID]*SelectedNode, err error) {
 	defer mon.Task()(&ctx)(&err)
 	return service.DownloadSelectionCache.GetNodes(ctx, nodeIDs)
 }
@@ -407,10 +416,10 @@ func (service *Service) GetOnlineNodesForAuditRepair(ctx context.Context, nodeID
 	return service.db.GetOnlineNodesForAuditRepair(ctx, nodeIDs, service.config.Node.OnlineWindow)
 }
 
-// GetNodeIPsFromPlacement returns a map of node ip:port for the supplied nodeIDs. Results are filtered out by placement.
-func (service *Service) GetNodeIPsFromPlacement(ctx context.Context, nodeIDs []storj.NodeID, placement storj.PlacementConstraint) (_ map[storj.NodeID]string, err error) {
+// GetNodeIPs returns a map of node ip:port for the supplied nodeIDs.
+func (service *Service) GetNodeIPs(ctx context.Context, nodeIDs []storj.NodeID) (_ map[storj.NodeID]string, err error) {
 	defer mon.Task()(&ctx)(&err)
-	return service.DownloadSelectionCache.GetNodeIPsFromPlacement(ctx, nodeIDs, placement)
+	return service.DownloadSelectionCache.GetNodeIPs(ctx, nodeIDs)
 }
 
 // IsOnline checks if a node is 'online' based on the collected statistics.
@@ -418,8 +427,45 @@ func (service *Service) IsOnline(node *NodeDossier) bool {
 	return time.Since(node.Reputation.LastContactSuccess) < service.config.Node.OnlineWindow
 }
 
+// GetNodesNetworkInOrder returns the /24 subnet for each storage node, in order. If a
+// requested node is not in the database, an empty string will be returned corresponding
+// to that node's last_net.
+func (service *Service) GetNodesNetworkInOrder(ctx context.Context, nodeIDs []storj.NodeID) (lastNets []string, err error) {
+	defer mon.Task()(&ctx)(nil)
+
+	nodes, err := service.DownloadSelectionCache.GetNodes(ctx, nodeIDs)
+	if err != nil {
+		return nil, err
+	}
+	lastNets = make([]string, len(nodeIDs))
+	for i, nodeID := range nodeIDs {
+		if selectedNode, ok := nodes[nodeID]; ok {
+			lastNets[i] = selectedNode.LastNet
+		}
+	}
+	return lastNets, nil
+}
+
+// GetNodesOutOfPlacement checks if nodes from nodeIDs list are in allowed country according to specified geo placement
+// and returns list of node ids which are not.
+func (service *Service) GetNodesOutOfPlacement(ctx context.Context, nodeIDs []storj.NodeID, placement storj.PlacementConstraint) (offNodes []storj.NodeID, err error) {
+	defer mon.Task()(&ctx)(nil)
+
+	nodes, err := service.DownloadSelectionCache.GetNodes(ctx, nodeIDs)
+	if err != nil {
+		return nil, err
+	}
+	offNodes = make([]storj.NodeID, 0, len(nodeIDs))
+	for _, nodeID := range nodeIDs {
+		if selectedNode, ok := nodes[nodeID]; ok && !placement.AllowedCountry(selectedNode.CountryCode) {
+			offNodes = append(offNodes, selectedNode.ID)
+		}
+	}
+	return offNodes, nil
+}
+
 // FindStorageNodesForGracefulExit searches the overlay network for nodes that meet the provided requirements for graceful-exit requests.
-func (service *Service) FindStorageNodesForGracefulExit(ctx context.Context, req FindStorageNodesRequest) (_ []*nodeselection.SelectedNode, err error) {
+func (service *Service) FindStorageNodesForGracefulExit(ctx context.Context, req FindStorageNodesRequest) (_ []*SelectedNode, err error) {
 	defer mon.Task()(&ctx)(&err)
 	return service.UploadSelectionCache.GetNodes(ctx, req)
 }
@@ -428,7 +474,7 @@ func (service *Service) FindStorageNodesForGracefulExit(ctx context.Context, req
 //
 // When enabled it uses the cache to select nodes.
 // When the node selection from the cache fails, it falls back to the old implementation.
-func (service *Service) FindStorageNodesForUpload(ctx context.Context, req FindStorageNodesRequest) (_ []*nodeselection.SelectedNode, err error) {
+func (service *Service) FindStorageNodesForUpload(ctx context.Context, req FindStorageNodesRequest) (_ []*SelectedNode, err error) {
 	defer mon.Task()(&ctx)(&err)
 	if service.config.Node.AsOfSystemTime.Enabled && service.config.Node.AsOfSystemTime.DefaultInterval < 0 {
 		req.AsOfSystemInterval = service.config.Node.AsOfSystemTime.DefaultInterval
@@ -464,7 +510,7 @@ func (service *Service) FindStorageNodesForUpload(ctx context.Context, req FindS
 // FindStorageNodesWithPreferences searches the overlay network for nodes that meet the provided criteria.
 //
 // This does not use a cache.
-func (service *Service) FindStorageNodesWithPreferences(ctx context.Context, req FindStorageNodesRequest, preferences *NodeSelectionConfig) (nodes []*nodeselection.SelectedNode, err error) {
+func (service *Service) FindStorageNodesWithPreferences(ctx context.Context, req FindStorageNodesRequest, preferences *NodeSelectionConfig) (nodes []*SelectedNode, err error) {
 	defer mon.Task()(&ctx)(&err)
 	// TODO: add sanity limits to requested node count
 	// TODO: add sanity limits to excluded nodes
@@ -505,6 +551,24 @@ func (service *Service) FindStorageNodesWithPreferences(ctx context.Context, req
 	return nodes, nil
 }
 
+// KnownOffline filters a set of nodes to offline nodes.
+func (service *Service) KnownOffline(ctx context.Context, nodeIds storj.NodeIDList) (offlineNodes storj.NodeIDList, err error) {
+	defer mon.Task()(&ctx)(&err)
+	criteria := &NodeCriteria{
+		OnlineWindow: service.config.Node.OnlineWindow,
+	}
+	return service.db.KnownOffline(ctx, criteria, nodeIds)
+}
+
+// KnownUnreliableOrOffline filters a set of nodes to unhealth or offlines node, independent of new.
+func (service *Service) KnownUnreliableOrOffline(ctx context.Context, nodeIds storj.NodeIDList) (badNodes storj.NodeIDList, err error) {
+	defer mon.Task()(&ctx)(&err)
+	criteria := &NodeCriteria{
+		OnlineWindow: service.config.Node.OnlineWindow,
+	}
+	return service.db.KnownUnreliableOrOffline(ctx, criteria, nodeIds)
+}
+
 // InsertOfflineNodeEvents inserts offline events into node events.
 func (service *Service) InsertOfflineNodeEvents(ctx context.Context, cooldown time.Duration, cutoff time.Duration, limit int) (count int, err error) {
 	defer mon.Task()(&ctx)(&err)
@@ -538,20 +602,32 @@ func (service *Service) InsertOfflineNodeEvents(ctx context.Context, cooldown ti
 	return count, err
 }
 
-// KnownReliable filters a set of nodes to reliable (online and qualified) nodes.
-func (service *Service) KnownReliable(ctx context.Context, nodeIDs storj.NodeIDList) (onlineNodes []nodeselection.SelectedNode, offlineNodes []nodeselection.SelectedNode, err error) {
+// KnownReliableInExcludedCountries filters healthy nodes that are in excluded countries.
+func (service *Service) KnownReliableInExcludedCountries(ctx context.Context, nodeIds storj.NodeIDList) (reliableInExcluded storj.NodeIDList, err error) {
 	defer mon.Task()(&ctx)(&err)
 
-	// TODO add as of system time
-	return service.db.KnownReliable(ctx, nodeIDs, service.config.Node.OnlineWindow, 0)
+	criteria := &NodeCriteria{
+		OnlineWindow:      service.config.Node.OnlineWindow,
+		ExcludedCountries: service.config.RepairExcludedCountryCodes,
+	}
+	return service.db.KnownReliableInExcludedCountries(ctx, criteria, nodeIds)
 }
 
-// Reliable returns all nodes that are reliable (separated by whether they are currently online or offline).
-func (service *Service) Reliable(ctx context.Context) (online []nodeselection.SelectedNode, offline []nodeselection.SelectedNode, err error) {
+// KnownReliable filters a set of nodes to reliable (online and qualified) nodes.
+func (service *Service) KnownReliable(ctx context.Context, nodeIDs storj.NodeIDList) (nodes []*pb.Node, err error) {
+	defer mon.Task()(&ctx)(&err)
+	return service.db.KnownReliable(ctx, service.config.Node.OnlineWindow, nodeIDs)
+}
+
+// Reliable filters a set of nodes that are reliable, independent of new.
+func (service *Service) Reliable(ctx context.Context) (nodes storj.NodeIDList, err error) {
 	defer mon.Task()(&ctx)(&err)
 
-	// TODO add as of system tim.
-	return service.db.Reliable(ctx, service.config.Node.OnlineWindow, 0)
+	criteria := &NodeCriteria{
+		OnlineWindow: service.config.Node.OnlineWindow,
+	}
+	criteria.ExcludedCountries = service.config.RepairExcludedCountryCodes
+	return service.db.Reliable(ctx, criteria)
 }
 
 // UpdateReputation updates the DB columns for any of the reputation fields.
@@ -715,23 +791,45 @@ func (service *Service) UpdateCheckIn(ctx context.Context, node NodeCheckInInfo,
 // GetMissingPieces returns the list of offline nodes and the corresponding pieces.
 func (service *Service) GetMissingPieces(ctx context.Context, pieces metabase.Pieces) (missingPieces []uint16, err error) {
 	defer mon.Task()(&ctx)(&err)
-
-	// TODO this method will be removed completely in subsequent change
 	var nodeIDs storj.NodeIDList
-	missingPiecesMap := map[storj.NodeID]uint16{}
 	for _, p := range pieces {
 		nodeIDs = append(nodeIDs, p.StorageNode)
-		missingPiecesMap[p.StorageNode] = p.Number
 	}
-	onlineNodes, _, err := service.KnownReliable(ctx, nodeIDs)
+	badNodeIDs, err := service.KnownUnreliableOrOffline(ctx, nodeIDs)
 	if err != nil {
 		return nil, Error.New("error getting nodes %s", err)
 	}
 
-	for _, node := range onlineNodes {
-		delete(missingPiecesMap, node.ID)
+	for _, p := range pieces {
+		for _, nodeID := range badNodeIDs {
+			if nodeID == p.StorageNode {
+				missingPieces = append(missingPieces, p.Number)
+			}
+		}
 	}
-	return maps.Values(missingPiecesMap), nil
+	return missingPieces, nil
+}
+
+// GetReliablePiecesInExcludedCountries returns the list of pieces held by nodes located in excluded countries.
+func (service *Service) GetReliablePiecesInExcludedCountries(ctx context.Context, pieces metabase.Pieces) (piecesInExcluded []uint16, err error) {
+	defer mon.Task()(&ctx)(&err)
+	var nodeIDs storj.NodeIDList
+	for _, p := range pieces {
+		nodeIDs = append(nodeIDs, p.StorageNode)
+	}
+	inExcluded, err := service.KnownReliableInExcludedCountries(ctx, nodeIDs)
+	if err != nil {
+		return nil, Error.New("error getting nodes %s", err)
+	}
+
+	for _, p := range pieces {
+		for _, nodeID := range inExcluded {
+			if nodeID == p.StorageNode {
+				piecesInExcluded = append(piecesInExcluded, p.Number)
+			}
+		}
+	}
+	return piecesInExcluded, nil
 }
 
 // DQNodesLastSeenBefore disqualifies nodes who have not been contacted since the cutoff time.
@@ -770,7 +868,7 @@ func (service *Service) DisqualifyNode(ctx context.Context, nodeID storj.NodeID,
 }
 
 // SelectAllStorageNodesDownload returns a nodes that are ready for downloading.
-func (service *Service) SelectAllStorageNodesDownload(ctx context.Context, onlineWindow time.Duration, asOf AsOfSystemTimeConfig) (_ []*nodeselection.SelectedNode, err error) {
+func (service *Service) SelectAllStorageNodesDownload(ctx context.Context, onlineWindow time.Duration, asOf AsOfSystemTimeConfig) (_ []*SelectedNode, err error) {
 	defer mon.Task()(&ctx)(&err)
 	return service.db.SelectAllStorageNodesDownload(ctx, onlineWindow, asOf)
 }
@@ -779,16 +877,6 @@ func (service *Service) SelectAllStorageNodesDownload(ctx context.Context, onlin
 func (service *Service) ResolveIPAndNetwork(ctx context.Context, target string) (ip net.IP, port, network string, err error) {
 	// LastNetFunc is MaskOffLastNet, unless changed for a test.
 	return ResolveIPAndNetwork(ctx, target, service.config.Node, service.LastNetFunc)
-}
-
-// UpdateNodeTags persists all new and old node tags.
-func (service *Service) UpdateNodeTags(ctx context.Context, tags []nodeselection.NodeTag) error {
-	return service.db.UpdateNodeTags(ctx, tags)
-}
-
-// GetNodeTags returns the node tags of a node.
-func (service *Service) GetNodeTags(ctx context.Context, id storj.NodeID) (nodeselection.NodeTags, error) {
-	return service.db.GetNodeTags(ctx, id)
 }
 
 // ResolveIPAndNetwork resolves the target address and determines its IP and appropriate last_net, as indicated.

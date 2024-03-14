@@ -1,4 +1,4 @@
-// Copyright (C) 2022 Storx Labs, Inc.
+// Copyright (C) 2022 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -95,13 +95,12 @@ import { computed, onMounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
 import { Wallet } from '@/types/payments';
+import { AnalyticsHttpApi } from '@/api/analytics';
 import { AnalyticsErrorEventSource, AnalyticsEvent } from '@/utils/constants/analyticsEventNames';
 import { MODALS } from '@/utils/constants/appStatePopUps';
 import { useNotify } from '@/utils/hooks';
 import { useBillingStore } from '@/store/modules/billingStore';
 import { useAppStore } from '@/store/modules/appStore';
-import { useAnalyticsStore } from '@/store/modules/analyticsStore';
-import { useUsersStore } from '@/store/modules/usersStore';
 
 import VButton from '@/components/common/VButton.vue';
 import VLoader from '@/components/common/VLoader.vue';
@@ -111,22 +110,15 @@ import InfoIcon from '@/../static/images/billing/blueInfoIcon.svg';
 import StorjSmall from '@/../static/images/billing/storj-icon-small.svg';
 import StorjLarge from '@/../static/images/billing/storj-icon-large.svg';
 
-const analyticsStore = useAnalyticsStore();
 const appStore = useAppStore();
 const billingStore = useBillingStore();
-const usersStore = useUsersStore();
 const notify = useNotify();
 const router = useRouter();
 const route = useRoute();
 
-const isLoading = ref<boolean>(false);
+const analytics: AnalyticsHttpApi = new AnalyticsHttpApi();
 
-/**
- * Indicates if user is in paid tier.
- */
-const isUserInPaidTier = computed((): boolean => {
-    return usersStore.state.user.paidTier;
-});
+const isLoading = ref<boolean>(false);
 
 /**
  * Returns wallet from store.
@@ -168,7 +160,7 @@ async function claimWalletClick(): Promise<void> {
         // wallet claimed; open token modal
         onAddTokensClick();
     } catch (error) {
-        notify.notifyError(error, AnalyticsErrorEventSource.BILLING_STORJ_TOKEN_CONTAINER);
+        await notify.error(error.message, AnalyticsErrorEventSource.BILLING_STORJ_TOKEN_CONTAINER);
     }
 
     isLoading.value = false;
@@ -179,13 +171,8 @@ async function claimWalletClick(): Promise<void> {
  * Triggers Add funds popup.
  */
 function onAddTokensClick(): void {
-    analyticsStore.eventTriggered(AnalyticsEvent.ADD_FUNDS_CLICKED);
-
-    if (!isUserInPaidTier.value) {
-        appStore.updateActiveModal(MODALS.upgradeAccount);
-    } else {
-        appStore.updateActiveModal(MODALS.addTokenFunds);
-    }
+    analytics.eventTriggered(AnalyticsEvent.ADD_FUNDS_CLICKED);
+    appStore.updateActiveModal(MODALS.addTokenFunds);
 }
 
 onMounted(async (): Promise<void> => {
@@ -270,7 +257,7 @@ onMounted(async (): Promise<void> => {
                 justify-content: space-between;
 
                 &__small-icon {
-                    background: var(--c-orange-1);
+                    background: var(--c-blue-1);
                     border-radius: 4px;
                     width: 32px;
                     height: 24px;
@@ -283,14 +270,14 @@ onMounted(async (): Promise<void> => {
                     display: flex;
                     align-items: center;
                     padding: 7px 8px;
-                    background: var(--c-orange-1);
+                    background: var(--c-blue-1);
                     border: 1px solid #fff;
                     border-radius: 4px;
 
                     &__label {
                         font-family: 'font_bold', sans-serif;
                         font-size: 12px;
-                        color: var(--c-orange-4);
+                        color: var(--c-blue-4);
                         margin-right: 4px;
                     }
 
@@ -331,7 +318,7 @@ onMounted(async (): Promise<void> => {
                     color: #000;
 
                     a {
-                        color: var(--c-orange-3);
+                        color: var(--c-blue-3);
                         text-decoration: underline !important;
                     }
                 }

@@ -1,4 +1,4 @@
-// Copyright (C) 2022 Storx Labs, Inc.
+// Copyright (C) 2022 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -77,7 +77,7 @@ import StorjLarge from '@/../static/images/billing/storj-icon-large.svg';
                 color: #000;
 
                 a {
-                    color: var(--c-orange-3);
+                    color: var(--c-blue-3);
                     text-decoration: underline !important;
                 }
             }

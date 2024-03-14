@@ -1,4 +1,4 @@
-// Copyright (C) 2022 Storx Labs, Inc.
+// Copyright (C) 2022 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -57,12 +57,7 @@
         </div>
         <div v-else class="pagination-container__pages-placeholder" />
 
-        <table-size-changer
-            v-if="limit && totalPageCount && totalItemsCount > 10"
-            :item-count="totalItemsCount"
-            :selected="pageSize"
-            @change="sizeChanged"
-        />
+        <table-size-changer v-if="limit && totalPageCount && totalItemsCount > 10" :item-count="totalItemsCount" class="table-footer__sizer" :selected="pageSize" @change="sizeChanged">Size Changer</table-size-changer>
     </div>
 </template>
 
@@ -159,12 +154,14 @@ const isLastPage = computed((): boolean => {
     return currentPageNumber.value === props.totalPageCount;
 });
 
-function sizeChanged(size: number) {
+async function sizeChanged(size: number) {
     // if the new size is large enough to cause the page index to  be out of range
     // we calculate an appropriate new page index.
-    const maxPage = Math.ceil(Math.ceil(props.totalItemsCount / size));
-    const page = currentPageNumber.value > maxPage ? maxPage : currentPageNumber.value;
-    withLoading(async () => {
+    let page = currentPageNumber.value;
+    if (size * props.totalPageCount > props.totalItemsCount) {
+        page = Math.ceil(props.totalItemsCount / size);
+    }
+    await withLoading(async () => {
         if (!props.onPageChange) {
             return;
         }

@@ -48,7 +48,7 @@ func TestDisqualificationTooManyFailedAudits(t *testing.T) {
 			satellitePeer = planet.Satellites[0]
 			nodeID        = planet.StorageNodes[0].ID()
 			report        = audit.Report{
-				Fails: metabase.Pieces{{StorageNode: nodeID}},
+				Fails: storj.NodeIDList{nodeID},
 			}
 		)
 		satellitePeer.Audit.Worker.Loop.Pause()

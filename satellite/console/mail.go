@@ -55,36 +55,6 @@ func (email *ProjectInvitationEmail) Subject() string {
 	return "You were invited to join a project on Storj"
 }
 
-// ExistingUserProjectInvitationEmail is mailservice template for project invitation email for existing users.
-type ExistingUserProjectInvitationEmail struct {
-	InviterEmail string
-	Region       string
-	SignInLink   string
-}
-
-// Template returns email template name.
-func (*ExistingUserProjectInvitationEmail) Template() string { return "ExistingUserInvite" }
-
-// Subject gets email subject.
-func (email *ExistingUserProjectInvitationEmail) Subject() string {
-	return "You were invited to join a project on Storj"
-}
-
-// NewUserProjectInvitationEmail is mailservice template for project invitation email for new users.
-type NewUserProjectInvitationEmail struct {
-	InviterEmail string
-	Region       string
-	SignUpLink   string
-}
-
-// Template returns email template name.
-func (*NewUserProjectInvitationEmail) Template() string { return "NewUserInvite" }
-
-// Subject gets email subject.
-func (email *NewUserProjectInvitationEmail) Subject() string {
-	return "You were invited to join a project on Storj"
-}
-
 // UnknownResetPasswordEmail is mailservice template with unknown password reset data.
 type UnknownResetPasswordEmail struct {
 	Satellite           string
@@ -132,45 +102,3 @@ func (*LockAccountEmail) Template() string { return "LockAccount" }
 
 // Subject gets email subject.
 func (*LockAccountEmail) Subject() string { return "Account Lock" }
-
-type UpgradeExpiredEmail struct {
-	UserName  string
-	Signature string
-}
-
-// Template returns email template name.
-func (*UpgradeExpiredEmail) Template() string { return "UpgradeExpired" }
-
-// Subject gets email subject.
-func (*UpgradeExpiredEmail) Subject() string {
-	return "Your StorX Account Expired / Your Account Downgraded Automatically"
-}
-
-type UpgradeExpiringEmail struct {
-	UserName  string
-	Signature string
-	ExpireOn  string
-}
-
-// Template returns email template name.
-func (*UpgradeExpiringEmail) Template() string { return "UpgradeExpiring" }
-
-// Subject gets email subject.
-func (*UpgradeExpiringEmail) Subject() string {
-	return "Your StorX Account Due For Renewal, Kindly Renew Urgently"
-}
-
-type UpgradeSuccessfullEmail struct {
-	UserName  string
-	Signature string
-	GBsize    string
-	Bandwidth string
-}
-
-// Template returns email template name.
-func (*UpgradeSuccessfullEmail) Template() string { return "UpgradeSuccessfull" }
-
-// Subject gets email subject.
-func (*UpgradeSuccessfullEmail) Subject() string {
-	return "Payment Receipt Confirmation for Your StorX Account"
-}

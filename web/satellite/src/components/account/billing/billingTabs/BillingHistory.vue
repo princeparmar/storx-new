@@ -1,4 +1,4 @@
-// Copyright (C) 2022 Storx Labs, Inc.
+// Copyright (C) 2022 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -47,7 +47,7 @@ async function fetchHistory(): Promise<void> {
     try {
         await billingStore.getPaymentsHistory();
     } catch (error) {
-        notify.notifyError(error, AnalyticsErrorEventSource.BILLING_HISTORY_TAB);
+        await notify.error(error.message, AnalyticsErrorEventSource.BILLING_HISTORY_TAB);
     }
 }
 

@@ -1,27 +1,30 @@
-// Copyright (C) 2022 Storx Labs, Inc.
+// Copyright (C) 2022 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
     <div v-if="isBannerShowing" class="notification-wrap">
-        <SunnyIcon class="notification-wrap__icon" />
-        <div class="notification-wrap__text">
+        <div class="notification-wrap__left">
+            <SunnyIcon class="notification-wrap__left__icon" />
             <p>
-                Ready to upgrade? Increase your limits and only pay for what you use - no minimum.
-                {{ formattedStorageLimit }} free still included.
+                Ready to upgrade? Upload up to 75TB and pay what you use only, no minimum.
+                {{ bytesToBase10String(limits.bandwidthLimit) }} free included.
             </p>
-            <a @click="openBanner">Upgrade Now</a>
         </div>
-        <CloseIcon class="notification-wrap__close" @click="onCloseClick" />
+        <div class="notification-wrap__right">
+            <a @click="openBanner">Upgrade Now</a>
+            <CloseIcon class="notification-wrap__right__close" @click="onCloseClick" />
+        </div>
     </div>
 </template>
 
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 
+import { bytesToBase10String } from '@/utils/strings';
 import { AnalyticsEvent } from '@/utils/constants/analyticsEventNames';
-import { useUsersStore } from '@/store/modules/usersStore';
-import { Size } from '@/utils/bytesSize';
-import { useAnalyticsStore } from '@/store/modules/analyticsStore';
+import { AnalyticsHttpApi } from '@/api/analytics';
+import { ProjectLimits } from '@/types/projects';
+import { useProjectsStore } from '@/store/modules/projectsStore';
 
 import SunnyIcon from '@/../static/images/notifications/sunnyicon.svg';
 import CloseIcon from '@/../static/images/notifications/closeSmall.svg';
@@ -30,8 +33,8 @@ const props = defineProps<{
     openAddPMModal: () => void,
 }>();
 
-const analyticsStore = useAnalyticsStore();
-const usersStore = useUsersStore();
+const projectsStore = useProjectsStore();
+const analytics: AnalyticsHttpApi = new AnalyticsHttpApi();
 
 const isBannerShowing = ref<boolean>(true);
 
@@ -43,10 +46,10 @@ function onCloseClick(): void {
 }
 
 /**
- * Returns the user's project storage limit from the store formatted as a size string.
+ * Returns current limits from store.
  */
-const formattedStorageLimit = computed((): string => {
-    return Size.toBase10String(usersStore.state.user.projectStorageLimit);
+const limits = computed((): ProjectLimits => {
+    return projectsStore.state.currentLimits;
 });
 
 /**
@@ -54,7 +57,7 @@ const formattedStorageLimit = computed((): string => {
  */
 async function openBanner(): Promise<void> {
     props.openAddPMModal();
-    analyticsStore.eventTriggered(AnalyticsEvent.UPGRADE_BANNER_CLICKED);
+    await analytics.eventTriggered(AnalyticsEvent.UPGRADE_BANNER_CLICKED);
 }
 </script>
 
@@ -63,44 +66,39 @@ async function openBanner(): Promise<void> {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    gap: 16px;
-    padding: 16px;
+    padding: 1.375rem;
     font-family: 'font_regular', sans-serif;
     font-size: 1rem;
     background-color: var(--c-white);
-    border: 1px solid var(--c-orange-2);
+    border: 1px solid var(--c-blue-2);
     border-radius: 10px;
     box-shadow: 0 7px 20px rgba(0 0 0 / 15%);
 
-    &__icon {
-        flex-shrink: 0;
-    }
-
-    &__text {
+    &__left {
         display: flex;
         align-items: center;
-        gap: 6px;
-        flex-grow: 1;
+
+        &__icon {
+            flex-shrink: 0;
+            margin-right: 1.375rem;
+        }
+    }
+
+    &__right {
+        display: flex;
+        align-items: center;
+        flex-shrink: 0;
+        margin-left: 16px;
 
         & a {
             color: var(--c-black);
             text-decoration: underline !important;
-            white-space: nowrap;
         }
 
-        @media screen and (width <= 500px) {
-            flex-direction: column;
-            align-items: flex-start;
+        &__close {
+            margin-left: 16px;
+            cursor: pointer;
         }
-    }
-
-    &__close {
-        flex-shrink: 0;
-        cursor: pointer;
-    }
-
-    @media screen and (width <= 500px) {
-        align-items: flex-start;
     }
 }
 </style>

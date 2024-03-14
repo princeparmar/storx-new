@@ -1,12 +1,13 @@
-// Copyright (C) 2021 Storx Labs, Inc.
+// Copyright (C) 2021 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
     <div class="project-dashboard">
         <div class="project-dashboard__heading">
             <h1 class="project-dashboard__heading__title" aria-roledescription="title">{{ selectedProject.name }}</h1>
-            <project-ownership-tag :role="(selectedProject.ownerId === user.id) ? ProjectRole.Owner : ProjectRole.Member" />
+            <project-ownership-tag :is-owner="selectedProject.ownerId === user.id" />
         </div>
+
         <p class="project-dashboard__message">
             Expect a delay of a few hours between network activity and the latest dashboard stats.
         </p>
@@ -52,7 +53,6 @@
                 </div>
                 <VLoader v-if="isDataFetching" class="project-dashboard__charts__container__loader" height="40px" width="40px" />
                 <template v-else>
-                    <h2 class="project-dashboard__charts__container__dimension">{{ getDimension(storageUsage) }}</h2>
                     <StorageChart
                         :width="chartWidth"
                         :height="170"
@@ -64,7 +64,7 @@
             </div>
             <div class="project-dashboard__charts__container">
                 <div class="project-dashboard__charts__container__header">
-                    <h3 class="project-dashboard__charts__container__header__title">Egress</h3>
+                    <h3 class="project-dashboard__charts__container__header__title">Bandwidth</h3>
                     <div class="project-dashboard__charts__container__header__right">
                         <span class="project-dashboard__charts__container__header__right__allocated-color" />
                         <p class="project-dashboard__charts__container__header__right__allocated-label">Allocated</p>
@@ -76,7 +76,7 @@
                             </template>
                             <template #message>
                                 <p class="project-dashboard__charts__container__header__right__info__message">
-                                    The egress allocated takes few hours to be settled.
+                                    The bandwidth allocated takes few hours to be settled.
                                     <a
                                         class="project-dashboard__charts__container__header__right__info__message__link"
                                         href="https://docs.storj.io/dcs/billing-payment-and-accounts-1/pricing/billing-and-payment#bandwidth-fee"
@@ -92,9 +92,6 @@
                 </div>
                 <VLoader v-if="isDataFetching" class="project-dashboard__charts__container__loader" height="40px" width="40px" />
                 <template v-else>
-                    <h2 class="project-dashboard__charts__container__dimension">
-                        {{ getDimension([...settledBandwidthUsage, ...allocatedBandwidthUsage]) }}
-                    </h2>
                     <BandwidthChart
                         :width="chartWidth"
                         :height="170"
@@ -112,7 +109,7 @@
                 :icon="BucketsIcon"
                 title="Buckets"
                 :subtitle="`Last update ${now}`"
-                :value="bucketsCount.toLocaleString()"
+                :value="bucketsCount.toString()"
                 :is-data-fetching="areBucketsFetching"
             >
                 <template #side-value>
@@ -125,7 +122,7 @@
                 :icon="GrantsIcon"
                 title="Access Grants"
                 :subtitle="`Last update ${now}`"
-                :value="accessGrantsCount.toLocaleString()"
+                :value="accessGrantsCount.toString()"
                 :is-data-fetching="isDataFetching"
             >
                 <template #side-value>
@@ -138,7 +135,7 @@
                 :icon="TeamIcon"
                 title="Users"
                 :subtitle="`Last update ${now}`"
-                :value="teamSize.toLocaleString()"
+                :value="teamSize.toString()"
                 :is-data-fetching="isDataFetching"
             >
                 <template #side-value>
@@ -176,10 +173,11 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 
-import { RouteConfig } from '@/types/router';
+import { RouteConfig } from '@/router';
 import { DataStamp, Project, ProjectLimits } from '@/types/projects';
 import { Dimensions, Size } from '@/utils/bytesSize';
 import { ChartUtils } from '@/utils/chart';
+import { AnalyticsHttpApi } from '@/api/analytics';
 import { LocalData } from '@/utils/localData';
 import { AnalyticsErrorEventSource } from '@/utils/constants/analyticsEventNames';
 import { APP_STATE_DROPDOWNS, MODALS } from '@/utils/constants/appStatePopUps';
@@ -194,8 +192,6 @@ import { useProjectMembersStore } from '@/store/modules/projectMembersStore';
 import { useAccessGrantsStore } from '@/store/modules/accessGrantsStore';
 import { centsToDollars } from '@/utils/strings';
 import { User } from '@/types/users';
-import { ProjectRole } from '@/types/projectMembers';
-import { useAnalyticsStore } from '@/store/modules/analyticsStore';
 
 import VLoader from '@/components/common/VLoader.vue';
 import InfoContainer from '@/components/project/dashboard/InfoContainer.vue';
@@ -217,7 +213,6 @@ import GrantsIcon from '@/../static/images/navigation/accessGrants.svg';
 import TeamIcon from '@/../static/images/navigation/users.svg';
 import BillingIcon from '@/../static/images/navigation/billing.svg';
 
-const analyticsStore = useAnalyticsStore();
 const configStore = useConfigStore();
 const bucketsStore = useBucketsStore();
 const appStore = useAppStore();
@@ -230,6 +225,7 @@ const notify = useNotify();
 const router = useRouter();
 
 const now = new Date().toLocaleDateString('en-US');
+const analytics: AnalyticsHttpApi = new AnalyticsHttpApi();
 
 const isDataFetching = ref<boolean>(true);
 const areBucketsFetching = ref<boolean>(true);
@@ -391,14 +387,6 @@ function recalculateChartWidth(): void {
 }
 
 /**
- * Returns dimension for given data values.
- */
-function getDimension(dataStamps: DataStamp[]): Dimensions {
-    const maxValue = Math.max(...dataStamps.map(s => s.value));
-    return new Size(maxValue).label;
-}
-
-/**
  * Holds on upgrade button click logic.
  */
 function onUpgradeClick(): void {
@@ -416,8 +404,15 @@ function onInviteUsersClick(): void {
  * Holds on create project button click logic.
  */
 function onCreateProjectClick(): void {
-    analyticsStore.pageVisit(RouteConfig.CreateProject.path);
+    analytics.pageVisit(RouteConfig.CreateProject.path);
     router.push(RouteConfig.CreateProject.path);
+}
+
+/**
+ * Returns formatted amount.
+ */
+function usedLimitFormatted(value: number): string {
+    return formattedValue(new Size(value, 2));
 }
 
 /**
@@ -440,7 +435,19 @@ async function onChartsDateRangePick(dateRange: Date[]): Promise<void> {
     try {
         await projectsStore.getDailyProjectData({ since, before });
     } catch (error) {
-        notify.notifyError(error, AnalyticsErrorEventSource.PROJECT_DASHBOARD_PAGE);
+        await notify.error(error.message, AnalyticsErrorEventSource.PROJECT_DASHBOARD_PAGE);
+    }
+}
+
+/**
+ * Formats value to needed form and returns it.
+ */
+function formattedValue(value: Size): string {
+    switch (value.label) {
+    case Dimensions.Bytes:
+        return '0';
+    default:
+        return `${value.formattedBytes.replace(/\\.0+$/, '')}${value.label}`;
     }
 }
 
@@ -453,10 +460,14 @@ onMounted(async (): Promise<void> => {
 
     const projectID = selectedProject.value.id;
     if (!projectID) {
+        if (configStore.state.config.allProjectsDashboard) {
+            await router.push(RouteConfig.AllProjectsDashboard.path);
+            return;
+        }
         const onboardingPath = RouteConfig.OnboardingTour.with(configStore.firstOnboardingStep).path;
 
-        analyticsStore.pageVisit(onboardingPath);
-        await router.push(onboardingPath);
+        analytics.pageVisit(onboardingPath);
+        router.push(onboardingPath);
 
         return;
     }
@@ -497,7 +508,7 @@ onMounted(async (): Promise<void> => {
             agStore.getAccessGrants(FIRST_PAGE, projectID),
         ]);
     } catch (error) {
-        notify.notifyError(error, AnalyticsErrorEventSource.PROJECT_DASHBOARD_PAGE);
+        await notify.error(error.message, AnalyticsErrorEventSource.PROJECT_DASHBOARD_PAGE);
     } finally {
         isDataFetching.value = false;
     }
@@ -507,7 +518,7 @@ onMounted(async (): Promise<void> => {
 
         areBucketsFetching.value = false;
     } catch (error) {
-        notify.error(error.message, AnalyticsErrorEventSource.PROJECT_DASHBOARD_PAGE);
+        await notify.error(error.message, AnalyticsErrorEventSource.PROJECT_DASHBOARD_PAGE);
     }
 });
 
@@ -522,13 +533,13 @@ onBeforeUnmount((): void => {
 
 <style scoped lang="scss">
     .project-dashboard {
+        max-width: calc(100vw - 280px - 95px);
         background-origin: content-box;
         background-image: url('../../../../static/images/project/background.png');
         background-position: top right;
         background-size: 70%;
         background-repeat: no-repeat;
         font-family: 'font_regular', sans-serif;
-        padding-bottom: 55px;
 
         &__heading {
             display: flex;
@@ -675,12 +686,6 @@ onBeforeUnmount((): void => {
                             }
                         }
                     }
-                }
-
-                &__dimension {
-                    font-family: 'font_medium', sans-serif;
-                    font-size: 14px;
-                    margin: 10px 0 0 12px;
                 }
 
                 &__loader {

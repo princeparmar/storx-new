@@ -1,27 +1,14 @@
-// Copyright (C) 2023 Storx Labs, Inc.
+// Copyright (C) 2023 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
     <div class="header">
         <div class="header__content">
             <LogoIcon class="header__content__logo" @click="goToProjects" />
-            <SmallLogoIcon class="header__content__small-logo" @click="goToProjects" />
             <div class="header__content__actions">
                 <VButton
-                    v-if="isMyProjectsButtonShown"
-                    class="header__content__actions__button"
-                    icon="project"
-                    border-radius="8px"
-                    font-size="12px"
-                    is-white
-                    :on-press="goToProjects"
-                    label="My Projects"
-                />
-                <VButton
-                    class="header__content__actions__button"
+                    class="header__content__actions__docs"
                     icon="resources"
-                    border-radius="8px"
-                    font-size="12px"
                     is-white
                     :link="link"
                     :on-press="sendDocsEvent"
@@ -33,22 +20,13 @@
         <div class="header__mobile-area">
             <div class="header__mobile-area__container">
                 <header class="header__mobile-area__container__header">
-                    <LogoIcon class="header__mobile-area__container__header__logo" @click.stop="goToProjects" />
+                    <div class="header__mobile-area__container__header__logo" @click.stop="goToProjects">
+                        <LogoIcon />
+                    </div>
                     <CrossIcon v-if="isNavOpened" @click="toggleNavigation" />
                     <MenuIcon v-else @click="toggleNavigation" />
                 </header>
                 <div v-if="isNavOpened" class="header__mobile-area__container__wrap">
-                    <div
-                        v-if="isMyProjectsButtonShown"
-                        aria-label="My Projects"
-                        class="header__mobile-area__container__wrap__item-container"
-                        @click="goToProjects"
-                    >
-                        <div class="header__mobile-area__container__wrap__item-container__left">
-                            <project-icon class="header__mobile-area__container__wrap__item-container__left__image" />
-                            <p class="header__mobile-area__container__wrap__item-container__left__label">My Projects</p>
-                        </div>
-                    </div>
                     <a
                         aria-label="Docs"
                         class="header__mobile-area__container__wrap__item-container"
@@ -119,7 +97,8 @@ import { useRoute, useRouter } from 'vue-router';
 import { useNotify } from '@/utils/hooks';
 import MyAccountButton from '@/views/all-dashboard/components/MyAccountButton.vue';
 import { AnalyticsErrorEventSource, AnalyticsEvent } from '@/utils/constants/analyticsEventNames';
-import { RouteConfig } from '@/types/router';
+import { AnalyticsHttpApi } from '@/api/analytics';
+import { RouteConfig } from '@/router';
 import { User } from '@/types/users';
 import { AuthHttpApi } from '@/api/auth';
 import { useABTestingStore } from '@/store/modules/abTestingStore';
@@ -133,12 +112,10 @@ import { useProjectsStore } from '@/store/modules/projectsStore';
 import { useNotificationsStore } from '@/store/modules/notificationsStore';
 import { useObjectBrowserStore } from '@/store/modules/objectBrowserStore';
 import { useConfigStore } from '@/store/modules/configStore';
-import { useAnalyticsStore } from '@/store/modules/analyticsStore';
 
 import VButton from '@/components/common/VButton.vue';
 
 import LogoIcon from '@/../static/images/logo.svg';
-import SmallLogoIcon from '@/../static/images/smallLogo.svg';
 import ResourcesIcon from '@/../static/images/navigation/resources.svg';
 import BillingIcon from '@/../static/images/navigation/billing.svg';
 import LogoutIcon from '@/../static/images/navigation/logout.svg';
@@ -151,13 +128,11 @@ import AccountIcon from '@/../static/images/navigation/account.svg';
 import ArrowIcon from '@/../static/images/navigation/arrowExpandRight.svg';
 import CrossIcon from '@/../static/images/common/closeCross.svg';
 import MenuIcon from '@/../static/images/navigation/menu.svg';
-import ProjectIcon from '@/../static/images/navigation/project.svg';
 
 const router = useRouter();
 const route = useRoute();
 const notify = useNotify();
 
-const analyticsStore = useAnalyticsStore();
 const configStore = useConfigStore();
 const bucketsStore = useBucketsStore();
 const appStore = useAppStore();
@@ -170,6 +145,7 @@ const projectsStore = useProjectsStore();
 const notificationsStore = useNotificationsStore();
 const obStore = useObjectBrowserStore();
 
+const analytics = new AnalyticsHttpApi();
 const auth = new AuthHttpApi();
 
 const link = 'https://docs.storj.io/';
@@ -189,13 +165,6 @@ const satellite = computed((): string => {
  */
 const user = computed((): User => {
     return usersStore.state.user;
-});
-
-/**
- * Returns whether the My Projects button should be shown.
- */
-const isMyProjectsButtonShown = computed((): boolean => {
-    return route.name !== RouteConfig.AllProjectsDashboard.name;
 });
 
 /**
@@ -225,7 +194,7 @@ function goToProjects(): void {
         return;
     }
 
-    analyticsStore.pageVisit(projects);
+    analytics.pageVisit(projects);
     router.push(projects);
 }
 
@@ -239,7 +208,7 @@ function navigateToBilling(): void {
 
     const routeConf = billing.with(RouteConfig.BillingOverview2).path;
     router.push(routeConf);
-    analyticsStore.pageVisit(routeConf);
+    analytics.pageVisit(routeConf);
 }
 
 /**
@@ -253,7 +222,7 @@ function navigateToSettings(): void {
         return;
     }
 
-    analyticsStore.pageVisit(settings);
+    analytics.pageVisit(settings);
     router.push(settings).catch(() => {return;});
 }
 
@@ -261,7 +230,7 @@ function navigateToSettings(): void {
  * Logouts user and navigates to login page.
  */
 async function onLogout(): Promise<void> {
-    analyticsStore.pageVisit(RouteConfig.Login.path);
+    analytics.pageVisit(RouteConfig.Login.path);
     await router.push(RouteConfig.Login.path);
 
     await Promise.all([
@@ -279,10 +248,10 @@ async function onLogout(): Promise<void> {
     ]);
 
     try {
-        analyticsStore.eventTriggered(AnalyticsEvent.LOGOUT_CLICKED);
+        analytics.eventTriggered(AnalyticsEvent.LOGOUT_CLICKED);
         await auth.logout();
     } catch (error) {
-        notify.notifyError(error, AnalyticsErrorEventSource.NAVIGATION_ACCOUNT_AREA);
+        notify.error(error.message, AnalyticsErrorEventSource.NAVIGATION_ACCOUNT_AREA);
     }
 }
 
@@ -290,8 +259,8 @@ async function onLogout(): Promise<void> {
  * Sends "View Docs" event to segment and opens link.
  */
 function sendDocsEvent(): void {
-    analyticsStore.pageVisit(link);
-    analyticsStore.eventTriggered(AnalyticsEvent.VIEW_DOCS_CLICKED);
+    analytics.pageVisit(link);
+    analytics.eventTriggered(AnalyticsEvent.VIEW_DOCS_CLICKED);
 }
 </script>
 
@@ -308,42 +277,15 @@ function sendDocsEvent(): void {
             min-height: 37px;
             width: 207px;
             height: 37px;
-
-            @media screen and (width <= 680px) {
-                display: none;
-            }
-        }
-
-        &__small-logo {
-            cursor: pointer;
-            width: 44px;
-            height: 44px;
-            display: none;
-
-            @media screen and (width <= 680px) {
-                display: block;
-            }
         }
 
         &__actions {
             display: flex;
             gap: 10px;
 
-            &__button {
+            &__docs {
                 padding: 10px 16px;
-                box-shadow: 0 0 20px rgb(0 0 0 / 4%);
-
-                :deep(.label) {
-
-                    & > svg {
-                        height: 14px;
-                        width: 14px;
-                    }
-
-                    color: var(--c-black) !important;
-                    font-weight: 700;
-                    line-height: 20px;
-                }
+                border-radius: 8px;
             }
         }
     }
@@ -360,40 +302,48 @@ function sendDocsEvent(): void {
             flex-direction: column;
             align-items: center;
             justify-content: space-between;
+            overflow-x: hidden;
+            overflow-y: auto;
             width: 100%;
 
             &__header {
                 display: flex;
                 width: 100%;
                 box-sizing: border-box;
-                padding: 0 20px;
+                padding: 0 32px;
                 justify-content: space-between;
                 align-items: center;
                 height: 4rem;
 
                 &__logo {
-                    height: 30px;
-                    width: auto;
+                    width: 211px;
+                    max-width: 211px;
+                    height: 37px;
+                    max-height: 37px;
+
+                    svg {
+                        width: 211px;
+                        height: 37px;
+                    }
                 }
             }
 
             &__wrap {
-                position: absolute;
+                position: fixed;
                 top: 4rem;
                 left: 0;
                 display: flex;
                 flex-direction: column;
-                align-items: stretch;
+                align-items: center;
                 width: 100%;
-                padding-bottom: 8px;
                 z-index: 9999;
                 overflow-y: auto;
                 overflow-x: hidden;
                 background: white;
-                border-bottom: 1px solid var(--c-grey-2);
 
                 &__item-container {
                     padding: 14px 32px;
+                    width: 100%;
                     display: flex;
                     align-items: center;
                     justify-content: space-between;
@@ -417,9 +367,9 @@ function sendDocsEvent(): void {
                 }
 
                 &__border {
-                    margin: 8px 32px;
-                    height: 1px;
-                    background-color: var(--c-grey-2);
+                    margin: 0 32px 16px;
+                    border: 0.5px solid var(--c-grey-2);
+                    width: calc(100% - 48px);
                 }
             }
         }

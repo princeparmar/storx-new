@@ -11,7 +11,7 @@ import (
 	"time"
 
 	pgxerrcode "github.com/jackc/pgerrcode"
-	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v4"
 	"github.com/zeebo/errs"
 
 	"storj.io/common/memory"
@@ -22,7 +22,6 @@ import (
 	"storj.io/private/dbutil/pgutil"
 	"storj.io/private/dbutil/pgutil/pgerrcode"
 	"storj.io/private/dbutil/pgxutil"
-	"storj.io/private/tagsql"
 	"storj.io/storj/satellite/accounting"
 	"storj.io/storj/satellite/metabase"
 	"storj.io/storj/satellite/orders"
@@ -145,39 +144,6 @@ func (db *ProjectAccounting) CreateStorageTally(ctx context.Context, tally accou
 	return Error.Wrap(err)
 }
 
-// GetNonEmptyTallyBucketsInRange returns a list of bucket locations within the given range
-// whose most recent tally does not represent empty usage.
-func (db *ProjectAccounting) GetNonEmptyTallyBucketsInRange(ctx context.Context, from, to metabase.BucketLocation) (result []metabase.BucketLocation, err error) {
-	defer mon.Task()(&ctx)(&err)
-
-	err = withRows(db.db.QueryContext(ctx, `
-		SELECT project_id, name
-		FROM bucket_metainfos bm
-		WHERE (project_id, name) BETWEEN ($1, $2) AND ($3, $4)
-		AND NOT 0 IN (
-			SELECT object_count FROM bucket_storage_tallies
-			WHERE (project_id, bucket_name) = (bm.project_id, bm.name)
-			ORDER BY interval_start DESC
-			LIMIT 1
-		)
-	`, from.ProjectID, []byte(from.BucketName), to.ProjectID, []byte(to.BucketName)),
-	)(func(r tagsql.Rows) error {
-		for r.Next() {
-			loc := metabase.BucketLocation{}
-			if err := r.Scan(&loc.ProjectID, &loc.BucketName); err != nil {
-				return err
-			}
-			result = append(result, loc)
-		}
-		return nil
-	})
-	if err != nil {
-		return nil, Error.Wrap(err)
-	}
-
-	return result, nil
-}
-
 // GetProjectSettledBandwidthTotal returns the sum of GET bandwidth usage settled for a projectID in the past time frame.
 func (db *ProjectAccounting) GetProjectSettledBandwidthTotal(ctx context.Context, projectID uuid.UUID, from time.Time) (_ int64, err error) {
 	defer mon.Task()(&ctx)(&err)
@@ -216,25 +182,6 @@ func (db *ProjectAccounting) GetProjectBandwidth(ctx context.Context, projectID 
 					WHERE project_id = ? AND interval_day >= ? AND interval_day < ?
 				) SELECT sum(amount) FROM egress` + db.db.impl.AsOfSystemInterval(asOfSystemInterval)
 	err = db.db.QueryRow(ctx, db.db.Rebind(query), expiredSince, projectID[:], startOfMonth, periodEnd).Scan(&egress)
-	if errors.Is(err, sql.ErrNoRows) || egress == nil {
-		return 0, nil
-	}
-
-	return *egress, err
-}
-
-// GetProjectSettledBandwidth returns the used settled bandwidth for the specified year and month.
-func (db *ProjectAccounting) GetProjectSettledBandwidth(ctx context.Context, projectID uuid.UUID, year int, month time.Month, asOfSystemInterval time.Duration) (_ int64, err error) {
-	defer mon.Task()(&ctx)(&err)
-	var egress *int64
-
-	startOfMonth := time.Date(year, month, 1, 0, 0, 0, 0, time.UTC)
-	periodEnd := time.Date(year, month+1, 1, 0, 0, 0, 0, time.UTC)
-
-	query := `SELECT sum(egress_settled) FROM project_bandwidth_daily_rollups` +
-		db.db.impl.AsOfSystemInterval(asOfSystemInterval) +
-		` WHERE project_id = ? AND interval_day >= ? AND interval_day < ?`
-	err = db.db.QueryRow(ctx, db.db.Rebind(query), projectID[:], startOfMonth, periodEnd).Scan(&egress)
 	if errors.Is(err, sql.ErrNoRows) || egress == nil {
 		return 0, nil
 	}

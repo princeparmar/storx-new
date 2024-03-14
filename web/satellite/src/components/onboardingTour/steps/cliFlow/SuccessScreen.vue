@@ -1,4 +1,4 @@
-// Copyright (C) 2021 Storx Labs, Inc.
+// Copyright (C) 2021 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -32,26 +32,27 @@
 <script setup lang="ts">
 import { useRouter } from 'vue-router';
 
-import { RouteConfig } from '@/types/router';
+import { RouteConfig } from '@/router';
+import { AnalyticsHttpApi } from '@/api/analytics';
 import { AnalyticsErrorEventSource } from '@/utils/constants/analyticsEventNames';
 import { useNotify } from '@/utils/hooks';
 import { useUsersStore } from '@/store/modules/usersStore';
-import { useAnalyticsStore } from '@/store/modules/analyticsStore';
 
 import VButton from '@/components/common/VButton.vue';
 
 import Icon from '@/../static/images/onboardingTour/successStep.svg';
 
-const analyticsStore = useAnalyticsStore();
 const usersStore = useUsersStore();
 const notify = useNotify();
 const router = useRouter();
+
+const analytics: AnalyticsHttpApi = new AnalyticsHttpApi();
 
 /**
  * Holds on back button click logic.
  */
 async function onBackClick(): Promise<void> {
-    analyticsStore.pageVisit(RouteConfig.OnboardingTour.with(RouteConfig.OnbCLIStep.with(RouteConfig.ShareObject)).path);
+    analytics.pageVisit(RouteConfig.OnboardingTour.with(RouteConfig.OnbCLIStep.with(RouteConfig.ShareObject)).path);
     await router.push(RouteConfig.OnboardingTour.with(RouteConfig.OnbCLIStep.with(RouteConfig.ShareObject)).path);
 }
 
@@ -60,7 +61,7 @@ async function onBackClick(): Promise<void> {
  */
 async function onFinishClick(): Promise<void> {
     endOnboarding();
-    analyticsStore.pageVisit(RouteConfig.ProjectDashboard.path);
+    analytics.pageVisit(RouteConfig.ProjectDashboard.path);
     await router.push(RouteConfig.ProjectDashboard.path);
 }
 
@@ -68,7 +69,7 @@ async function endOnboarding(): Promise<void> {
     try {
         await usersStore.updateSettings({ onboardingEnd: true });
     } catch (error) {
-        notify.notifyError(error, AnalyticsErrorEventSource.ONBOARDING_OVERVIEW_STEP);
+        notify.error(error.message, AnalyticsErrorEventSource.ONBOARDING_OVERVIEW_STEP);
     }
 }
 </script>
@@ -84,10 +85,6 @@ async function endOnboarding(): Promise<void> {
         display: flex;
         align-items: center;
         flex-direction: column;
-
-        @media screen and (width <= 600px) {
-            padding: 24px;
-        }
 
         &__title {
             margin: 20px 0;
@@ -111,12 +108,6 @@ async function endOnboarding(): Promise<void> {
             width: 100%;
             margin-top: 24px;
             column-gap: 24px;
-
-            @media screen and (width <= 450px) {
-                flex-direction: column-reverse;
-                column-gap: unset;
-                row-gap: 24px;
-            }
         }
     }
 

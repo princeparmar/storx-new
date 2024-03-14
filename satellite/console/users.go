@@ -11,7 +11,6 @@ import (
 	"github.com/zeebo/errs"
 
 	"storj.io/common/memory"
-	"storj.io/common/storj"
 	"storj.io/common/uuid"
 	"storj.io/storj/satellite/console/consoleauth"
 )
@@ -30,14 +29,8 @@ type Users interface {
 	UpdateFailedLoginCountAndExpiration(ctx context.Context, failedLoginPenalty *float64, id uuid.UUID) error
 	// GetByEmailWithUnverified is a method for querying users by email from the database.
 	GetByEmailWithUnverified(ctx context.Context, email string) (*User, []User, error)
-	//boris
-	GetByEmailWithUnverified_google(ctx context.Context, email string) (*User, []User, error)
 	// GetByEmail is a method for querying user by verified email from the database.
 	GetByEmail(ctx context.Context, email string) (*User, error)
-
-	//boris: GetAllUsers is a method for querying all users from the database.
-	GetAllUsers(ctx context.Context) ([]*User, error)
-
 	// Insert is a method for inserting user into the database.
 	Insert(ctx context.Context, user *User) (*User, error)
 	// Delete is a method for deleting user by ID from the database.
@@ -48,10 +41,6 @@ type Users interface {
 	Update(ctx context.Context, userID uuid.UUID, request UpdateUserRequest) error
 	// UpdatePaidTier sets whether the user is in the paid tier.
 	UpdatePaidTier(ctx context.Context, id uuid.UUID, paidTier bool, projectBandwidthLimit, projectStorageLimit memory.Size, projectSegmentLimit int64, projectLimit int) error
-	//boris
-	UpdatePaidTiers(ctx context.Context, id uuid.UUID, paidTier bool) error
-	// UpdateUserAgent is a method to update the user's user agent.
-	UpdateUserAgent(ctx context.Context, id uuid.UUID, userAgent []byte) error
 	// UpdateUserProjectLimits is a method to update the user's usage limits for new projects.
 	UpdateUserProjectLimits(ctx context.Context, id uuid.UUID, limits UsageLimits) error
 	// GetProjectLimit is a method to get the users project limit
@@ -90,7 +79,6 @@ type CreateUser struct {
 	Email            string `json:"email"`
 	UserAgent        []byte `json:"userAgent"`
 	Password         string `json:"password"`
-	Status           int    `json:"status"`
 	IsProfessional   bool   `json:"isProfessional"`
 	Position         string `json:"position"`
 	CompanyName      string `json:"companyName"`
@@ -196,8 +184,6 @@ type User struct {
 	FailedLoginCount       int       `json:"failedLoginCount"`
 	LoginLockoutExpiration time.Time `json:"loginLockoutExpiration"`
 	SignupCaptcha          *float64  `json:"-"`
-
-	DefaultPlacement storj.PlacementConstraint `json:"defaultPlacement"`
 }
 
 // ResponseUser is an entity which describes db User and can be sent in response.
@@ -263,8 +249,6 @@ type UpdateUserRequest struct {
 	FailedLoginCount *int
 
 	LoginLockoutExpiration **time.Time
-
-	DefaultPlacement storj.PlacementConstraint
 }
 
 // UserSettings contains configurations for a user.

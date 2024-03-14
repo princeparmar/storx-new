@@ -201,21 +201,13 @@ func (cache *NodeAliasCache) EnsurePiecesToAliases(ctx context.Context, pieces P
 
 // ConvertAliasesToPieces converts alias pieces to pieces.
 func (cache *NodeAliasCache) ConvertAliasesToPieces(ctx context.Context, aliasPieces AliasPieces) (_ Pieces, err error) {
-	return cache.convertAliasesToPieces(ctx, aliasPieces, make(Pieces, len(aliasPieces)))
-}
-
-// convertAliasesToPieces converts AliasPieces by populating Pieces with converted data.
-func (cache *NodeAliasCache) convertAliasesToPieces(ctx context.Context, aliasPieces AliasPieces, pieces Pieces) (_ Pieces, err error) {
 	if len(aliasPieces) == 0 {
 		return Pieces{}, nil
 	}
 
-	if len(aliasPieces) != len(pieces) {
-		return Pieces{}, Error.New("aliasPieces and pieces length must be equal")
-	}
-
 	latest := cache.getLatest()
 
+	pieces := make(Pieces, len(aliasPieces))
 	var missing []NodeAlias
 
 	for i, aliasPiece := range aliasPieces {
@@ -232,13 +224,13 @@ func (cache *NodeAliasCache) convertAliasesToPieces(ctx context.Context, aliasPi
 		var err error
 		latest, err = cache.refresh(ctx, nil, missing)
 		if err != nil {
-			return Pieces{}, Error.New("failed to refresh node alias db: %w", err)
+			return nil, Error.New("failed to refresh node alias db: %w", err)
 		}
 
 		for i, aliasPiece := range aliasPieces {
 			node, ok := latest.Node(aliasPiece.Alias)
 			if !ok {
-				return Pieces{}, Error.New("aliases missing in database: %v", missing)
+				return nil, Error.New("aliases missing in database: %v", missing)
 			}
 			pieces[i].Number = aliasPiece.Number
 			pieces[i].StorageNode = node

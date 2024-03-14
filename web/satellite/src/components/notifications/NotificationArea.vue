@@ -1,4 +1,4 @@
-// Copyright (C) 2019 Storx Labs, Inc.
+// Copyright (C) 2019 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -50,10 +50,5 @@ const doNotificationsExist = computed((): boolean => {
         border-radius: 12px;
         z-index: 9999;
         overflow: hidden;
-
-        @media screen and (width <= 450px) {
-            width: unset;
-            left: 17px;
-        }
     }
 </style>

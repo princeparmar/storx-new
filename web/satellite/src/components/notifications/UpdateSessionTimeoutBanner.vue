@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Storx Labs, Inc.
+// Copyright (C) 2023 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -19,7 +19,7 @@
 <script setup lang="ts">
 import { useRoute, useRouter } from 'vue-router';
 
-import { RouteConfig } from '@/types/router';
+import { RouteConfig } from '@/router';
 import { useAppStore } from '@/store/modules/appStore';
 
 import VBanner from '@/components/common/VBanner.vue';

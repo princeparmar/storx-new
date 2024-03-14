@@ -1,4 +1,4 @@
-// Copyright (C) 2021 Storx Labs, Inc.
+// Copyright (C) 2021 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -131,10 +131,6 @@ onMounted((): void => {
                 padding: 16px;
                 color: #9daab6;
                 cursor: pointer;
-
-                @media screen and (width <= 350px) {
-                    padding: 10px;
-                }
             }
 
             &__choice:first-child {

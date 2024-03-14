@@ -69,9 +69,7 @@ type DiskSpace struct {
 	Allocated int64 `json:"allocated"`
 	Used      int64 `json:"usedPieces"`
 	Trash     int64 `json:"usedTrash"`
-	// Free is the actual amount of free space on the whole disk, not just allocated disk space, in bytes.
-	Free int64 `json:"free"`
-	// Available is the amount of free space on the allocated disk space, in bytes.
+	Free      int64 `json:"free"`
 	Available int64 `json:"available"`
 	Overused  int64 `json:"overused"`
 }

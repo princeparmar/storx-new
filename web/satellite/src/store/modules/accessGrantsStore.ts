@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Storx Labs, Inc.
+// Copyright (C) 2023 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 import { defineStore } from 'pinia';
@@ -13,12 +13,11 @@ import {
     EdgeCredentials,
 } from '@/types/accessGrants';
 import { SortDirection } from '@/types/common';
-import { AccessGrantsHttpApi } from '@/api/accessGrants';
+import { AccessGrantsApiGql } from '@/api/accessGrants';
 import { useConfigStore } from '@/store/modules/configStore';
 import { DEFAULT_PAGE_LIMIT } from '@/types/pagination';
 
 class AccessGrantsState {
-    public allAGNames: string[] = [];
     public cursor: AccessGrantCursor = new AccessGrantCursor();
     public page: AccessGrantsPage = new AccessGrantsPage();
     public selectedAccessGrantsIds: string[] = [];
@@ -36,22 +35,14 @@ class AccessGrantsState {
 }
 
 export const useAccessGrantsStore = defineStore('accessGrants', () => {
-    const api = new AccessGrantsHttpApi();
+    const api = new AccessGrantsApiGql();
 
     const state = reactive<AccessGrantsState>(new AccessGrantsState());
 
     const configStore = useConfigStore();
 
     async function startWorker(): Promise<void> {
-        // TODO(vitalii): create an issue here https://github.com/vitejs/vite
-        // about worker chunk being auto removed after rebuild in watch mode if using new URL constructor.
-        let worker: Worker;
-        if (import.meta.env.MODE === 'development') {
-            worker = new Worker('/static/src/utils/accessGrant.worker.js');
-        } else {
-            worker = new Worker(new URL('@/utils/accessGrant.worker.js', import.meta.url));
-        }
-
+        const worker = new Worker(new URL('@/utils/accessGrant.worker.js', import.meta.url), { type: 'module' });
         worker.postMessage({ 'type': 'Setup' });
 
         const event: MessageEvent = await new Promise(resolve => worker.onmessage = resolve);
@@ -75,10 +66,6 @@ export const useAccessGrantsStore = defineStore('accessGrants', () => {
         state.accessGrantsWebWorker?.terminate();
         state.accessGrantsWebWorker = null;
         state.isAccessGrantsWebWorkerReady = false;
-    }
-
-    async function getAllAGNames(projectID: string): Promise<void> {
-        state.allAGNames = await api.getAllAPIKeyNames(projectID);
     }
 
     async function getAccessGrants(pageNumber: number, projectID: string, limit = DEFAULT_PAGE_LIMIT): Promise<AccessGrantsPage> {
@@ -210,7 +197,6 @@ export const useAccessGrantsStore = defineStore('accessGrants', () => {
     }
 
     function clear(): void {
-        state.allAGNames = [];
         state.cursor = new AccessGrantCursor();
         state.page = new AccessGrantsPage();
         state.selectedAccessGrantsIds = [];
@@ -233,7 +219,6 @@ export const useAccessGrantsStore = defineStore('accessGrants', () => {
     return {
         state,
         selectedAccessGrants,
-        getAllAGNames,
         startWorker,
         stopWorker,
         getAccessGrants,

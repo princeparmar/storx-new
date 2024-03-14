@@ -1,4 +1,4 @@
-// Copyright (C) 2022 Storx Labs, Inc.
+// Copyright (C) 2022 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -92,23 +92,24 @@ import { onMounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
 import { Validator } from '@/utils/validation';
-import { RouteConfig } from '@/types/router';
+import { RouteConfig } from '@/router';
 import { Project } from '@/types/projects';
 import { ErrorUnauthorized } from '@/api/errors/ErrorUnauthorized';
 import { FetchState } from '@/utils/constants/fetchStateEnum';
 import { OAuthClient, OAuthClientsAPI } from '@/api/oauthClients';
+import { AnalyticsHttpApi } from '@/api/analytics';
 import { useNotify } from '@/utils/hooks';
 import { useUsersStore } from '@/store/modules/usersStore';
 import { useAppStore } from '@/store/modules/appStore';
 import { useAccessGrantsStore } from '@/store/modules/accessGrantsStore';
 import { useBucketsStore } from '@/store/modules/bucketsStore';
 import { useProjectsStore } from '@/store/modules/projectsStore';
-import { useAnalyticsStore } from '@/store/modules/analyticsStore';
 
 import VInput from '@/components/common/VInput.vue';
 
 import LogoIcon from '@/../static/images/logo.svg';
 
+const analytics: AnalyticsHttpApi = new AnalyticsHttpApi();
 const oauthClientsAPI = new OAuthClientsAPI();
 const validPerms = {
     'list': true,
@@ -117,7 +118,6 @@ const validPerms = {
     'delete': true,
 };
 
-const analyticsStore = useAnalyticsStore();
 const bucketsStore = useBucketsStore();
 const appStore = useAppStore();
 const agStore = useAccessGrantsStore();
@@ -194,13 +194,13 @@ async function ensureLogin(): Promise<void> {
     } catch (error) {
         if (!(error instanceof ErrorUnauthorized)) {
             appStore.changeState(FetchState.ERROR);
-            notify.notifyError(error, null);
+            await notify.error(error.message, null);
         }
 
         const query = new URLSearchParams(oauthData.value).toString();
         const path = `${RouteConfig.Authorize.path}?${query}#${clientKey.value}`;
 
-        analyticsStore.pageVisit(`${RouteConfig.Login.path}?return_url=${encodeURIComponent(path)}`);
+        analytics.pageVisit(`${RouteConfig.Login.path}?return_url=${encodeURIComponent(path)}`);
         await router.push(`${RouteConfig.Login.path}?return_url=${encodeURIComponent(path)}`);
     }
 }
@@ -210,7 +210,7 @@ async function ensureWorker(): Promise<void> {
         agStore.stopWorker();
         await agStore.startWorker();
     } catch (error) {
-        notify.error(`Unable to set access grants wizard. ${error.message}`, null);
+        await notify.error(`Unable to set access grants wizard. ${error.message}`, null);
         return;
     }
 
@@ -328,7 +328,7 @@ async function setScope(): Promise<void> {
     });
 
     if (event.data.error) {
-        notify.error(event.data.error, null);
+        await notify.error(event.data.error, null);
         return;
     }
 
@@ -613,7 +613,7 @@ onMounted(async () => {
                     height: 48px;
 
                     &:hover {
-                        background-color: #b32006;
+                        background-color: #0059d0;
                     }
                 }
 

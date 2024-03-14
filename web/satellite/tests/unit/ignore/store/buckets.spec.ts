@@ -1,11 +1,11 @@
-// Copyright (C) 2019 Storx Labs, Inc.
+// Copyright (C) 2019 Storj Labs, Inc.
 // See LICENSE for copying information.
 
-import { BucketsHttpApi } from '@/api/buckets';
+import { BucketsApiGql } from '@/api/buckets';
 import { Bucket, BucketPage } from '@/types/buckets';
 import { Project } from '@/types/projects';
 
-const bucketsApi = new BucketsHttpApi();
+const bucketsApi = new BucketsApiGql();
 
 const selectedProject = new Project();
 selectedProject.id = '1';

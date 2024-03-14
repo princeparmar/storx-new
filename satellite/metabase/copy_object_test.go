@@ -481,6 +481,7 @@ func TestFinishCopyObject(t *testing.T) {
 
 			metabasetest.Verify{
 				Objects: expectedRawObjects,
+				Copies:  nil, // no copies because we have only inline segments
 			}.Check(ctx, t, db)
 		})
 
@@ -514,6 +515,10 @@ func TestFinishCopyObject(t *testing.T) {
 					metabase.RawObject(copyObj),
 				},
 				Segments: expectedRawSegments,
+				Copies: []metabase.RawCopy{{
+					StreamID:         copyObj.StreamID,
+					AncestorStreamID: originalObj.StreamID,
+				}},
 			}.Check(ctx, t, db)
 
 			// TODO find better names
@@ -532,6 +537,13 @@ func TestFinishCopyObject(t *testing.T) {
 					metabase.RawObject(copyOfCopyObj),
 				},
 				Segments: expectedRawSegments,
+				Copies: []metabase.RawCopy{{
+					StreamID:         copyStream.StreamID,
+					AncestorStreamID: originalObj.StreamID,
+				}, {
+					StreamID:         copyOfCopyObj.StreamID,
+					AncestorStreamID: originalObj.StreamID,
+				}},
 			}.Check(ctx, t, db)
 		})
 
@@ -614,6 +626,7 @@ func TestFinishCopyObject(t *testing.T) {
 					metabase.RawObject(copyObj),
 					metabase.RawObject(copyObjNoOverride),
 				},
+				Copies: nil,
 			}.Check(ctx, t, db)
 		})
 
@@ -693,6 +706,10 @@ func TestFinishCopyObject(t *testing.T) {
 					metabase.RawObject(objC),
 				},
 				Segments: expectedRawSegments,
+				Copies: []metabase.RawCopy{{
+					StreamID:         objBprime.StreamID,
+					AncestorStreamID: objB.StreamID,
+				}},
 			}.Check(ctx, t, db)
 
 			// C' is a copy of C to B
@@ -726,6 +743,10 @@ func TestFinishCopyObject(t *testing.T) {
 					metabase.RawObject(objC),
 				},
 				Segments: expectedSegments,
+				Copies: []metabase.RawCopy{{
+					StreamID:         objCprime.StreamID,
+					AncestorStreamID: objC.StreamID,
+				}},
 			}.Check(ctx, t, db)
 		})
 
@@ -787,6 +808,7 @@ func TestFinishCopyObject(t *testing.T) {
 				copySegments[i].EncryptedETag = nil // TODO: ETag seems lost after copy
 
 				originalSegments[i].StreamID = opts.NewStreamID
+				originalSegments[i].Pieces = nil
 				originalSegments[i].InlineData = nil
 				originalSegments[i].EncryptedKey = opts.NewSegmentKeys[i].EncryptedKey
 				originalSegments[i].EncryptedKeyNonce = opts.NewSegmentKeys[i].EncryptedKeyNonce
@@ -799,6 +821,10 @@ func TestFinishCopyObject(t *testing.T) {
 					metabase.RawObject(copyBackObj),
 				},
 				Segments: append(metabasetest.SegmentsToRaw(originalSegments), copySegments...),
+				Copies: []metabase.RawCopy{{
+					StreamID:         opts.NewStreamID,
+					AncestorStreamID: copyObjStream.StreamID,
+				}},
 			}.Check(ctx, t, db)
 		})
 
@@ -859,6 +885,7 @@ func TestFinishCopyObject(t *testing.T) {
 				copySegments[i].EncryptedETag = nil // TODO: ETag seems lost after copy
 
 				originalSegments[i].StreamID = opts.NewStreamID
+				originalSegments[i].Pieces = nil
 				originalSegments[i].InlineData = nil
 				originalSegments[i].EncryptedKey = opts.NewSegmentKeys[i].EncryptedKey
 				originalSegments[i].EncryptedKeyNonce = opts.NewSegmentKeys[i].EncryptedKeyNonce
@@ -871,6 +898,10 @@ func TestFinishCopyObject(t *testing.T) {
 					metabase.RawObject(copyBackObj),
 				},
 				Segments: append(originalSegments, copySegments...),
+				Copies: []metabase.RawCopy{{
+					StreamID:         copyBackObjStream.StreamID,
+					AncestorStreamID: copyObjStream.StreamID,
+				}},
 			}.Check(ctx, t, db)
 		})
 
@@ -948,6 +979,10 @@ func TestFinishCopyObject(t *testing.T) {
 					metabase.RawObject(copyObj),
 				},
 				Segments: metabasetest.SegmentsToRaw(listSegments),
+				Copies: []metabase.RawCopy{{
+					StreamID:         copyObj.StreamID,
+					AncestorStreamID: originalObj.StreamID,
+				}},
 			}.Check(ctx, t, db)
 		})
 
@@ -976,6 +1011,7 @@ func TestFinishCopyObject(t *testing.T) {
 					metabase.RawObject(originalObj),
 				},
 				Segments: expectedOriginalSegments,
+				Copies:   []metabase.RawCopy{},
 			}.Check(ctx, t, db)
 		})
 
@@ -1112,6 +1148,7 @@ func TestFinishCopyObject(t *testing.T) {
 				metabasetest.Verify{
 					Objects:  rawObjects,
 					Segments: expectedOriginalSegments,
+					Copies:   []metabase.RawCopy{},
 				}.Check(ctx, t, db)
 			}
 		})

@@ -1,4 +1,4 @@
-// Copyright (C) 2021 Storx Labs, Inc.
+// Copyright (C) 2021 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -9,10 +9,8 @@
                     v-cloak
                     class="div-responsive"
                     @drop.prevent="upload"
-                    @dragover.prevent="showDropzone"
+                    @dragover.prevent
                 >
-                    <Dropzone v-if="isOver" :bucket="bucketName" :close="hideDropzone" />
-
                     <bread-crumbs @onUpdate="onRouteChange" @bucketClick="goToBuckets" />
 
                     <div class="tile-action-bar">
@@ -93,14 +91,8 @@
                     <div class="hr-divider" />
 
                     <MultiplePassphraseBanner
-                        v-if="lockedFilesEntryDisplayed && isLockedBanner"
-                        :locked-files-count="lockedFilesCount"
-                        :on-close="closeLockedBanner"
-                    />
-
-                    <TooManyObjectsBanner
-                        v-if="files.length >= NUMBER_OF_DISPLAYED_OBJECTS && isTooManyObjectsBanner"
-                        :on-close="closeTooManyObjectsBanner"
+                        v-if="lockedFilesNumber > 0 && isBannerShown && !fetchingFilesSpinner && !currentPath"
+                        :on-close="closeBanner"
                     />
 
                     <v-table items-label="objects" :total-items-count="files.length" selectable :selected="allFilesSelected" show-select class="file-browser-table" @selectAllClicked="toggleSelectAllFiles">
@@ -211,8 +203,9 @@ import FileEntry from './FileEntry.vue';
 import LockedFilesEntry from './LockedFilesEntry.vue';
 import BreadCrumbs from './BreadCrumbs.vue';
 
+import { AnalyticsHttpApi } from '@/api/analytics';
 import { AnalyticsErrorEventSource, AnalyticsEvent } from '@/utils/constants/analyticsEventNames';
-import { RouteConfig } from '@/types/router';
+import { RouteConfig } from '@/router';
 import { useNotify } from '@/utils/hooks';
 import { Bucket } from '@/types/buckets';
 import { MODALS } from '@/utils/constants/appStatePopUps';
@@ -220,15 +213,12 @@ import { BrowserObject, useObjectBrowserStore } from '@/store/modules/objectBrow
 import { useAppStore } from '@/store/modules/appStore';
 import { useBucketsStore } from '@/store/modules/bucketsStore';
 import { useConfigStore } from '@/store/modules/configStore';
-import { useAnalyticsStore } from '@/store/modules/analyticsStore';
 
 import VButton from '@/components/common/VButton.vue';
 import BucketSettingsNav from '@/components/objects/BucketSettingsNav.vue';
 import VTable from '@/components/common/VTable.vue';
 import MultiplePassphraseBanner from '@/components/browser/MultiplePassphrasesBanner.vue';
-import TooManyObjectsBanner from '@/components/browser/TooManyObjectsBanner.vue';
 import UpEntry from '@/components/browser/UpEntry.vue';
-import Dropzone from '@/components/browser/Dropzone.vue';
 
 import FileIcon from '@/../static/images/objects/file.svg';
 import BlackArrowExpand from '@/../static/images/common/BlackArrowExpand.svg';
@@ -238,7 +228,6 @@ const bucketsStore = useBucketsStore();
 const appStore = useAppStore();
 const obStore = useObjectBrowserStore();
 const configStore = useConfigStore();
-const analyticsStore = useAnalyticsStore();
 
 const router = useRouter();
 const route = useRoute();
@@ -249,15 +238,14 @@ const fileInput = ref<HTMLInputElement>();
 
 const fetchingFilesSpinner = ref<boolean>(false);
 const isUploadDropDownShown = ref<boolean>(false);
-const isLockedBanner = ref<boolean>(true);
-const isTooManyObjectsBanner = ref<boolean>(true);
-const isOver = ref<boolean>(false);
+const isBannerShown = ref<boolean>(true);
 /**
  * Retrieve the pathMatch from the current route.
  */
 const routePath = ref(calculateRoutePath());
 
 const NUMBER_OF_DISPLAYED_OBJECTS = 1000;
+const analytics: AnalyticsHttpApi = new AnalyticsHttpApi();
 
 /**
  * Check if the s3 client has been initialized in the store.
@@ -297,7 +285,7 @@ const currentPath = computed((): string => {
 /**
  * Return locked files number.
  */
-const lockedFilesCount = computed((): number => {
+const lockedFilesNumber = computed((): number => {
     const ownObjectsCount = obStore.state.objectsCount;
 
     return objectsCount.value - ownObjectsCount;
@@ -308,7 +296,7 @@ const lockedFilesCount = computed((): number => {
  */
 const objectsCount = computed((): number => {
     const name: string = obStore.state.bucket;
-    const data: Bucket | undefined = bucketsStore.state.page.buckets.find(bucket => bucket.name === name);
+    const data: Bucket | undefined = bucketsStore.state.page.buckets.find((bucket: Bucket) => bucket.name === name);
 
     return data?.objectCount || 0;
 });
@@ -317,7 +305,7 @@ const objectsCount = computed((): number => {
  * Indicates if locked files entry is displayed.
  */
 const lockedFilesEntryDisplayed = computed((): boolean => {
-    return lockedFilesCount.value > 0 &&
+    return lockedFilesNumber.value > 0 &&
         objectsCount.value <= NUMBER_OF_DISPLAYED_OBJECTS &&
         !fetchingFilesSpinner.value &&
         !currentPath.value;
@@ -400,15 +388,8 @@ const bucket = computed((): string => {
 /**
  * Closes multiple passphrase banner.
  */
-function closeLockedBanner(): void {
-    isLockedBanner.value = false;
-}
-
-/**
- * Closes too many objects banner.
- */
-function closeTooManyObjectsBanner(): void {
-    isTooManyObjectsBanner.value = false;
+function closeBanner(): void {
+    isBannerShown.value = false;
 }
 
 function calculateRoutePath(): string {
@@ -461,12 +442,8 @@ function filename(file: BrowserObject): string {
  * Upload the current selected or dragged-and-dropped file.
  */
 async function upload(e: Event): Promise<void> {
-    if (isOver.value) {
-        isOver.value = false;
-    }
-
     await obStore.upload({ e });
-    analyticsStore.eventTriggered(AnalyticsEvent.OBJECT_UPLOADED);
+    await analytics.eventTriggered(AnalyticsEvent.OBJECT_UPLOADED);
     const target = e.target as HTMLInputElement;
     target.value = '';
 }
@@ -496,7 +473,7 @@ async function list(path: string): Promise<void> {
 async function buttonFileUpload(): Promise<void> {
     const fileInputElement = fileInput.value as HTMLInputElement;
     fileInputElement.showPicker();
-    analyticsStore.eventTriggered(AnalyticsEvent.UPLOAD_FILE_CLICKED);
+    analytics.eventTriggered(AnalyticsEvent.UPLOAD_FILE_CLICKED);
     closeUploadDropdown();
 }
 
@@ -506,7 +483,7 @@ async function buttonFileUpload(): Promise<void> {
 async function buttonFolderUpload(): Promise<void> {
     const folderInputElement = folderInput.value as HTMLInputElement;
     folderInputElement.showPicker();
-    analyticsStore.eventTriggered(AnalyticsEvent.UPLOAD_FOLDER_CLICKED);
+    analytics.eventTriggered(AnalyticsEvent.UPLOAD_FOLDER_CLICKED);
     closeUploadDropdown();
 }
 
@@ -515,20 +492,6 @@ async function buttonFolderUpload(): Promise<void> {
  */
 function toggleUploadDropdown(): void {
     isUploadDropDownShown.value = !isUploadDropDownShown.value;
-}
-
-/**
- * Makes dropzone visible.
- */
-function showDropzone(): void {
-    isOver.value = true;
-}
-
-/**
- * Hides dropzone.
- */
-function hideDropzone(): void {
-    isOver.value = false;
 }
 
 /**
@@ -542,8 +505,8 @@ function closeUploadDropdown(): void {
  * Redirects to buckets list view.
  */
 async function goToBuckets(): Promise<void> {
-    await router.push(RouteConfig.Buckets.with(RouteConfig.BucketsManagement).path).catch(_ => {});
-    analyticsStore.pageVisit(RouteConfig.Buckets.with(RouteConfig.BucketsManagement).path);
+    await router.push(RouteConfig.Buckets.with(RouteConfig.BucketsManagement).path).catch(err => {});
+    analytics.pageVisit(RouteConfig.Buckets.with(RouteConfig.BucketsManagement).path);
     await onRouteChange();
 }
 
@@ -572,7 +535,7 @@ onBeforeMount(async () => {
     if (!bucket.value) {
         const path = RouteConfig.Buckets.with(RouteConfig.BucketsManagement).path;
 
-        analyticsStore.pageVisit(path);
+        analytics.pageVisit(path);
         await router.push(path);
 
         return;
@@ -765,11 +728,11 @@ onBeforeMount(async () => {
 
         &:hover {
             background: var(--c-grey-1);
-            color: var(--c-orange-3);
+            color: var(--c-blue-3);
             font-family: 'font_medium', sans-serif;
 
             .btn-icon > path {
-                fill: var(--c-orange-3);
+                fill: var(--c-blue-3);
             }
         }
 
@@ -821,7 +784,7 @@ onBeforeMount(async () => {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    background-color: var(--c-orange-3);
+    background-color: var(--c-blue-3);
     border: 1px solid transparent;
     cursor: pointer;
     padding-right: 0;
@@ -829,12 +792,12 @@ onBeforeMount(async () => {
     &__divider {
         height: 100%;
         width: 1px;
-        background: var(--c-orange-4);
+        background: var(--c-blue-4);
         margin: 0 7px;
     }
 
     &:hover {
-        background-color: #b32006;
+        background-color: #0059d0;
     }
 }
 

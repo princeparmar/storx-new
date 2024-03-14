@@ -255,8 +255,7 @@ func (process *Process) Exec(ctx context.Context, command string) (err error) {
 
 	if _, ok := process.Arguments[command]; !ok {
 		fmt.Fprintf(process.processes.Output, "%s running: %s\n", process.Name, command)
-		//TODO: This doesn't look right, but keeping the same behaviour as before.
-		return nil
+		return
 	}
 
 	cmd := exec.CommandContext(ctx, executable, process.Arguments[command]...)

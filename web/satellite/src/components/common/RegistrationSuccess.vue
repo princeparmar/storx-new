@@ -1,4 +1,4 @@
-// Copyright (C) 2019 Storx Labs, Inc.
+// Copyright (C) 2019 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -9,7 +9,7 @@
         <div class="register-success-area__container">
             <MailIcon />
             <h2 class="register-success-area__container__title" aria-roledescription="title">You're almost there!</h2>
-            <div v-if="showManualActivationMsg" class="register-success-area__container__sub-title fill">
+            <div v-if="showManualActivationMsg" class="register-success-area__container__sub-title">
                 If an account with the email address
                 <p class="register-success-area__container__sub-title__email">{{ userEmail }}</p>
                 exists, a verification email has been sent.
@@ -53,7 +53,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
 import { AuthHttpApi } from '@/api/auth';
-import { RouteConfig } from '@/types/router';
+import { RouteConfig } from '@/router';
 import { useNotify } from '@/utils/hooks';
 
 import VButton from '@/components/common/VButton.vue';
@@ -122,7 +122,7 @@ async function onResendEmailButtonClick(): Promise<void> {
     try {
         await auth.resendEmail(email);
     } catch (error) {
-        notify.notifyError(error, null);
+        await notify.error(error.message, null);
     }
 
     startResendEmailCountdown();
@@ -197,10 +197,6 @@ onBeforeUnmount(() => {
                 text-align: center;
                 margin-bottom: 27px;
 
-                &.fill {
-                    max-width: unset;
-                }
-
                 &__email {
                     font-family: 'font_bold', sans-serif;
                 }
@@ -237,10 +233,10 @@ onBeforeUnmount(() => {
                 margin-top: 20px;
 
                 &__link {
-                    color: var(--c-light-orange-5);
+                    color: var(--c-light-blue-5);
 
                     &:visited {
-                        color: var(--c-light-orange-5);
+                        color: var(--c-light-blue-5);
                     }
                 }
             }
@@ -250,7 +246,7 @@ onBeforeUnmount(() => {
             font-family: 'font_bold', sans-serif;
             text-decoration: none;
             font-size: 14px;
-            color: var(--c-light-orange-5);
+            color: var(--c-light-blue-5);
             margin-top: 50px;
             padding-bottom: 50px;
         }

@@ -1,4 +1,4 @@
-// Copyright (C) 2019 Storx Labs, Inc.
+// Copyright (C) 2019 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -41,7 +41,6 @@
         <span class="label" :class="{uppercase: isUppercase}">
             <component :is="iconComponent" v-if="iconComponent" />
             <span v-if="icon !== 'none'">&nbsp;&nbsp;</span>
-            <slot />
             {{ label }}
         </span>
         <div class="icon-wrapper-right">
@@ -51,7 +50,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, Component } from 'vue';
 
 import WhitePlusIcon from '@/../static/images/common/plusWhite.svg';
 import AddCircleIcon from '@/../static/images/common/addCircle.svg';
@@ -64,9 +63,6 @@ import DocumentIcon from '@/../static/images/common/documentIcon.svg';
 import DownloadIcon from '@/../static/images/common/download.svg';
 import FolderIcon from '@/../static/images/objects/newFolder.svg';
 import ResourcesIcon from '@/../static/images/navigation/resources.svg';
-import UploadIcon from '@/../static/images/common/upload.svg';
-import ProjectIcon from '@/../static/images/navigation/project.svg';
-import BackIcon from '@/../static/images/common/arrowLeft.svg';
 
 const props = withDefaults(defineProps<{
     link?: string;
@@ -90,7 +86,7 @@ const props = withDefaults(defineProps<{
     onPress?: () => void;
 }>(), {
     link: undefined,
-    label: '',
+    label: 'Default',
     width: 'inherit',
     height: 'inherit',
     fontSize: '16px',
@@ -110,7 +106,7 @@ const props = withDefaults(defineProps<{
     onPress: () => {},
 });
 
-const icons = new Map<string, string>([
+const icons = new Map<string, Component>([
     ['copy', CopyIcon],
     ['check', CheckIcon],
     ['download', DownloadIcon],
@@ -122,12 +118,9 @@ const icons = new Map<string, string>([
     ['resources', ResourcesIcon],
     ['addcircle', AddCircleIcon],
     ['add', WhitePlusIcon],
-    ['upload', UploadIcon],
-    ['project', ProjectIcon],
-    ['back', BackIcon],
 ]);
 
-const iconComponent = computed((): string | undefined => icons.get(props.icon.toLowerCase()));
+const iconComponent = computed((): Component | undefined => icons.get(props.icon.toLowerCase()));
 
 const containerClassName = computed((): string => {
     if (props.isDisabled) return 'disabled';
@@ -217,10 +210,10 @@ function handleClick(): void {
 
     .blue-white {
         background-color: #fff !important;
-        border: 2px solid #E97561 !important;
+        border: 2px solid #2683ff !important;
 
         .label {
-            color: #E97561 !important;
+            color: #2683ff !important;
         }
     }
 
@@ -247,7 +240,7 @@ function handleClick(): void {
         border: 2px solid #d9dbe9 !important;
 
         .label {
-            color: var(--c-orange-3) !important;
+            color: var(--c-blue-3) !important;
         }
     }
 
@@ -279,7 +272,7 @@ function handleClick(): void {
         display: flex;
         align-items: center;
         justify-content: center;
-        background-color: var(--c-orange-3);
+        background-color: var(--c-blue-3);
         cursor: pointer;
         box-sizing: border-box;
 
@@ -316,10 +309,11 @@ function handleClick(): void {
         }
 
         &:hover {
-            background-color: #b32006;
+            background-color: #0059d0;
 
             &.transparent,
-            &.blue-white {
+            &.blue-white,
+            &.white {
                 box-shadow: none !important;
                 background-color: #2683ff !important;
                 border: 1px solid #2683ff !important;
@@ -331,20 +325,6 @@ function handleClick(): void {
 
                 .label {
                     color: white !important;
-                }
-            }
-
-            &.white {
-                box-shadow: none !important;
-                border: 1px solid var(--c-orange-3) !important;
-
-                :deep(path),
-                :deep(rect) {
-                    fill: var(--c-orange-3) !important;
-                }
-
-                .label {
-                    color: var(--c-orange-3) !important;
                 }
             }
 

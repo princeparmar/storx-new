@@ -84,15 +84,8 @@ const (
 	eventAccountUnwarned              = "Account Unwarned"
 	eventAccountFreezeWarning         = "Account Freeze Warning"
 	eventUnpaidLargeInvoice           = "Large Invoice Unpaid"
-	eventUnpaidStorjscanInvoice       = "Storjscan Invoice Unpaid"
 	eventExpiredCreditNeedsRemoval    = "Expired Credit Needs Removal"
 	eventExpiredCreditRemoved         = "Expired Credit Removed"
-	eventProjectInvitationAccepted    = "Project Invitation Accepted"
-	eventProjectInvitationDeclined    = "Project Invitation Declined"
-	eventGalleryViewClicked           = "Gallery View Clicked"
-	eventResendInviteClicked          = "Resend Invite Clicked"
-	eventCopyInviteLinkClicked        = "Copy Invite Link Clicked"
-	eventRemoveProjectMemberCLicked   = "Remove Member Clicked"
 )
 
 var (
@@ -123,9 +116,6 @@ type FreezeTracker interface {
 
 	// TrackLargeUnpaidInvoice sends an event to Segment indicating that a user has not paid a large invoice.
 	TrackLargeUnpaidInvoice(invID string, userID uuid.UUID, email string)
-
-	// TrackStorjscanUnpaidInvoice sends an event to Segment indicating that a user has not paid an invoice, but has storjscan transaction history.
-	TrackStorjscanUnpaidInvoice(invID string, userID uuid.UUID, email string)
 }
 
 // Service for sending analytics.
@@ -164,8 +154,7 @@ func NewService(log *zap.Logger, config Config, satelliteName string) *Service {
 		eventSeePaymentsClicked, eventEditPaymentMethodClicked, eventUsageDetailedInfoClicked, eventAddNewPaymentMethodClicked,
 		eventApplyNewCouponClicked, eventCreditCardRemoved, eventCouponCodeApplied, eventInvoiceDownloaded, eventCreditCardAddedFromBilling,
 		eventStorjTokenAddedFromBilling, eventAddFundsClicked, eventProjectMembersInviteSent, eventError, eventProjectNameUpdated, eventProjectDescriptionUpdated,
-		eventProjectStorageLimitUpdated, eventProjectBandwidthLimitUpdated, eventProjectInvitationAccepted, eventProjectInvitationDeclined,
-		eventGalleryViewClicked, eventResendInviteClicked, eventRemoveProjectMemberCLicked, eventCopyInviteLinkClicked} {
+		eventProjectStorageLimitUpdated, eventProjectBandwidthLimitUpdated} {
 		service.clientEvents[name] = true
 	}
 
@@ -422,23 +411,6 @@ func (service *Service) TrackLargeUnpaidInvoice(invID string, userID uuid.UUID, 
 	})
 }
 
-// TrackStorjscanUnpaidInvoice sends an event to Segment indicating that a user has not paid an invoice, but has storjscan transaction history.
-func (service *Service) TrackStorjscanUnpaidInvoice(invID string, userID uuid.UUID, email string) {
-	if !service.config.Enabled {
-		return
-	}
-
-	props := segment.NewProperties()
-	props.Set("email", email)
-	props.Set("invoice", invID)
-
-	service.enqueueMessage(segment.Track{
-		UserId:     userID.String(),
-		Event:      service.satelliteName + " " + eventUnpaidStorjscanInvoice,
-		Properties: props,
-	})
-}
-
 // TrackAccessGrantCreated sends an "Access Grant Created" event to Segment.
 func (service *Service) TrackAccessGrantCreated(userID uuid.UUID, email string) {
 	if !service.config.Enabled {
@@ -489,7 +461,7 @@ func (service *Service) TrackAccountVerified(userID uuid.UUID, email string) {
 
 // TrackEvent sends an arbitrary event associated with user ID to Segment.
 // It is used for tracking occurrences of client-side events.
-func (service *Service) TrackEvent(eventName string, userID uuid.UUID, email string, customProps map[string]string) {
+func (service *Service) TrackEvent(eventName string, userID uuid.UUID, email string) {
 	if !service.config.Enabled {
 		return
 	}
@@ -502,10 +474,6 @@ func (service *Service) TrackEvent(eventName string, userID uuid.UUID, email str
 
 	props := segment.NewProperties()
 	props.Set("email", email)
-
-	for key, value := range customProps {
-		props.Set(key, value)
-	}
 
 	service.enqueueMessage(segment.Track{
 		UserId:     userID.String(),

@@ -288,40 +288,76 @@ func (service *Service) InvoiceApplyTokenBalance(ctx context.Context, createdOnA
 
 	for _, wallet := range wallets {
 		// get the stripe customer invoice balance
-		customerID, err := service.db.Customers().GetCustomerID(ctx, wallet.UserID)
+		cusID, err := service.db.Customers().GetCustomerID(ctx, wallet.UserID)
 		if err != nil {
 			errGrp.Add(Error.New("unable to get stripe customer ID for user ID %s", wallet.UserID.String()))
 			continue
 		}
-		customerInvoices, err := service.getInvoices(ctx, customerID, createdOnAfter)
+		invoices, err := service.getInvoices(ctx, cusID, createdOnAfter)
 		if err != nil {
-			errGrp.Add(Error.New("unable to get invoice balance for stripe customer ID %s", customerID))
+			errGrp.Add(Error.New("unable to get invoice balance for stripe customer ID %s", cusID))
 			continue
 		}
-		err = service.payInvoicesWithTokenBalance(ctx, customerID, wallet, customerInvoices)
-		if err != nil {
-			errGrp.Add(Error.New("unable to pay invoices for stripe customer ID %s", customerID))
-			continue
+		for _, invoice := range invoices {
+			// if no balance due, do nothing
+			if invoice.AmountRemaining <= 0 {
+				continue
+			}
+			monetaryTokenBalance, err := service.billingDB.GetBalance(ctx, wallet.UserID)
+			if err != nil {
+				errGrp.Add(Error.New("unable to get balance for user ID %s", wallet.UserID.String()))
+				continue
+			}
+			// truncate here since stripe only has cent level precision for invoices.
+			// The users account balance will still maintain the full precision monetary value!
+			tokenBalance := currency.AmountFromDecimal(monetaryTokenBalance.AsDecimal().Truncate(2), currency.USDollars)
+			// if token balance is not > 0, don't bother with the rest
+			if tokenBalance.BaseUnits() <= 0 {
+				continue
+			}
+
+			var tokenCreditAmount int64
+			if invoice.AmountRemaining >= tokenBalance.BaseUnits() {
+				tokenCreditAmount = tokenBalance.BaseUnits()
+			} else {
+				tokenCreditAmount = invoice.AmountRemaining
+			}
+
+			txID, err := service.createTokenPaymentBillingTransaction(ctx, wallet.UserID, invoice.ID, wallet.Address.Hex(), -tokenCreditAmount)
+			if err != nil {
+				errGrp.Add(Error.New("unable to create token payment billing transaction for user %s", wallet.UserID.String()))
+				continue
+			}
+
+			creditNoteID, err := service.addCreditNoteToInvoice(ctx, invoice.ID, cusID, wallet.Address.Hex(), tokenCreditAmount, txID)
+			if err != nil {
+				errGrp.Add(Error.New("unable to create token payment credit note for user %s", wallet.UserID.String()))
+				continue
+			}
+
+			metadata, err := json.Marshal(map[string]interface{}{
+				"Credit Note ID": creditNoteID,
+			})
+
+			if err != nil {
+				errGrp.Add(Error.New("unable to marshall credit note ID %s", creditNoteID))
+				continue
+			}
+
+			err = service.billingDB.UpdateMetadata(ctx, txID, metadata)
+			if err != nil {
+				errGrp.Add(Error.New("unable to add credit note ID to billing transaction for user %s", wallet.UserID.String()))
+				continue
+			}
+
+			err = service.billingDB.UpdateStatus(ctx, txID, billing.TransactionStatusCompleted)
+			if err != nil {
+				errGrp.Add(Error.New("unable to update status for billing transaction for user %s", wallet.UserID.String()))
+				continue
+			}
 		}
 	}
 	return errGrp.Err()
-}
-
-// InvoiceApplyCustomerTokenBalance creates invoice credit notes for the customers token payments to open invoices.
-func (service *Service) InvoiceApplyCustomerTokenBalance(ctx context.Context, customerID string) (err error) {
-	defer mon.Task()(&ctx)(&err)
-
-	userID, err := service.db.Customers().GetUserID(ctx, customerID)
-	if err != nil {
-		return Error.New("unable to get user ID for stripe customer ID %s", customerID)
-	}
-
-	customerInvoices, err := service.getInvoices(ctx, customerID, time.Unix(0, 0))
-	if err != nil {
-		return Error.New("error getting invoices for stripe customer %s", customerID)
-	}
-
-	return service.PayInvoicesWithTokenBalance(ctx, userID, customerID, customerInvoices)
 }
 
 // getInvoices returns the stripe customer's open finalized invoices created on or after the given date.
@@ -341,9 +377,6 @@ func (service *Service) getInvoices(ctx context.Context, cusID string, createdOn
 		if stripeInvoice != nil {
 			stripeInvoices = append(stripeInvoices, *stripeInvoice)
 		}
-	}
-	if err = invoicesIterator.Err(); err != nil {
-		return stripeInvoices, Error.Wrap(err)
 	}
 	return stripeInvoices, nil
 }
@@ -404,39 +437,6 @@ func (service *Service) createTokenPaymentBillingTransaction(ctx context.Context
 		return 0, Error.Wrap(err)
 	}
 	return txIDs[0], nil
-}
-
-// boris
-func (service *Service) CreateTokenPaymentBillingTransaction(ctx context.Context, user *console.User, amountTemp string) (err error) {
-	defer mon.Task()(&ctx)(&err)
-
-	amount, err := strconv.ParseFloat(amountTemp, 64)
-
-	transaction := billing.Transactions{
-		UserID:      user.ID,
-		Amount:      amount,
-		Description: "Paid Stripe Invoice",
-		Source:      billing.StripeSource,
-		Status:      billing.TransactionStatusCompleted,
-		Type:        billing.TransactionTypeDebit,
-		Timestamp:   time.Now(),
-		CreatedAt:   time.Now(),
-	}
-
-	err = service.billingDB.Inserts(ctx, transaction)
-
-	if err != nil {
-		service.log.Warn("unable to add transaction to billing DB for user", zap.String("User ID", user.ID.String()))
-		return Error.Wrap(err)
-	}
-	return nil
-}
-
-// boris
-func (service *Service) GetBillingHistory(ctx context.Context, userID uuid.UUID) ([]billing.Transactions, error) {
-	billingRows, err := service.billingDB.Lists(ctx, userID)
-	return billingRows, err
-
 }
 
 // applyProjectRecords applies invoice intents as invoice line items to stripe customer.
@@ -860,86 +860,6 @@ func (service *Service) createInvoices(ctx context.Context, customers []Customer
 	return scheduled, draft, errGrp.Err()
 }
 
-// SetInvoiceStatus will set all open invoices within the specified date range to the requested status.
-func (service *Service) SetInvoiceStatus(ctx context.Context, startPeriod, endPeriod time.Time, status string, dryRun bool) (err error) {
-	defer mon.Task()(&ctx)(&err)
-
-	switch stripe.InvoiceStatus(strings.ToLower(status)) {
-	case stripe.InvoiceStatusUncollectible:
-		err = service.iterateInvoicesInTimeRange(ctx, startPeriod, endPeriod, func(invoiceId string) error {
-			service.log.Info("updating invoice status to uncollectible", zap.String("invoiceId", invoiceId))
-			if !dryRun {
-				_, err := service.stripeClient.Invoices().MarkUncollectible(invoiceId, &stripe.InvoiceMarkUncollectibleParams{})
-				if err != nil {
-					return Error.Wrap(err)
-				}
-			}
-			return nil
-		})
-	case stripe.InvoiceStatusVoid:
-		err = service.iterateInvoicesInTimeRange(ctx, startPeriod, endPeriod, func(invoiceId string) error {
-			service.log.Info("updating invoice status to void", zap.String("invoiceId", invoiceId))
-			if !dryRun {
-				_, err = service.stripeClient.Invoices().VoidInvoice(invoiceId, &stripe.InvoiceVoidParams{})
-				if err != nil {
-					return Error.Wrap(err)
-				}
-			}
-			return nil
-		})
-	case stripe.InvoiceStatusPaid:
-		err = service.iterateInvoicesInTimeRange(ctx, startPeriod, endPeriod, func(invoiceId string) error {
-			service.log.Info("updating invoice status to paid", zap.String("invoiceId", invoiceId))
-			if !dryRun {
-				payParams := &stripe.InvoicePayParams{
-					Params:        stripe.Params{Context: ctx},
-					PaidOutOfBand: stripe.Bool(true),
-				}
-				_, err = service.stripeClient.Invoices().Pay(invoiceId, payParams)
-				if err != nil {
-					return Error.Wrap(err)
-				}
-			}
-			return nil
-		})
-	default:
-		// unknown
-		service.log.Error("Unknown status provided. Valid options are uncollectible, void, or paid.", zap.String("status", status))
-		return Error.New("unknown status provided")
-	}
-	return err
-}
-
-func (service *Service) iterateInvoicesInTimeRange(ctx context.Context, startPeriod, endPeriod time.Time, updateStatus func(string) error) (err error) {
-	defer mon.Task()(&ctx)(&err)
-
-	params := &stripe.InvoiceListParams{
-		ListParams: stripe.ListParams{
-			Context: ctx,
-			Limit:   stripe.Int64(100),
-		},
-		Status: stripe.String("open"),
-		CreatedRange: &stripe.RangeQueryParams{
-			GreaterThanOrEqual: startPeriod.Unix(),
-			LesserThanOrEqual:  endPeriod.Unix(),
-		},
-	}
-
-	numInvoices := 0
-	invoicesIterator := service.stripeClient.Invoices().List(params)
-	for invoicesIterator.Next() {
-		numInvoices++
-		stripeInvoice := invoicesIterator.Invoice()
-
-		err := updateStatus(stripeInvoice.ID)
-		if err != nil {
-			return Error.Wrap(err)
-		}
-	}
-	service.log.Info("found " + strconv.Itoa(numInvoices) + " total invoices")
-	return Error.Wrap(invoicesIterator.Err())
-}
-
 // CreateBalanceInvoiceItems will find users with a stripe balance, create an invoice
 // item with the charges due, and zero out the stripe balance.
 func (service *Service) CreateBalanceInvoiceItems(ctx context.Context) (err error) {
@@ -1068,6 +988,8 @@ func (service *Service) PayInvoices(ctx context.Context, createdOnAfter time.Tim
 	}
 	params.Filters.AddFilter("created", "gte", strconv.FormatInt(createdOnAfter.Unix(), 10))
 
+	var errGrp errs.Group
+
 	invoicesIterator := service.stripeClient.Invoices().List(params)
 	for invoicesIterator.Next() {
 		stripeInvoice := invoicesIterator.Invoice()
@@ -1082,122 +1004,7 @@ func (service *Service) PayInvoices(ctx context.Context, createdOnAfter time.Tim
 		params := &stripe.InvoicePayParams{Params: stripe.Params{Context: ctx}}
 		_, err = service.stripeClient.Invoices().Pay(stripeInvoice.ID, params)
 		if err != nil {
-			service.log.Warn("unable to pay invoice",
-				zap.String("stripe-invoice-id", stripeInvoice.ID),
-				zap.Error(err))
-			continue
-		}
-	}
-	return invoicesIterator.Err()
-}
-
-// PayCustomerInvoices attempts to transition all open finalized invoices created on or after a certain time to "paid"
-// by charging the customer according to subscriptions settings.
-func (service *Service) PayCustomerInvoices(ctx context.Context, customerID string) (err error) {
-	defer mon.Task()(&ctx)(&err)
-
-	customerInvoices, err := service.getInvoices(ctx, customerID, time.Unix(0, 0))
-	if err != nil {
-		return Error.New("error getting invoices for stripe customer %s", customerID)
-	}
-
-	var errGrp errs.Group
-	for _, customerInvoice := range customerInvoices {
-		if customerInvoice.DueDate > 0 {
-			service.log.Info("Skipping invoice marked for manual payment",
-				zap.String("id", customerInvoice.ID),
-				zap.String("number", customerInvoice.Number),
-				zap.String("customer", customerInvoice.Customer.ID))
-			continue
-		}
-
-		params := &stripe.InvoicePayParams{Params: stripe.Params{Context: ctx}}
-		_, err = service.stripeClient.Invoices().Pay(customerInvoice.ID, params)
-		if err != nil {
-			errGrp.Add(Error.New("unable to pay invoice %s", customerInvoice.ID))
-			continue
-		}
-	}
-	return errGrp.Err()
-}
-
-// PayInvoicesWithTokenBalance attempts to transition all the users open invoices to "paid" by charging the customer
-// token balance.
-func (service *Service) PayInvoicesWithTokenBalance(ctx context.Context, userID uuid.UUID, cusID string, invoices []stripe.Invoice) (err error) {
-	// get wallet
-	wallet, err := service.walletsDB.GetWallet(ctx, userID)
-	if err != nil {
-		return Error.New("unable to get users in the wallets table")
-	}
-
-	return service.payInvoicesWithTokenBalance(ctx, cusID, storjscan.Wallet{
-		UserID:  userID,
-		Address: wallet,
-	}, invoices)
-}
-
-// payInvoicesWithTokenBalance attempts to transition the users open invoices to "paid" by charging the customer
-// token balance.
-func (service *Service) payInvoicesWithTokenBalance(ctx context.Context, cusID string, wallet storjscan.Wallet, invoices []stripe.Invoice) (err error) {
-	defer mon.Task()(&ctx)(&err)
-
-	var errGrp errs.Group
-
-	for _, invoice := range invoices {
-		// if no balance due, do nothing
-		if invoice.AmountRemaining <= 0 {
-			continue
-		}
-		monetaryTokenBalance, err := service.billingDB.GetBalance(ctx, wallet.UserID)
-		if err != nil {
-			errGrp.Add(Error.New("unable to get balance for user ID %s", wallet.UserID.String()))
-			continue
-		}
-		// truncate here since stripe only has cent level precision for invoices.
-		// The users account balance will still maintain the full precision monetary value!
-		tokenBalance := currency.AmountFromDecimal(monetaryTokenBalance.AsDecimal().Truncate(2), currency.USDollars)
-		// if token balance is not > 0, don't bother with the rest
-		if tokenBalance.BaseUnits() <= 0 {
-			break
-		}
-
-		var tokenCreditAmount int64
-		if invoice.AmountRemaining >= tokenBalance.BaseUnits() {
-			tokenCreditAmount = tokenBalance.BaseUnits()
-		} else {
-			tokenCreditAmount = invoice.AmountRemaining
-		}
-
-		txID, err := service.createTokenPaymentBillingTransaction(ctx, wallet.UserID, invoice.ID, wallet.Address.Hex(), -tokenCreditAmount)
-		if err != nil {
-			errGrp.Add(Error.New("unable to create token payment billing transaction for user %s", wallet.UserID.String()))
-			continue
-		}
-
-		creditNoteID, err := service.addCreditNoteToInvoice(ctx, invoice.ID, cusID, wallet.Address.Hex(), tokenCreditAmount, txID)
-		if err != nil {
-			errGrp.Add(Error.New("unable to create token payment credit note for user %s", wallet.UserID.String()))
-			continue
-		}
-
-		metadata, err := json.Marshal(map[string]interface{}{
-			"Credit Note ID": creditNoteID,
-		})
-
-		if err != nil {
-			errGrp.Add(Error.New("unable to marshall credit note ID %s", creditNoteID))
-			continue
-		}
-
-		err = service.billingDB.UpdateMetadata(ctx, txID, metadata)
-		if err != nil {
-			errGrp.Add(Error.New("unable to add credit note ID to billing transaction for user %s", wallet.UserID.String()))
-			continue
-		}
-
-		err = service.billingDB.UpdateStatus(ctx, txID, billing.TransactionStatusCompleted)
-		if err != nil {
-			errGrp.Add(Error.New("unable to update status for billing transaction for user %s", wallet.UserID.String()))
+			errGrp.Add(Error.New("unable to pay invoice %s", stripeInvoice.ID))
 			continue
 		}
 	}

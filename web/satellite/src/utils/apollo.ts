@@ -1,4 +1,4 @@
-// Copyright (C) 2019 Storx Labs, Inc.
+// Copyright (C) 2019 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 import { ApolloClient, ApolloLink, HttpLink, InMemoryCache, ServerError } from '@apollo/client/core';
@@ -13,7 +13,7 @@ import { useNotificationsStore } from '@/store/modules/notificationsStore';
  * Satellite url.
  */
 const satelliteUrl = new HttpLink({
-    uri: import.meta.env.VITE_ENDPOINT_URL,
+    uri: process.env.VUE_APP_ENDPOINT_URL,
 });
 
 /**
@@ -31,22 +31,11 @@ const authLink = setContext((_, { headers }) => {
 /**
  * Handling unauthorized error.
  */
-const errorLink = onError(({ graphQLErrors, networkError, response }) => {
+const errorLink = onError(({ graphQLErrors, networkError }) => {
     const notificationsStore = useNotificationsStore();
 
     if (graphQLErrors?.length) {
-        const message = graphQLErrors.join('<br>');
-        let template = `
-            <p class="message-title">${message}</p>
-        `;
-        if (response && response['requestID']) {
-            template = `
-            ${template}
-            <p class="message-footer">Request ID: ${response['requestID']}</p>
-        `;
-        }
-
-        notificationsStore.notifyError({ message: '', source: AnalyticsErrorEventSource.OVERALL_GRAPHQL_ERROR }, template);
+        notificationsStore.notifyError({ message: graphQLErrors.join('\n'), source: AnalyticsErrorEventSource.OVERALL_GRAPHQL_ERROR });
     }
 
     if (networkError) {
@@ -58,13 +47,8 @@ const errorLink = onError(({ graphQLErrors, networkError, response }) => {
                 window.location.href = window.location.origin + '/login';
             }, 2000);
         } else {
-            const message = typeof nError.result === 'string' ? nError.result : nError.result.error;
-            let template = `<p class="message-title">${message}</p>`;
-            if (typeof nError.result !== 'string' && nError.result.requestID) {
-                template = `${template} <p class="message-footer">Request ID: ${nError.result.requestID}</p>`;
-            }
-
-            notificationsStore.notifyError({ message: '', source: AnalyticsErrorEventSource.OVERALL_GRAPHQL_ERROR }, template);
+            const error = typeof nError.result === 'string' ? nError.result : nError.result.error;
+            nError.result && notificationsStore.notifyError({ message: error, source: AnalyticsErrorEventSource.OVERALL_GRAPHQL_ERROR });
         }
     }
 

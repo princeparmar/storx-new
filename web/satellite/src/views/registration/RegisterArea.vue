@@ -1,4 +1,4 @@
-// Copyright (C) 2021 Storx Labs, Inc.
+// Copyright (C) 2021 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -47,11 +47,11 @@
                     class="register-area__input-area__container"
                     :class="{ 'professional-container': isProfessional }"
                 >
-                    <div class="register-area__input-area__container__title-area">
+                    <div class="register-area__input-area__container__title-area" @click.stop="toggleDropdown">
                         <div class="register-area__input-area__container__title-container">
                             <h1 class="register-area__input-area__container__title-area__title">Get 25 GB Free</h1>
                         </div>
-                        <div class="register-area__input-area__expand" @click.stop="toggleDropdown">
+                        <div class="register-area__input-area__expand">
                             <div class="register-area__input-area__info-button">
                                 <InfoIcon />
                                 <p class="register-area__input-area__info-button__message">
@@ -89,9 +89,6 @@
                             </ul>
                         </div>
                     </div>
-                    <p v-if="isInvited" class="register-area__input-area__container__invitation-text">
-                        {{ inviterName }} ({{ inviterEmail }}) has invited you to the project {{ projectName }} on Storj. Create an account on the {{ satelliteName }} region to join {{ inviterName }} in the project.
-                    </p>
                     <div class="register-area__input-area__toggle__container">
                         <ul class="register-area__input-area__toggle__wrapper">
                             <li
@@ -118,7 +115,6 @@
                     <div class="register-area__input-wrapper first-input">
                         <VInput
                             label="Full Name"
-                            max-symbols="72"
                             placeholder="Enter Full Name"
                             :error="fullNameError"
                             role-description="name"
@@ -128,10 +124,7 @@
                     <div class="register-area__input-wrapper">
                         <VInput
                             label="Email Address"
-                            max-symbols="72"
                             placeholder="user@example.com"
-                            :init-value="email"
-                            :disabled="!!email"
                             :error="emailError"
                             role-description="email"
                             @setData="setEmail"
@@ -141,7 +134,6 @@
                         <div class="register-area__input-wrapper">
                             <VInput
                                 label="Company Name"
-                                max-symbols="72"
                                 placeholder="Acme Corp."
                                 :error="companyNameError"
                                 role-description="company-name"
@@ -151,7 +143,6 @@
                         <div class="register-area__input-wrapper">
                             <VInput
                                 label="Position"
-                                max-symbols="72"
                                 placeholder="Position Title"
                                 :error="positionError"
                                 role-description="position"
@@ -214,7 +205,7 @@
                         </div>
                         <p class="register-area__input-area__container__warning__message">
                             This means any data you upload to this satellite can be
-                            deleted at any time and your storage/egress limits
+                            deleted at any time and your storage/bandwidth limits
                             can fluctuate. To use our production service please
                             create an account on one of our production Satellites.
                             <a href="https://storj.io/signup/" target="_blank" rel="noopener noreferrer">https://storj.io/signup/</a>
@@ -262,7 +253,9 @@
                         border-radius="50px"
                         :is-disabled="isLoading"
                         :on-press="onCreateClick"
-                    />
+                    >
+                        Sign In
+                    </v-button>
                     <div class="register-area__input-area__login-container">
                         Already have an account? <router-link :to="loginPath" class="register-area__input-area__login-container__link">Login.</router-link>
                     </div>
@@ -284,12 +277,17 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ComputedRef, onBeforeMount, ref } from 'vue';
+import { computed, onBeforeMount, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import VueHcaptcha from '@hcaptcha/vue3-hcaptcha';
 
+import BottomArrowIcon from '../../../static/images/common/lightBottomArrow.svg';
+import SelectedCheckIcon from '../../../static/images/common/selectedCheck.svg';
+import LogoIcon from '../../../static/images/logo.svg';
+import LogoWithPartnerIcon from '../../../static/images/partnerStorjLogo.svg';
+
 import { AuthHttpApi } from '@/api/auth';
-import { RouteConfig } from '@/types/router';
+import { RouteConfig } from '@/router';
 import { MultiCaptchaConfig, PartneredSatellite } from '@/types/config';
 import { User } from '@/types/users';
 import { useNotify } from '@/utils/hooks';
@@ -301,10 +299,6 @@ import VButton from '@/components/common/VButton.vue';
 import VInput from '@/components/common/VInput.vue';
 import AddCouponCodeInput from '@/components/common/AddCouponCodeInput.vue';
 
-import LogoWithPartnerIcon from '@/../static/images/partnerStorjLogo.svg';
-import LogoIcon from '@/../static/images/logo.svg';
-import SelectedCheckIcon from '@/../static/images/common/selectedCheck.svg';
-import BottomArrowIcon from '@/../static/images/common/lightBottomArrow.svg';
 import RegisterGlobe from '@/../static/images/register/RegisterGlobe.svg';
 import InfoIcon from '@/../static/images/register/info.svg';
 
@@ -328,12 +322,7 @@ const storageNeeds = ref<StorageNeed>();
 const viewConfig = ref<ViewConfig | null>(null);
 
 // DCS logic
-const secret = queryRef('token');
-
-const email = queryRef('email');
-const inviterName = queryRef('inviter');
-const inviterEmail = queryRef('inviter_email');
-const projectName = queryRef('project');
+const secret = ref('');
 
 const isTermsAccepted = ref(false);
 const password = ref('');
@@ -383,6 +372,10 @@ const route = useRoute();
  * Sets up variables from route params and loads config.
  */
 onBeforeMount(() => {
+    if (route.query.token) {
+        secret.value = route.query.token.toString();
+    }
+
     if (route.query.partner) {
         user.value.partner = route.query.partner.toString();
     }
@@ -400,17 +393,6 @@ onBeforeMount(() => {
 });
 
 /**
- * queryRef returns a computed reference to a query parameter.
- * Nonexistent keys or keys with no value produce an empty string.
- */
-function queryRef(key: string): ComputedRef<string> {
-    return computed((): string => {
-        const param = route.query[key] || '';
-        return (typeof param === 'string') ? param : (param[0] || '');
-    });
-}
-
-/**
  * Redirects to chosen satellite.
  */
 function clickSatellite(address): void {
@@ -421,7 +403,6 @@ function clickSatellite(address): void {
  * Toggles satellite selection dropdown visibility (Tardigrade).
  */
 function toggleDropdown(): void {
-    if (isInvited.value) return;
     isDropdownShown.value = !isDropdownShown.value;
 }
 
@@ -535,14 +516,6 @@ const partneredSatellites = computed((): PartneredSatellite[] => {
 
         return s;
     });
-});
-
-/**
- * Returns whether the current URL's query parameters indicate that the user was
- * redirected from a project invitation link.
- */
-const isInvited = computed((): boolean => {
-    return !!inviterName.value && !!inviterEmail.value && !!projectName.value && !!email.value;
 });
 
 /**
@@ -800,7 +773,7 @@ async function createUser(): Promise<void> {
 
         await detectBraveBrowser() ? await router.push(braveSuccessPath) : window.location.href = nonBraveSuccessPath;
     } catch (error) {
-        notify.notifyError(error, null);
+        notify.error(error.message, null);
     }
 
     captcha.value?.reset();
@@ -820,7 +793,7 @@ async function createUser(): Promise<void> {
     }
 
     .logo-divider {
-        border-left: 1px solid var(--c-light-orange-2);
+        border-left: 1px solid var(--c-light-blue-2);
         height: 40px;
         margin: 0 10px;
     }
@@ -1167,11 +1140,6 @@ async function createUser(): Promise<void> {
                     }
                 }
 
-                &__invitation-text {
-                    font-size: 16px;
-                    line-height: 24px;
-                }
-
                 &__warning {
                     margin-top: 30px;
                     padding: 15px;
@@ -1228,7 +1196,7 @@ async function createUser(): Promise<void> {
                                 }
 
                                 &:focus {
-                                    color: var(--c-orange-3);
+                                    color: var(--c-blue-3);
                                 }
                             }
                         }

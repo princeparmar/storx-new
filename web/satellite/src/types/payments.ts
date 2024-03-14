@@ -1,4 +1,4 @@
-// Copyright (C) 2019 Storx Labs, Inc.
+// Copyright (C) 2019 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 import { formatPrice, decimalShift } from '@/utils/strings';
@@ -77,14 +77,6 @@ export interface PaymentsApi {
      * @throws Error
      */
     nativePaymentsHistory(): Promise<NativePaymentHistoryItem[]>;
-
-    /**
-     * Returns a list of STORJ token payments with confirmations.
-     *
-     * @returns list of native token payment items with confirmations
-     * @throws Error
-     */
-    paymentsWithConfirmations(): Promise<PaymentWithConfirmations[]>;
 
     /**
      * applyCouponCode applies a coupon code.
@@ -619,39 +611,15 @@ export class NativePaymentHistoryItem {
     }
 
     public get formattedType(): string {
-        if (this.type.includes('bonus')) {
-            return 'Bonus';
-        }
-        return 'Deposit';
+        return this.type.charAt(0).toUpperCase() + this.type.substring(1);
     }
 
-    public get formattedAmount(): string {
-        if (this.type === 'coinpayments') {
-            return this.received.formattedValue;
+    public get linkName(): string {
+        if (this.type === 'storjscan') {
+            return 'Etherscan';
         }
-        return this.amount.formattedValue;
+        return this.formattedType;
     }
-}
-
-export enum PaymentStatus {
-    Pending = 'pending',
-    Confirmed = 'confirmed',
-}
-
-/**
- * PaymentWithConfirmation holds all information about token payment with confirmations count.
- */
-export class PaymentWithConfirmations {
-    public constructor(
-        public readonly address: string = '',
-        public readonly tokenValue: number = 0,
-        public readonly usdValue: number = 0,
-        public readonly transaction: string = '',
-        public readonly timestamp: Date = new Date(),
-        public readonly bonusTokens: number = 0,
-        public status: PaymentStatus = PaymentStatus.Confirmed,
-        public confirmations: number = 0,
-    ) { }
 }
 
 export class TokenAmount {
@@ -662,10 +630,6 @@ export class TokenAmount {
 
     public get value(): number {
         return Number.parseFloat(this._value);
-    }
-
-    public get formattedValue(): string {
-        return formatPrice(this._value);
     }
 }
 

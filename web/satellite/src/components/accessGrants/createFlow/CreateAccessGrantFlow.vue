@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Storx Labs, Inc.
+// Copyright (C) 2023 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -99,9 +99,7 @@
                     :credentials="edgeCredentials"
                     :name="accessName"
                 />
-                <div v-if="isLoading" class="modal__blur">
-                    <VLoader width="50px" height="50px" />
-                </div>
+                <div v-if="isLoading" class="modal__blur" />
             </div>
         </template>
     </VModal>
@@ -109,11 +107,11 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
-import { generateMnemonic } from 'bip39-english';
+import { generateMnemonic } from 'bip39';
 import { useRoute, useRouter } from 'vue-router';
 
 import { useNotify } from '@/utils/hooks';
-import { RouteConfig } from '@/types/router';
+import { RouteConfig } from '@/router';
 import {
     AccessType,
     CreateAccessStep,
@@ -124,15 +122,14 @@ import {
 import { AnalyticsErrorEventSource, AnalyticsEvent } from '@/utils/constants/analyticsEventNames';
 import { LocalData } from '@/utils/localData';
 import { AccessGrant, EdgeCredentials } from '@/types/accessGrants';
+import { AnalyticsHttpApi } from '@/api/analytics';
 import { useAccessGrantsStore } from '@/store/modules/accessGrantsStore';
 import { useAppStore } from '@/store/modules/appStore';
 import { useBucketsStore } from '@/store/modules/bucketsStore';
 import { useProjectsStore } from '@/store/modules/projectsStore';
 import { useConfigStore } from '@/store/modules/configStore';
-import { useAnalyticsStore } from '@/store/modules/analyticsStore';
 
 import VModal from '@/components/common/VModal.vue';
-import VLoader from '@/components/common/VLoader.vue';
 import CreateNewAccessStep from '@/components/accessGrants/createFlow/steps/CreateNewAccessStep.vue';
 import ChoosePermissionStep from '@/components/accessGrants/createFlow/steps/ChoosePermissionStep.vue';
 import AccessEncryptionStep from '@/components/accessGrants/createFlow/steps/AccessEncryptionStep.vue';
@@ -144,7 +141,6 @@ import CLIAccessCreatedStep from '@/components/accessGrants/createFlow/steps/CLI
 import S3CredentialsCreatedStep from '@/components/accessGrants/createFlow/steps/S3CredentialsCreatedStep.vue';
 import ConfirmDetailsStep from '@/components/accessGrants/createFlow/steps/ConfirmDetailsStep.vue';
 
-const analyticsStore = useAnalyticsStore();
 const configStore = useConfigStore();
 const bucketsStore = useBucketsStore();
 const agStore = useAccessGrantsStore();
@@ -162,13 +158,6 @@ const initPermissions = [
 ];
 
 /**
- * Returns all AG names from store.
- */
-const allAGNames = computed((): string[] => {
-    return agStore.state.allAGNames;
-});
-
-/**
  * Indicates if user has to be prompt to enter project passphrase.
  */
 const isPromptForPassphrase = computed((): boolean => {
@@ -183,7 +172,7 @@ const storedPassphrase = computed((): string => {
 });
 
 const worker = ref<Worker| null>(null);
-const isLoading = ref<boolean>(true);
+const isLoading = ref<boolean>(false);
 const step = ref<CreateAccessStep>(CreateAccessStep.CreateNewAccess);
 const selectedAccessTypes = ref<AccessType[]>([]);
 const selectedPermissions = ref<Permission[]>(initPermissions);
@@ -203,6 +192,7 @@ const accessGrant = ref<string>('');
 const edgeCredentials = ref<EdgeCredentials>(new EdgeCredentials());
 
 const FIRST_PAGE = 1;
+const analytics: AnalyticsHttpApi = new AnalyticsHttpApi();
 
 /**
  * Selects access type.
@@ -394,11 +384,6 @@ function setStep(stepArg: CreateAccessStep): void {
  * If not then we set regular second step (Permissions).
  */
 function setSecondStepBasedOnAccessType(): void {
-    if (allAGNames.value.includes(accessName.value)) {
-        notify.error('Provided name is already in use', AnalyticsErrorEventSource.CREATE_AG_MODAL);
-        return;
-    }
-
     // Unfortunately local storage updates are not reactive so putting it inside computed property doesn't do anything.
     // That's why we explicitly call it here.
     const shouldShowInfo = !LocalData.getServerSideEncryptionModalHidden() && selectedAccessTypes.value.includes(AccessType.S3);
@@ -498,7 +483,7 @@ async function createCLIAccess(): Promise<void> {
 
     if (notAfter.value) permissionsMsg = Object.assign(permissionsMsg, { 'notAfter': notAfter.value.toISOString() });
 
-    worker.value.postMessage(permissionsMsg);
+    await worker.value.postMessage(permissionsMsg);
 
     const grantEvent: MessageEvent = await new Promise(resolve => {
         if (worker.value) {
@@ -512,7 +497,7 @@ async function createCLIAccess(): Promise<void> {
     cliAccess.value = grantEvent.data.value;
 
     if (selectedAccessTypes.value.includes(AccessType.APIKey)) {
-        analyticsStore.eventTriggered(AnalyticsEvent.API_ACCESS_CREATED);
+        analytics.eventTriggered(AnalyticsEvent.API_ACCESS_CREATED);
     }
 }
 
@@ -566,7 +551,7 @@ async function createAccessGrant(): Promise<void> {
     accessGrant.value = accessEvent.data.value;
 
     if (selectedAccessTypes.value.includes(AccessType.AccessGrant)) {
-        analyticsStore.eventTriggered(AnalyticsEvent.ACCESS_GRANT_CREATED);
+        analytics.eventTriggered(AnalyticsEvent.ACCESS_GRANT_CREATED);
     }
 }
 
@@ -575,7 +560,7 @@ async function createAccessGrant(): Promise<void> {
  */
 async function createEdgeCredentials(): Promise<void> {
     edgeCredentials.value = await agStore.getEdgeCredentials(accessGrant.value);
-    analyticsStore.eventTriggered(AnalyticsEvent.GATEWAY_CREDENTIALS_CREATED);
+    analytics.eventTriggered(AnalyticsEvent.GATEWAY_CREDENTIALS_CREATED);
 }
 
 /**
@@ -626,7 +611,7 @@ async function setLastStep(): Promise<void> {
             bucketsStore.setPromptForPassphrase(false);
         }
     } catch (error) {
-        notify.notifyError(error, AnalyticsErrorEventSource.CREATE_AG_MODAL);
+        await notify.error(error.message, AnalyticsErrorEventSource.CREATE_AG_MODAL);
     }
 
     isLoading.value = false;
@@ -641,17 +626,10 @@ onMounted(async () => {
     generatedPassphrase.value = generateMnemonic();
 
     try {
-        const projectID = projectsStore.state.selectedProject.id;
-
-        await Promise.all([
-            agStore.getAllAGNames(projectID),
-            bucketsStore.getAllBucketsNames(projectID),
-        ]);
+        await bucketsStore.getAllBucketsNames(projectsStore.state.selectedProject.id);
     } catch (error) {
-        notify.notifyError(error, AnalyticsErrorEventSource.CREATE_AG_MODAL);
+        notify.error(`Unable to fetch all bucket names. ${error.message}`, AnalyticsErrorEventSource.CREATE_AG_MODAL);
     }
-
-    isLoading.value = false;
 });
 </script>
 
@@ -699,9 +677,6 @@ onMounted(async () => {
         inset: 0;
         background-color: rgb(0 0 0 / 10%);
         border-radius: 10px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
     }
 }
 </style>

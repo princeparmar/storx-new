@@ -14,12 +14,8 @@ import (
 const (
 	// ProjectMemberType is a graphql type name for project member.
 	ProjectMemberType = "projectMember"
-	// ProjectInvitationType is a graphql type name for project member invitation.
-	ProjectInvitationType = "projectInvitation"
 	// FieldJoinedAt is a field name for joined at timestamp.
 	FieldJoinedAt = "joinedAt"
-	// FieldExpired is a field name for expiration status.
-	FieldExpired = "expired"
 )
 
 // graphqlProjectMember creates projectMember type.
@@ -37,24 +33,6 @@ func graphqlProjectMember(service *console.Service, types *TypeCreator) *graphql
 			},
 			FieldJoinedAt: &graphql.Field{
 				Type: graphql.DateTime,
-			},
-		},
-	})
-}
-
-// graphqlProjectInvitation creates projectInvitation type.
-func graphqlProjectInvitation() *graphql.Object {
-	return graphql.NewObject(graphql.ObjectConfig{
-		Name: ProjectInvitationType,
-		Fields: graphql.Fields{
-			FieldEmail: &graphql.Field{
-				Type: graphql.String,
-			},
-			FieldCreatedAt: &graphql.Field{
-				Type: graphql.DateTime,
-			},
-			FieldExpired: &graphql.Field{
-				Type: graphql.Boolean,
 			},
 		},
 	})
@@ -83,15 +61,12 @@ func graphqlProjectMembersCursor() *graphql.InputObject {
 	})
 }
 
-func graphqlProjectMembersAndInvitationsPage(types *TypeCreator) *graphql.Object {
+func graphqlProjectMembersPage(types *TypeCreator) *graphql.Object {
 	return graphql.NewObject(graphql.ObjectConfig{
-		Name: ProjectMembersAndInvitationsPageType,
+		Name: ProjectMembersPageType,
 		Fields: graphql.Fields{
 			FieldProjectMembers: &graphql.Field{
 				Type: graphql.NewList(types.projectMember),
-			},
-			FieldProjectInvitations: &graphql.Field{
-				Type: graphql.NewList(types.projectInvitation),
 			},
 			SearchArg: &graphql.Field{
 				Type: graphql.String,
@@ -127,16 +102,8 @@ type projectMember struct {
 	JoinedAt time.Time
 }
 
-// projectInvitation encapsulates a console.ProjectInvitation and its expiration status.
-type projectInvitation struct {
-	Email     string
-	CreatedAt time.Time
-	Expired   bool
-}
-
 type projectMembersPage struct {
-	ProjectMembers     []projectMember
-	ProjectInvitations []projectInvitation
+	ProjectMembers []projectMember
 
 	Search         string
 	Limit          uint

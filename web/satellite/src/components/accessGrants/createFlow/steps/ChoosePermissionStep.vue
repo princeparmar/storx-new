@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Storx Labs, Inc.
+// Copyright (C) 2023 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -145,7 +145,7 @@ import EndDateSelection from '@/components/accessGrants/createFlow/components/En
 import Toggle from '@/components/accessGrants/createFlow/components/Toggle.vue';
 import VButton from '@/components/common/VButton.vue';
 
-import SearchIcon from '@/../static/images/common/search.svg';
+import SearchIcon from '@/../static/images/accessGrants/newCreateFlow/search.svg';
 import CloseIcon from '@/../static/images/accessGrants/newCreateFlow/close.svg';
 
 const props = withDefaults(defineProps<{

@@ -6,7 +6,6 @@ package satellitedb
 import (
 	"context"
 	"strings"
-	"time"
 
 	"github.com/zeebo/errs"
 
@@ -35,18 +34,14 @@ func (pm *projectMembers) GetByMemberID(ctx context.Context, memberID uuid.UUID)
 	return projectMembersFromDbxSlice(ctx, projectMembersDbx)
 }
 
-// GetPagedWithInvitationsByProjectID is a method for querying project members and invitations from the database by projectID, offset and limit.
-func (pm *projectMembers) GetPagedWithInvitationsByProjectID(ctx context.Context, projectID uuid.UUID, cursor console.ProjectMembersCursor) (_ *console.ProjectMembersPage, err error) {
+// GetByProjectID is a method for querying project members from the database by projectID, offset and limit.
+func (pm *projectMembers) GetPagedByProjectID(ctx context.Context, projectID uuid.UUID, cursor console.ProjectMembersCursor) (_ *console.ProjectMembersPage, err error) {
 	defer mon.Task()(&ctx)(&err)
 
 	search := "%" + strings.ReplaceAll(cursor.Search, " ", "%") + "%"
 
 	if cursor.Limit > 50 {
 		cursor.Limit = 50
-	}
-
-	if cursor.Limit == 0 {
-		return nil, errs.New("limit cannot be 0")
 	}
 
 	if cursor.Page == 0 {
@@ -61,27 +56,21 @@ func (pm *projectMembers) GetPagedWithInvitationsByProjectID(ctx context.Context
 		OrderDirection: cursor.OrderDirection,
 	}
 
-	countQuery := `
-		SELECT (
-			SELECT COUNT(*)
-			FROM project_members pm
-			INNER JOIN users u ON pm.member_id = u.id
-			WHERE pm.project_id = $1
-			AND (
-				u.email ILIKE $2 OR
-				u.full_name ILIKE $2 OR
-				u.short_name ILIKE $2
-			)
-		) + (
-			SELECT COUNT(*)
-			FROM project_invitations
-			WHERE project_id = $1
-			AND email ILIKE $2
-		)`
+	countQuery := pm.db.Rebind(`
+		SELECT COUNT(*)
+		FROM project_members pm 
+		INNER JOIN users u ON pm.member_id = u.id
+		WHERE pm.project_id = ?
+		AND ( u.email LIKE ? OR 
+			  u.full_name LIKE ? OR
+			  u.short_name LIKE ? 
+		)`)
 
 	countRow := pm.db.QueryRowContext(ctx,
 		countQuery,
 		projectID[:],
+		search,
+		search,
 		search)
 
 	err = countRow.Scan(&page.TotalCount)
@@ -94,85 +83,53 @@ func (pm *projectMembers) GetPagedWithInvitationsByProjectID(ctx context.Context
 	if page.Offset > page.TotalCount-1 {
 		return nil, errs.New("page is out of range")
 	}
-
-	membersQuery := `
-		SELECT member_id, project_id, created_at, email, inviter_id FROM (
-			(
-				SELECT pm.member_id, pm.project_id, pm.created_at, u.email, u.full_name, NULL as inviter_id
-				FROM project_members pm
+	// TODO: LIKE is case-sensitive postgres, however this should be case-insensitive and possibly allow typos
+	reboundQuery := pm.db.Rebind(`
+		SELECT pm.*
+			FROM project_members pm
 				INNER JOIN users u ON pm.member_id = u.id
-				WHERE pm.project_id = $1
-				AND (
-					u.email ILIKE $2 OR
-					u.full_name ILIKE $2 OR
-					u.short_name ILIKE $2
-				)
-			) UNION ALL (
-				SELECT NULL as member_id, project_id, created_at, LOWER(email) as email, LOWER(SPLIT_PART(email, '@', 1)) as full_name, inviter_id
-				FROM project_invitations pi
-				WHERE project_id = $1
-				AND email ILIKE $2
-			)
-		) results
-		` + projectMembersSortClause(cursor.Order, page.OrderDirection) + `
-		LIMIT $3 OFFSET $4`
+				WHERE pm.project_id = ?
+				AND ( u.email LIKE ? OR
+					u.full_name LIKE ? OR
+					u.short_name LIKE ? )
+					ORDER BY ` + sanitizedOrderColumnName(cursor.Order) + `
+					` + sanitizeOrderDirectionName(page.OrderDirection) + `	
+					LIMIT ? OFFSET ?`)
 
 	rows, err := pm.db.QueryContext(ctx,
-		membersQuery,
+		reboundQuery,
 		projectID[:],
 		search,
+		search,
+		search,
 		page.Limit,
-		page.Offset,
-	)
-	if err != nil {
-		return nil, err
-	}
+		page.Offset)
+
 	defer func() {
 		err = errs.Combine(err, rows.Close())
 	}()
 
-	for rows.Next() {
-		var (
-			memberID  uuid.NullUUID
-			projectID uuid.UUID
-			createdAt time.Time
-			email     string
-			inviterID uuid.NullUUID
-		)
+	if err != nil {
+		return nil, err
+	}
 
-		err = rows.Scan(
-			&memberID,
-			&projectID,
-			&createdAt,
-			&email,
-			&inviterID,
-		)
+	var projectMembers []console.ProjectMember
+	for rows.Next() {
+		pm := console.ProjectMember{}
+
+		err = rows.Scan(&pm.MemberID, &pm.ProjectID, &pm.CreatedAt)
 		if err != nil {
 			return nil, err
 		}
 
-		if memberID.Valid {
-			page.ProjectMembers = append(page.ProjectMembers, console.ProjectMember{
-				MemberID:  memberID.UUID,
-				ProjectID: projectID,
-				CreatedAt: createdAt,
-			})
-		} else {
-			invite := console.ProjectInvitation{
-				ProjectID: projectID,
-				Email:     email,
-				CreatedAt: createdAt,
-			}
-			if inviterID.Valid {
-				invite.InviterID = &inviterID.UUID
-			}
-			page.ProjectInvitations = append(page.ProjectInvitations, invite)
-		}
-
+		projectMembers = append(projectMembers, pm)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+
+	page.ProjectMembers = projectMembers
+	page.Order = cursor.Order
 
 	page.PageCount = uint(page.TotalCount / uint64(cursor.Limit))
 	if page.TotalCount%uint64(cursor.Limit) != 0 {
@@ -233,32 +190,42 @@ func projectMemberFromDBX(ctx context.Context, projectMember *dbx.ProjectMember)
 	}, nil
 }
 
-// projectMembersSortClause returns what ORDER BY clause should be used when sorting project member results.
-func projectMembersSortClause(order console.ProjectMemberOrder, direction console.OrderDirection) string {
-	dirStr := "ASC"
-	if direction == console.Descending {
-		dirStr = "DESC"
+// sanitizedOrderColumnName return valid order by column.
+func sanitizedOrderColumnName(pmo console.ProjectMemberOrder) string {
+	switch pmo {
+	case 2:
+		return "u.email"
+	case 3:
+		return "pm.created_at"
+	default:
+		return "u.full_name"
+	}
+}
+
+func sanitizeOrderDirectionName(pmo console.OrderDirection) string {
+	if pmo == 2 {
+		return "DESC"
 	}
 
-	switch order {
-	case console.Email:
-		return "ORDER BY LOWER(email) " + dirStr
-	case console.Created:
-		return "ORDER BY created_at " + dirStr + ", LOWER(email)"
-	}
-	return "ORDER BY LOWER(full_name) " + dirStr + ", LOWER(email)"
+	return "ASC"
 }
 
 // projectMembersFromDbxSlice is used for creating []ProjectMember entities from autogenerated []*dbx.ProjectMember struct.
 func projectMembersFromDbxSlice(ctx context.Context, projectMembersDbx []*dbx.ProjectMember) (_ []console.ProjectMember, err error) {
 	defer mon.Task()(&ctx)(&err)
-	rs, errors := convertSliceWithErrors(projectMembersDbx,
-		func(v *dbx.ProjectMember) (r console.ProjectMember, _ error) {
-			p, err := projectMemberFromDBX(ctx, v)
-			if err != nil {
-				return r, err
-			}
-			return *p, err
-		})
-	return rs, errs.Combine(errors...)
+	var projectMembers []console.ProjectMember
+	var errors []error
+
+	// Generating []dbo from []dbx and collecting all errors
+	for _, projectMemberDbx := range projectMembersDbx {
+		projectMember, err := projectMemberFromDBX(ctx, projectMemberDbx)
+		if err != nil {
+			errors = append(errors, err)
+			continue
+		}
+
+		projectMembers = append(projectMembers, *projectMember)
+	}
+
+	return projectMembers, errs.Combine(errors...)
 }

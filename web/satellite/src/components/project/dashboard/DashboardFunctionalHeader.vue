@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Storx Labs, Inc.
+// Copyright (C) 2023 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -37,15 +37,15 @@
             <template v-else>
                 <p class="dashboard-header__subtitle" aria-roledescription="with-usage-title">
                     Your
-                    <span class="dashboard-header__subtitle__value">{{ limits.objectCount.toLocaleString() }} objects</span>
+                    <span class="dashboard-header__subtitle__value">{{ limits.objectCount }} objects</span>
                     are stored <br>in
-                    <span class="dashboard-header__subtitle__value">{{ limits.segmentCount.toLocaleString() }} segments</span>
+                    <span class="dashboard-header__subtitle__value">{{ limits.segmentCount }} segments</span>
                     around the world
                 </p>
                 <p class="dashboard-header__limits">
                     <span class="dashboard-header__limits--bold">Storage Limit</span>
                     per month: {{ bytesToBase10String(limits.storageLimit) }} |
-                    <span class="dashboard-header__limits--bold">Egress Limit</span>
+                    <span class="dashboard-header__limits--bold">Bandwidth Limit</span>
                     per month: {{ bytesToBase10String(limits.bandwidthLimit) }}
                 </p>
                 <VButton
@@ -66,7 +66,7 @@ import { useRouter } from 'vue-router';
 import { MODALS } from '@/utils/constants/appStatePopUps';
 import { BucketPage } from '@/types/buckets';
 import { ProjectLimits } from '@/types/projects';
-import { RouteConfig } from '@/types/router';
+import { RouteConfig } from '@/router';
 import { LocalData } from '@/utils/localData';
 import { useAppStore } from '@/store/modules/appStore';
 import { useBucketsStore } from '@/store/modules/bucketsStore';

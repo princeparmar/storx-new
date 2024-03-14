@@ -1,11 +1,8 @@
 # whether to run this chore.
 # account-freeze.enabled: false
 
-# whether to exclude storjscan-paying users from automatic warn/freeze
-# account-freeze.exclude-storjscan: true
-
 # How long to wait between a warning event and freezing an account.
-# account-freeze.grace-period: 360h0m0s
+# account-freeze.grace-period: 720h0m0s
 
 # How often to run this chore, which is how often unpaid invoices are checked.
 # account-freeze.interval: 24h0m0s
@@ -92,7 +89,7 @@
 # audit.worker-concurrency: 2
 
 # Treat pieces on the same network as in need of repair
-# checker.do-declumping: true
+# checker.do-declumping: false
 
 # Treat pieces out of segment placement as in need of repair
 # checker.do-placement-check: true
@@ -116,7 +113,7 @@
 compensation.dispose-percent: 50
 
 # rate for data at rest per GB/hour
-compensation.rates.at-rest-gb-hours: "0.00000208"
+compensation.rates.at-rest-gb-hours: "0.00000205"
 
 # rate for audit egress bandwidth per TB
 compensation.rates.get-audit-tb: "10"
@@ -148,6 +145,9 @@ compensation.withheld-percents: 75,75,75,50,50,50,25,25,25,0,0,0,0,0,0
 # interval between chore cycles
 # console-db-cleanup.interval: 24h0m0s
 
+# maximum lifetime of project member invitation records
+# console-db-cleanup.max-project-invitation-age: 168h0m0s
+
 # maximum lifetime of unverified user account records
 # console-db-cleanup.max-unverified-user-age: 168h0m0s
 
@@ -176,13 +176,10 @@ compensation.withheld-percents: 75,75,75,50,50,50,25,25,25,0,0,0,0,0,0
 # console.address: :10100
 
 # indicates if all projects dashboard should be used
-# console.all-projects-dashboard: true
+# console.all-projects-dashboard: false
 
 # default duration for AS OF SYSTEM TIME
 # console.as-of-system-time-duration: -5m0s
-
-# optional domain for cookies to use
-# console.auth-cookie-domain: ""
 
 # auth token needed for access to registration token creation endpoint
 # console.auth-token: ""
@@ -190,17 +187,11 @@ compensation.withheld-percents: 75,75,75,50,50,50,25,25,25,0,0,0,0,0,0
 # secret used to sign auth tokens
 # console.auth-token-secret: ""
 
-# the target URL of console back-end reverse proxy for local development when running a UI server
-# console.backend-reverse-proxy: ""
-
 # url link for for beta satellite feedback
 # console.beta-satellite-feedback-url: ""
 
 # url link for for beta satellite support
 # console.beta-satellite-support-url: ""
-
-# The maximum body size allowed to be received by the API
-# console.body-size-limit: 100.00 KB
 
 # whether or not captcha is enabled
 # console.captcha.login.hcaptcha.enabled: false
@@ -268,15 +259,6 @@ compensation.withheld-percents: 75,75,75,50,50,50,25,25,25,0,0,0,0,0,0
 # allow domains to embed the satellite in a frame, space separated
 # console.frame-ancestors: tardigrade.io storj.io
 
-# server address of the front-end app
-# console.frontend-address: :10200
-
-# feature flag to toggle whether console back-end server should also serve front-end endpoints
-# console.frontend-enable: true
-
-# whether to show new gallery view
-# console.gallery-view-enabled: true
-
 # url link for gateway credentials requests
 # console.gateway-credentials-request-url: https://auth.storjsatelliteshare.io
 
@@ -296,7 +278,7 @@ compensation.withheld-percents: 75,75,75,50,50,50,25,25,25,0,0,0,0,0,0
 # console.let-us-know-url: https://storjlabs.atlassian.net/servicedesk/customer/portals
 
 # indicates whether limit card section of the UI is enabled
-# console.limits-area-enabled: true
+# console.limits-area-enabled: false
 
 # url link for linksharing requests within the application
 # console.linksharing-url: https://link.storjsatelliteshare.io
@@ -336,9 +318,6 @@ compensation.withheld-percents: 75,75,75,50,50,50,25,25,25,0,0,0,0,0,0
 
 # whether to allow purchasing pricing packages
 # console.pricing-packages-enabled: false
-
-# duration that project member invitations are valid for
-# console.project-invitation-expiration: 168h0m0s
 
 # url link to project limit increase request page
 # console.project-limits-increase-request-url: https://supportdcs.storj.io/hc/en-us/requests/new?ticket_form_id=360000683212
@@ -405,15 +384,6 @@ compensation.withheld-percents: 75,75,75,50,50,50,25,25,25,0,0,0,0,0,0
 
 # the default paid-tier storage usage limit
 # console.usage-limits.storage.paid: 25.00 TB
-
-# whether to use vuetify POC project
-# console.use-vuetify-project: false
-
-# amount of base units of US micro dollars needed to upgrade user's tier status
-# console.user-balance-for-upgrade: 10000000
-
-# the subdomain the vuetify POC project should be hosted on
-# console.vuetify-host: ""
 
 # whether to load templates on each request
 # console.watch: false
@@ -512,7 +482,7 @@ contact.external-address: ""
 # garbage-collection-bf.run-once: false
 
 # whether to use test GC SyncObserver with ranged loop
-# garbage-collection-bf.use-sync-observer: true
+# garbage-collection-bf.use-sync-observer: false
 
 # how many bloom filters will be packed in a single zip
 # garbage-collection-bf.zip-batch-size: 500
@@ -524,16 +494,16 @@ contact.external-address: ""
 # garbage-collection.bucket: ""
 
 # the number of nodes to concurrently send garbage collection retain filters to
-# garbage-collection.concurrent-sends: 100
+# garbage-collection.concurrent-sends: 1
 
 # set if loop to send garbage collection retain filters is enabled
-# garbage-collection.enabled: true
+# garbage-collection.enabled: false
 
 # Expiration of newly created objects in the bucket. These objects are under the prefix error-[timestamp] and store error messages.
 # garbage-collection.expire-in: 336h0m0s
 
 # the time between each attempt to download and send garbage collection retain filters to storage nodes
-# garbage-collection.interval: 1h0m0s
+# garbage-collection.interval: 48h0m0s
 
 # the amount of time to allow a node to handle a retain request
 # garbage-collection.retain-send-timeout: 1m0s
@@ -588,9 +558,6 @@ identity.key-path: /root/.local/share/storj/identity/satellite/identity.key
 
 # bandwidth cache key time to live
 # live-accounting.bandwidth-cache-ttl: 5m0s
-
-# how much projects usage should be requested from redis cache at once
-# live-accounting.batch-size: 5000
 
 # what to use for storing real-time accounting data
 # live-accounting.storage-backend: ""
@@ -650,7 +617,7 @@ identity.key-path: /root/.local/share/storj/identity/satellite/identity.key
 # metainfo.max-commit-interval: 48h0m0s
 
 # maximum encrypted object key length
-# metainfo.max-encrypted-object-key-length: 2000
+# metainfo.max-encrypted-object-key-length: 1750
 
 # maximum inline segment size
 # metainfo.max-inline-segment-size: 4.0 KiB
@@ -672,6 +639,30 @@ identity.key-path: /root/.local/share/storj/identity/satellite/identity.key
 
 # toggle flag if overlay is enabled
 # metainfo.overlay: true
+
+# Which fraction of nodes should be contacted successfully until the delete of a batch of pieces is considered completed
+# metainfo.piece-deletion.delete-success-threshold: 0.75
+
+# timeout for dialing nodes (0 means satellite default)
+# metainfo.piece-deletion.dial-timeout: 3s
+
+# threshold for retrying a failed node
+# metainfo.piece-deletion.fail-threshold: 10m0s
+
+# maximum number of concurrent requests to storage nodes
+# metainfo.piece-deletion.max-concurrency: 100
+
+# maximum number of concurrent pieces can be processed
+# metainfo.piece-deletion.max-concurrent-pieces: 1000000
+
+# maximum number of pieces per batch
+# metainfo.piece-deletion.max-pieces-per-batch: 5000
+
+# maximum number pieces per single request
+# metainfo.piece-deletion.max-pieces-per-request: 1000
+
+# timeout for a single delete request
+# metainfo.piece-deletion.request-timeout: 15s
 
 # max bucket count for a project.
 # metainfo.project-limits.max-buckets: 100
@@ -708,9 +699,6 @@ identity.key-path: /root/.local/share/storj/identity/satellite/identity.key
 
 # how often we can upload to the single object (the same location) per API instance
 # metainfo.upload-limiter.single-object-limit: 1s
-
-# enable new flow for upload which is using pending_objects table
-# metainfo.use-pending-objects-table: false
 
 # address(es) to send telemetry to (comma-separated)
 # metrics.addr: collectora.storj.io:9000
@@ -844,6 +832,18 @@ identity.key-path: /root/.local/share/storj/identity/satellite/identity.key
 # amount of percents that user will earn as bonus credits by depositing in STORJ tokens
 # payments.bonus-rate: 10
 
+# price node receive for storing TB of audit in cents
+# payments.node-audit-bandwidth-price: 1000
+
+# price node receive for storing disk space in cents/TB
+# payments.node-disk-space-price: 150
+
+# price node receive for storing TB of egress in cents
+# payments.node-egress-bandwidth-price: 2000
+
+# price node receive for storing TB of repair in cents
+# payments.node-repair-bandwidth-price: 1000
+
 # semicolon-separated partner package plans in the format partner:price,credit. Price and credit are in cents USD.
 # payments.package-plans: ""
 
@@ -913,12 +913,6 @@ identity.key-path: /root/.local/share/storj/identity/satellite/identity.key
 # price user should pay for storage per month in dollars/TB
 # payments.usage-price.storage-tb: "4"
 
-# whether to enable piece tracker observer with ranged loop
-# piece-tracker.use-ranged-loop: true
-
-# detailed placement rules in the form 'id:definition;id:definition;...' where id is a 16 bytes integer (use >10 for backward compatibility), definition is a combination of the following functions:country(2 letter country codes,...), tag(nodeId, key, bytes(value)) all(...,...).
-# placement: ""
-
 # how often to remove unused project bandwidth rollups
 # project-bw-cleanup.interval: 24h0m0s
 
@@ -946,11 +940,8 @@ identity.key-path: /root/.local/share/storj/identity/satellite/identity.key
 # ratio where to consider processed count as supicious
 # ranged-loop.suspicious-processed-ratio: 0.03
 
-# time limit for dialing storage node
-# repairer.dial-timeout: 5s
-
 # repair pieces on the same network to other nodes
-# repairer.do-declumping: true
+# repairer.do-declumping: false
 
 # repair pieces out of segment placement
 # repairer.do-placement-check: true
@@ -1114,9 +1105,6 @@ server.private-address: 127.0.0.1:7778
 # length of time a node can go without contacting satellite before being disqualified
 # stray-nodes.max-duration-without-contact: 720h0m0s
 
-# comma-separated paths of additional cert files, used to validate signed node tags
-# tag-authorities: ""
-
 # as of system interval
 # tally.as-of-system-interval: -5m0s
 
@@ -1131,9 +1119,6 @@ server.private-address: 127.0.0.1:7778
 
 # how large of batches SaveRollup should process at a time
 # tally.save-rollup-batch-size: 1000
-
-# how large should be insert into tallies
-# tally.save-tallies-batch-size: 10000
 
 # whether to enable node tally with ranged loop
 # tally.use-ranged-loop: true
@@ -1176,9 +1161,6 @@ server.private-address: 127.0.0.1:7778
 
 # server address to check its version against
 # version.server-address: https://version.storj.io
-
-# as of system interval
-# zombie-deletion.as-of-system-interval: -5m0s
 
 # set if zombie object cleanup is enabled or not
 # zombie-deletion.enabled: true

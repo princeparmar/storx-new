@@ -1,11 +1,9 @@
-// Copyright (C) 2019 Storx Labs, Inc.
+// Copyright (C) 2019 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 import {
     Project,
     ProjectFields,
-    ProjectInvitation,
-    ProjectInvitationResponse,
     ProjectLimits,
     ProjectsApi,
     ProjectsCursor,
@@ -62,14 +60,6 @@ export class ProjectsApiMock implements ProjectsApi {
     }
 
     getDailyUsage(_projectId: string, _start: Date, _end: Date): Promise<ProjectsStorageBandwidthDaily> {
-        throw new Error('not implemented');
-    }
-
-    getUserInvitations(): Promise<ProjectInvitation[]> {
-        throw new Error('not implemented');
-    }
-
-    respondToInvitation(_projectID: string, _response: ProjectInvitationResponse): Promise<void> {
         throw new Error('not implemented');
     }
 }

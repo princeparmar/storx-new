@@ -140,7 +140,7 @@ func (fw *FileWalker) WalkSatellitePiecesToTrash(ctx context.Context, satelliteI
 	defer mon.Task()(&ctx)(&err)
 
 	if filter == nil {
-		return nil, 0, 0, Error.New("filter not specified")
+		return
 	}
 
 	err = fw.WalkSatellitePieces(ctx, satelliteID, func(access StoredPieceAccess) error {

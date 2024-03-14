@@ -147,25 +147,20 @@ func (db *DB) FinishCopyObject(ctx context.Context, opts FinishCopyObject) (obje
 		plainSizes := make([]int32, sourceObject.SegmentCount)
 		plainOffsets := make([]int64, sourceObject.SegmentCount)
 		inlineDatas := make([][]byte, sourceObject.SegmentCount)
-		placementConstraints := make([]storj.PlacementConstraint, sourceObject.SegmentCount)
-		remoteAliasPiecesLists := make([][]byte, sourceObject.SegmentCount)
 
 		redundancySchemes := make([]int64, sourceObject.SegmentCount)
-
 		err = withRows(db.db.QueryContext(ctx, `
-				SELECT
-					position,
-					expires_at,
-					root_piece_id,
-					encrypted_size, plain_offset, plain_size,
-					redundancy,
-					remote_alias_pieces,
-					placement,
-					inline_data
-				FROM segments
-				WHERE stream_id = $1
-				ORDER BY position ASC
-				LIMIT  $2
+			SELECT
+				position,
+				expires_at,
+				root_piece_id,
+				encrypted_size, plain_offset, plain_size,
+				redundancy,
+				inline_data
+			FROM segments
+			WHERE stream_id = $1
+			ORDER BY position ASC
+			LIMIT  $2
 			`, sourceObject.StreamID, sourceObject.SegmentCount))(func(rows tagsql.Rows) error {
 			index := 0
 			for rows.Next() {
@@ -175,8 +170,6 @@ func (db *DB) FinishCopyObject(ctx context.Context, opts FinishCopyObject) (obje
 					&rootPieceIDs[index],
 					&encryptedSizes[index], &plainOffsets[index], &plainSizes[index],
 					&redundancySchemes[index],
-					&remoteAliasPiecesLists[index],
-					&placementConstraints[index],
 					&inlineDatas[index],
 				)
 				if err != nil {
@@ -195,7 +188,6 @@ func (db *DB) FinishCopyObject(ctx context.Context, opts FinishCopyObject) (obje
 
 			return nil
 		})
-
 		if err != nil {
 			return Error.New("unable to copy object: %w", err)
 		}
@@ -218,7 +210,7 @@ func (db *DB) FinishCopyObject(ctx context.Context, opts FinishCopyObject) (obje
 
 		if objectAtDestination != nil {
 			version := objectAtDestination.Version
-			deletedObjects, err := db.deleteObjectExactVersion(
+			deletedObjects, err := db.deleteObjectExactVersionServerSideCopy(
 				ctx, DeleteObjectExactVersion{
 					Version: version,
 					ObjectLocation: ObjectLocation{
@@ -233,10 +225,13 @@ func (db *DB) FinishCopyObject(ctx context.Context, opts FinishCopyObject) (obje
 			}
 
 			// The object at the destination was the ancestor!
+			// Now that the ancestor of the source object is removed, we need to change the target ancestor.
 			if ancestorStreamID == objectAtDestination.StreamID {
-				if len(deletedObjects.Objects) == 0 {
+				if len(deletedObjects) == 0 {
 					return Error.New("ancestor is gone, please retry operation")
 				}
+
+				ancestorStreamID = *deletedObjects[0].PromotedAncestor
 			}
 		}
 
@@ -258,7 +253,7 @@ func (db *DB) FinishCopyObject(ctx context.Context, opts FinishCopyObject) (obje
 			)
 			RETURNING
 				created_at`,
-			opts.ProjectID, []byte(opts.NewBucket), opts.NewEncryptedObjectKey, nextAvailableVersion, opts.NewStreamID,
+			opts.ProjectID, opts.NewBucket, opts.NewEncryptedObjectKey, nextAvailableVersion, opts.NewStreamID,
 			sourceObject.ExpiresAt, sourceObject.SegmentCount,
 			encryptionParameters{&sourceObject.Encryption},
 			copyMetadata, opts.NewEncryptedMetadataKeyNonce, opts.NewEncryptedMetadataKey,
@@ -280,7 +275,6 @@ func (db *DB) FinishCopyObject(ctx context.Context, opts FinishCopyObject) (obje
 				root_piece_id,
 				redundancy,
 				encrypted_size, plain_offset, plain_size,
-				remote_alias_pieces, placement,
 				inline_data
 			) SELECT
 				$1, UNNEST($2::INT8[]), UNNEST($3::timestamptz[]),
@@ -288,14 +282,12 @@ func (db *DB) FinishCopyObject(ctx context.Context, opts FinishCopyObject) (obje
 				UNNEST($6::BYTEA[]),
 				UNNEST($7::INT8[]),
 				UNNEST($8::INT4[]), UNNEST($9::INT8[]),	UNNEST($10::INT4[]),
-				UNNEST($11::BYTEA[]), UNNEST($12::INT2[]),
-				UNNEST($13::BYTEA[])
+				UNNEST($11::BYTEA[])
 		`, opts.NewStreamID, pgutil.Int8Array(newSegments.Positions), pgutil.NullTimestampTZArray(expiresAts),
 			pgutil.ByteaArray(newSegments.EncryptedKeyNonces), pgutil.ByteaArray(newSegments.EncryptedKeys),
 			pgutil.ByteaArray(rootPieceIDs),
 			pgutil.Int8Array(redundancySchemes),
 			pgutil.Int4Array(encryptedSizes), pgutil.Int8Array(plainOffsets), pgutil.Int4Array(plainSizes),
-			pgutil.ByteaArray(remoteAliasPiecesLists), pgutil.PlacementConstraintArray(placementConstraints),
 			pgutil.ByteaArray(inlineDatas),
 		)
 		if err != nil {
@@ -304,6 +296,17 @@ func (db *DB) FinishCopyObject(ctx context.Context, opts FinishCopyObject) (obje
 
 		if onlyInlineSegments {
 			return nil
+		}
+
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO segment_copies (
+				stream_id, ancestor_stream_id
+			) VALUES (
+				$1, $2
+			)
+		`, opts.NewStreamID, ancestorStreamID)
+		if err != nil {
+			return Error.New("unable to copy object: %w", err)
 		}
 
 		return nil
@@ -329,6 +332,7 @@ func (db *DB) FinishCopyObject(ctx context.Context, opts FinishCopyObject) (obje
 
 // Fetch the following in a single query:
 // - object at copy source location (error if it's not there)
+// - source ancestor stream id (if any)
 // - next version available
 // - object at copy destination location (if any).
 func getObjectAtCopySourceAndDestination(
@@ -336,6 +340,7 @@ func getObjectAtCopySourceAndDestination(
 ) (sourceObject Object, ancestorStreamID uuid.UUID, destinationObject *Object, nextAvailableVersion Version, err error) {
 	defer mon.Task()(&ctx)(&err)
 
+	var ancestorStreamIDBytes []byte
 	var highestVersion Version
 
 	sourceObject.ProjectID = opts.ProjectID
@@ -362,9 +367,11 @@ func getObjectAtCopySourceAndDestination(
 			encrypted_metadata,
 			total_plain_size, total_encrypted_size, fixed_segment_size,
 			encryption,
+			segment_copies.ancestor_stream_id,
 			0,
 			coalesce((SELECT max(version) FROM destination_current_versions),0) AS highest_version
 		FROM objects
+		LEFT JOIN segment_copies ON objects.stream_id = segment_copies.stream_id
 		WHERE
 			project_id   = $1 AND
 			bucket_name  = $3 AND
@@ -379,6 +386,7 @@ func getObjectAtCopySourceAndDestination(
 			NULL,
 			total_plain_size, total_encrypted_size, fixed_segment_size,
 			encryption,
+			NULL,
 			version,
 			(SELECT max(version) FROM destination_current_versions) AS highest_version
 		FROM objects
@@ -409,6 +417,7 @@ func getObjectAtCopySourceAndDestination(
 		&sourceObject.EncryptedMetadata,
 		&sourceObject.TotalPlainSize, &sourceObject.TotalEncryptedSize, &sourceObject.FixedSegmentSize,
 		encryptionParameters{&sourceObject.Encryption},
+		&ancestorStreamIDBytes,
 		&highestVersion,
 		&highestVersion,
 	)
@@ -419,7 +428,19 @@ func getObjectAtCopySourceAndDestination(
 		return Object{}, uuid.UUID{}, nil, 0, ErrObjectNotFound.New("object was changed during copy")
 	}
 
+	if len(ancestorStreamIDBytes) != 0 {
+		// Source object already was a copy, the new copy becomes yet another copy of the existing ancestor
+		ancestorStreamID, err = uuid.FromBytes(ancestorStreamIDBytes)
+		if err != nil {
+			return Object{}, uuid.UUID{}, nil, 0, err
+		}
+	} else {
+		// Source object was not a copy, it will now become an ancestor (unless it has only inline segments)
+		ancestorStreamID = sourceObject.StreamID
+	}
+
 	if rows.Next() {
+		var _bogusBytes []byte
 		destinationObject = &Object{}
 		destinationObject.ProjectID = opts.ProjectID
 		destinationObject.BucketName = opts.NewBucket
@@ -433,6 +454,7 @@ func getObjectAtCopySourceAndDestination(
 			&destinationObject.EncryptedMetadata,
 			&destinationObject.TotalPlainSize, &destinationObject.TotalEncryptedSize, &destinationObject.FixedSegmentSize,
 			encryptionParameters{&destinationObject.Encryption},
+			&_bogusBytes,
 			&destinationObject.Version,
 			&highestVersion,
 		)

@@ -1,4 +1,4 @@
-// Copyright (C) 2021 Storx Labs, Inc.
+// Copyright (C) 2021 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -50,7 +50,6 @@
                 <div class="forgot-area__content-area__container__input-wrapper">
                     <VInput
                         label="Email Address"
-                        max-symbols="72"
                         placeholder="user@example.com"
                         :error="emailError"
                         @setData="setEmail"
@@ -73,7 +72,9 @@
                     border-radius="8px"
                     :is-disabled="isLoading"
                     :on-press="onSendConfigurations"
-                />
+                >
+                    Reset Password
+                </v-button>
                 <div class="forgot-area__content-area__container__login-container">
                     <router-link :to="loginPath" class="forgot-area__content-area__container__login-container__link">
                         Back to Login
@@ -90,7 +91,7 @@ import { useRoute } from 'vue-router';
 import VueHcaptcha from '@hcaptcha/vue3-hcaptcha';
 
 import { AuthHttpApi } from '@/api/auth';
-import { RouteConfig } from '@/types/router';
+import { RouteConfig } from '@/router';
 import { Validator } from '@/utils/validation';
 import { useNotify } from '@/utils/hooks';
 import { MultiCaptchaConfig, PartneredSatellite } from '@/types/config';
@@ -214,7 +215,7 @@ async function onSendConfigurations(): Promise<void> {
         await auth.forgotPassword(email.value, captchaResponseToken.value);
         await notify.success('Please look for instructions in your email');
     } catch (error) {
-        notify.notifyError(error, null);
+        await notify.error(error.message, null);
     }
 
     captcha.value?.reset();

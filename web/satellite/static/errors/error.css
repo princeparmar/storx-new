@@ -1,4 +1,4 @@
-/* Copyright (C) 2021 Storx Labs, Inc. */
+/* Copyright (C) 2021 Storj Labs, Inc. */
 /* See LICENSE for copying information. */
 
 * {
@@ -79,7 +79,7 @@
 }
 
 .button:hover {
-    background-color: #b32006;
+    background-color: #0059d0;
 }
 
 @media screen and (max-height: 500px) {

@@ -1,4 +1,4 @@
-// Copyright (C) 2020 Storx Labs, Inc.
+// Copyright (C) 2020 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -146,14 +146,6 @@ function closePicker(): void {
         position: absolute;
         z-index: 1;
         top: 100%;
-
-        @media screen and (width <= 930px) {
-            width: 500px;
-        }
-
-        @media screen and (width <= 750px) {
-            width: 100%;
-        }
     }
 
     .duration-picker {
@@ -171,11 +163,6 @@ function closePicker(): void {
             column-count: 2;
             column-gap: 48px;
             padding: 10px 24px 0;
-
-            @media screen and (width <= 380px) {
-                padding: 10px 10px 0;
-                column-gap: 24px;
-            }
 
             &__column {
                 list-style-type: none;

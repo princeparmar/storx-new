@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Storx Labs, Inc.
+// Copyright (C) 2023 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -21,4 +21,5 @@ import TableItem from '@/components/common/TableItem.vue';
 const props = defineProps<{
     onBack: () => void;
 }>();
+
 </script>

@@ -191,15 +191,21 @@ func rootMutation(log *zap.Logger, service *console.Service, mailService *mailse
 							userName = user.FullName
 						}
 
-						satelliteRegion := rootObject[SatelliteRegion].(string)
+						contactInfoURL := rootObject[ContactInfoURL].(string)
+						letUsKnowURL := rootObject[LetUsKnowURL].(string)
+						termsAndConditionsURL := rootObject[TermsAndConditionsURL].(string)
 
 						mailService.SendRenderedAsync(
 							p.Context,
 							[]post.Address{{Address: user.Email, Name: userName}},
-							&console.ExistingUserProjectInvitationEmail{
-								InviterEmail: inviter.Email,
-								Region:       satelliteRegion,
-								SignInLink:   signIn,
+							&console.ProjectInvitationEmail{
+								Origin:                origin,
+								UserName:              userName,
+								InviterEmail:          inviter.Email,
+								SignInLink:            signIn,
+								LetUsKnowURL:          letUsKnowURL,
+								TermsAndConditionsURL: termsAndConditionsURL,
+								ContactInfoURL:        contactInfoURL,
 							},
 						)
 					}
@@ -241,7 +247,7 @@ func rootMutation(log *zap.Logger, service *console.Service, mailService *mailse
 						return nil, err
 					}
 
-					err = service.DeleteProjectMembersAndInvitations(p.Context, project.ID, userEmails)
+					err = service.DeleteProjectMembers(p.Context, project.ID, userEmails)
 					if err != nil {
 						return nil, err
 					}

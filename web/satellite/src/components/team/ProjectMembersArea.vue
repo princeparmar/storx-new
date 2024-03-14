@@ -1,22 +1,25 @@
-// Copyright (C) 2019 Storx Labs, Inc.
+// Copyright (C) 2019 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
     <div class="team-area">
-        <HeaderArea
-            class="team-area__header"
-            :selected-project-members-count="selectedProjectMembersLength"
-            :is-add-button-disabled="areMembersFetching"
-        />
+        <div class="team-area__header">
+            <HeaderArea
+                :header-state="headerState"
+                :selected-project-members-count="selectedProjectMembersLength"
+                :is-add-button-disabled="areMembersFetching"
+            />
+        </div>
         <VLoader v-if="areMembersFetching" width="100px" height="100px" />
 
-        <div v-if="isEmptySearchResultShown && !areMembersFetching" class="team-area__empty-search-result-area">
+        <div v-if="isEmptySearchResultShown" class="team-area__empty-search-result-area">
             <h1 class="team-area__empty-search-result-area__title">No results found</h1>
             <EmptySearchResultIcon class="team-area__empty-search-result-area__image" />
         </div>
 
         <v-table
             v-if="!areMembersFetching && !isEmptySearchResultShown"
+            class="team-area__table"
             items-label="project members"
             :selectable="true"
             :limit="projectMemberLimit"
@@ -34,11 +37,9 @@
                 <ProjectMemberListItem
                     v-for="(member, key) in projectMembers"
                     :key="key"
-                    :model="member"
-                    @removeClick="onRemoveClick"
-                    @resendClick="onResendClick"
+                    :item-data="member"
                     @memberClick="onMemberCheckChange"
-                    @selectClick="onMemberCheckChange"
+                    @selectClicked="(_) => onMemberCheckChange(member)"
                 />
             </template>
         </v-table>
@@ -47,16 +48,18 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
+import { useRouter } from 'vue-router';
 
-import { ProjectMemberItemModel } from '@/types/projectMembers';
-import { AnalyticsErrorEventSource, AnalyticsEvent } from '@/utils/constants/analyticsEventNames';
+import {
+    ProjectMember,
+    ProjectMemberHeaderState,
+} from '@/types/projectMembers';
+import { AnalyticsErrorEventSource } from '@/utils/constants/analyticsEventNames';
 import { useNotify } from '@/utils/hooks';
 import { useProjectMembersStore } from '@/store/modules/projectMembersStore';
 import { useProjectsStore } from '@/store/modules/projectsStore';
-import { useLoading } from '@/composables/useLoading';
-import { MODALS } from '@/utils/constants/appStatePopUps';
-import { useAppStore } from '@/store/modules/appStore';
-import { useAnalyticsStore } from '@/store/modules/analyticsStore';
+import { RouteConfig } from '@/router';
+import { useConfigStore } from '@/store/modules/configStore';
 
 import VLoader from '@/components/common/VLoader.vue';
 import HeaderArea from '@/components/team/HeaderArea.vue';
@@ -65,13 +68,11 @@ import VTable from '@/components/common/VTable.vue';
 
 import EmptySearchResultIcon from '@/../static/images/common/emptySearchResult.svg';
 
-const analyticsStore = useAnalyticsStore();
-const appStore = useAppStore();
 const pmStore = useProjectMembersStore();
 const projectsStore = useProjectsStore();
+const configStore = useConfigStore();
 const notify = useNotify();
-
-const { withLoading } = useLoading();
+const router = useRouter();
 
 const FIRST_PAGE = 1;
 
@@ -81,10 +82,10 @@ const areMembersFetching = ref<boolean>(true);
  * Returns team members of current page from store.
  * With project owner pinned to top
  */
-const projectMembers = computed((): ProjectMemberItemModel[] => {
-    const projectMembers = pmStore.state.page.getAllItems();
-    const projectOwner = projectMembers.find((member) => member.getUserID() === projectsStore.state.selectedProject.ownerId);
-    const projectMembersToReturn = projectMembers.filter((member) => member.getUserID() !== projectsStore.state.selectedProject.ownerId);
+const projectMembers = computed((): ProjectMember[] => {
+    const projectMembers = pmStore.state.page.projectMembers;
+    const projectOwner = projectMembers.find((member) => member.user.id === projectsStore.state.selectedProject.ownerId);
+    const projectMembersToReturn = projectMembers.filter((member) => member.user.id !== projectsStore.state.selectedProject.ownerId);
 
     // if the project owner exists, place at the front of the members list
     projectOwner && projectMembersToReturn.unshift(projectOwner);
@@ -121,6 +122,10 @@ const selectedProjectMembersLength = computed((): number => {
     return pmStore.state.selectedProjectMembersEmails.length;
 });
 
+const headerState = computed((): number => {
+    return selectedProjectMembersLength.value > 0 ? ProjectMemberHeaderState.ON_SELECT : ProjectMemberHeaderState.DEFAULT;
+});
+
 const isEmptySearchResultShown = computed((): boolean => {
     return projectMembersCount.value === 0 && projectMembersTotalCount.value === 0;
 });
@@ -129,8 +134,8 @@ const isEmptySearchResultShown = computed((): boolean => {
  * Selects team member if this user has no owner status.
  * @param member
  */
-function onMemberCheckChange(member: ProjectMemberItemModel): void {
-    if (projectsStore.state.selectedProject.ownerId !== member.getUserID()) {
+function onMemberCheckChange(member: ProjectMember): void {
+    if (projectsStore.state.selectedProject.ownerId !== member.user.id) {
         pmStore.toggleProjectMemberSelection(member);
     }
 }
@@ -148,42 +153,16 @@ async function onPageChange(index: number, limit: number): Promise<void> {
     }
 }
 
-function onResendClick(member: ProjectMemberItemModel) {
-    withLoading(async () => {
-        analyticsStore.eventTriggered(AnalyticsEvent.RESEND_INVITE_CLICKED);
-        try {
-            await pmStore.inviteMembers([member.getEmail()], projectsStore.state.selectedProject.id);
-            notify.notify('Invite resent!');
-            pmStore.setSearchQuery('');
-        } catch (error) {
-            error.message = `Error resending invite. ${error.message}`;
-            notify.notifyError(error, AnalyticsErrorEventSource.PROJECT_MEMBERS_PAGE);
-            return;
-        }
-
-        try {
-            await pmStore.getProjectMembers(FIRST_PAGE, projectsStore.state.selectedProject.id);
-        } catch (error) {
-            notify.error(`Unable to fetch project members. ${error.message}`, AnalyticsErrorEventSource.PROJECT_MEMBERS_PAGE);
-        }
-    });
-}
-
-async function onRemoveClick(member: ProjectMemberItemModel) {
-    if (projectsStore.state.selectedProject.ownerId !== member.getUserID()) {
-        if (!member.isSelected()) {
-            pmStore.toggleProjectMemberSelection(member);
-        }
-        appStore.updateActiveModal(MODALS.removeTeamMember);
-    }
-    analyticsStore.eventTriggered(AnalyticsEvent.REMOVE_PROJECT_MEMBER_CLICKED);
-}
-
 /**
  * Lifecycle hook after initial render.
  * Fetches first page of team members list of current project.
  */
 onMounted(async (): Promise<void> => {
+    if (configStore.state.config.allProjectsDashboard && !projectsStore.state.selectedProject.id) {
+        await router.push(RouteConfig.AllProjectsDashboard.path);
+        return;
+    }
+
     try {
         await pmStore.getProjectMembers(FIRST_PAGE, projectsStore.state.selectedProject.id);
 
@@ -197,11 +176,11 @@ onMounted(async (): Promise<void> => {
 <style scoped lang="scss">
     .team-area {
         padding: 40px 30px 55px;
+        height: calc(100% - 95px);
         font-family: 'font_regular', sans-serif;
 
         &__header {
             width: 100%;
-            margin-bottom: 20px;
             background-color: #f5f6fa;
             top: auto;
         }
@@ -217,6 +196,7 @@ onMounted(async (): Promise<void> => {
                 font-family: 'font_bold', sans-serif;
                 font-size: 32px;
                 line-height: 39px;
+                margin-top: 100px;
             }
 
             &__image {

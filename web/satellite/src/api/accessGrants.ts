@@ -1,6 +1,7 @@
-// Copyright (C) 2020 Storx Labs, Inc.
+// Copyright (C) 2020 Storj Labs, Inc.
 // See LICENSE for copying information.
 
+import { BaseGql } from '@/api/baseGql';
 import {
     AccessGrant,
     AccessGrantCursor,
@@ -9,13 +10,12 @@ import {
     EdgeCredentials,
 } from '@/types/accessGrants';
 import { HttpClient } from '@/utils/httpClient';
-import { APIError } from '@/utils/error';
 
 /**
- * AccessGrantsHttpApi is a http implementation of Access Grants API.
+ * AccessGrantsApiGql is a graphql implementation of Access Grants API.
  * Exposes all access grants-related functionality
  */
-export class AccessGrantsHttpApi implements AccessGrantsApi {
+export class AccessGrantsApiGql extends BaseGql implements AccessGrantsApi {
     private readonly client: HttpClient = new HttpClient();
     private readonly ROOT_PATH: string = '/api/v0/api-keys';
 
@@ -26,20 +26,47 @@ export class AccessGrantsHttpApi implements AccessGrantsApi {
      * @throws Error
      */
     public async get(projectId: string, cursor: AccessGrantCursor): Promise<AccessGrantsPage> {
-        const path = `${this.ROOT_PATH}/list-paged?projectID=${projectId}&search=${cursor.search}&limit=${cursor.limit}&page=${cursor.page}&order=${cursor.order}&orderDirection=${cursor.orderDirection}`;
-        const response = await this.client.get(path);
+        const query =
+            `query($projectId: String!, $limit: Int!, $search: String!, $page: Int!, $order: Int!, $orderDirection: Int!) {
+                project (
+                    publicId: $projectId,
+                ) {
+                    apiKeys (
+                        cursor: {
+                            limit: $limit,
+                            search: $search,
+                            page: $page,
+                            order: $order,
+                            orderDirection: $orderDirection
+                        }
+                    ) {
+                        apiKeys {
+                            id,
+                            name,
+                            createdAt
+                        }
+                        search,
+                        limit,
+                        order,
+                        pageCount,
+                        currentPage,
+                        totalCount
+                    }
+                }
+            }`;
 
-        if (!response.ok) {
-            throw new APIError({
-                status: response.status,
-                message: 'Can not get API keys',
-                requestID: response.headers.get('x-request-id'),
-            });
-        }
+        const variables = {
+            projectId: projectId,
+            limit: cursor.limit,
+            search: cursor.search,
+            page: cursor.page,
+            order: cursor.order,
+            orderDirection: cursor.orderDirection,
+        };
 
-        const apiKeys = await response.json();
+        const response = await this.query(query, variables);
 
-        return this.getAccessGrantsPage(apiKeys);
+        return this.getAccessGrantsPage(response.data.project.apiKeys);
     }
 
     /**
@@ -51,23 +78,31 @@ export class AccessGrantsHttpApi implements AccessGrantsApi {
      * @throws Error
      */
     public async create(projectId: string, name: string): Promise<AccessGrant> {
-        const path = `${this.ROOT_PATH}/create/${projectId}`;
-        const response = await this.client.post(path, name);
+        const query =
+            `mutation($projectId: String!, $name: String!) {
+                createAPIKey(
+                    publicId: $projectId,
+                    name: $name
+                ) {
+                    key,
+                    keyInfo {
+                        id,
+                        name,
+                        createdAt
+                    }
+                }
+            }`;
 
-        if (!response.ok) {
-            throw new APIError({
-                status: response.status,
-                message: 'Can not create new access grant',
-                requestID: response.headers.get('x-request-id'),
-            });
-        }
+        const variables = {
+            projectId,
+            name,
+        };
 
-        const result = await response.json();
+        const response = await this.mutate(query, variables);
+        const key = response.data.createAPIKey.keyInfo;
+        const secret: string = response.data.createAPIKey.key;
 
-        const info = result.keyInfo;
-        const secret: string = result.key;
-
-        return new AccessGrant(info.id, info.name, info.createdAt, secret);
+        return new AccessGrant(key.id, key.name, key.createdAt, secret);
     }
 
     /**
@@ -77,43 +112,24 @@ export class AccessGrantsHttpApi implements AccessGrantsApi {
      * @throws Error
      */
     public async delete(ids: string[]): Promise<void> {
-        const path = `${this.ROOT_PATH}/delete-by-ids`;
-        const response = await this.client.delete(path, JSON.stringify({ ids }));
+        const query =
+            `mutation($id: [String!]!) {
+                deleteAPIKeys(id: $id) {
+                    id
+                }
+            }`;
 
-        if (!response.ok) {
-            throw new APIError({
-                status: response.status,
-                message: 'Can not delete access grants',
-                requestID: response.headers.get('x-request-id'),
-            });
-        }
+        const variables = {
+            id: ids,
+        };
+
+        const response = await this.mutate(query, variables);
+
+        return response.data.deleteAPIKeys;
     }
 
     /**
-     * Fetch all API key names.
-     *
-     * @returns string[]
-     * @throws Error
-     */
-    public async getAllAPIKeyNames(projectId: string): Promise<string[]> {
-        const path = `${this.ROOT_PATH}/api-key-names?projectID=${projectId}`;
-        const response = await this.client.get(path);
-
-        if (!response.ok) {
-            throw new APIError({
-                status: response.status,
-                message: 'Can not get access grant names',
-                requestID: response.headers.get('x-request-id'),
-            });
-        }
-
-        const result = await response.json();
-
-        return result ? result : [];
-    }
-
-    /**
-     * Used to delete access grant by name and project ID.
+     * Used to delete access grant access grant by name and project ID.
      *
      * @param name - name of the access grant that will be deleted
      * @param projectID - id of the project where access grant was created
@@ -121,17 +137,13 @@ export class AccessGrantsHttpApi implements AccessGrantsApi {
      */
     public async deleteByNameAndProjectID(name: string, projectID: string): Promise<void> {
         const path = `${this.ROOT_PATH}/delete-by-name?name=${name}&publicID=${projectID}`;
-        const response = await this.client.delete(path, null);
+        const response = await this.client.delete(path);
 
         if (response.ok || response.status === 204) {
             return;
         }
 
-        throw new APIError({
-            status: response.status,
-            message: 'Can not delete access grant',
-            requestID: response.headers.get('x-request-id'),
-        });
+        throw new Error('can not delete access grant');
     }
 
     /**
@@ -150,11 +162,7 @@ export class AccessGrantsHttpApi implements AccessGrantsApi {
         };
         const response = await this.client.post(path, JSON.stringify(body));
         if (!response.ok) {
-            throw new APIError({
-                status: response.status,
-                message: 'Can not get gateway credentials',
-                requestID: response.headers.get('x-request-id'),
-            });
+            throw new Error('Cannot get gateway credentials');
         }
 
         const result = await response.json();
@@ -174,7 +182,7 @@ export class AccessGrantsHttpApi implements AccessGrantsApi {
      * @param page anonymous object from json
      */
     private getAccessGrantsPage(page: any): AccessGrantsPage { // eslint-disable-line @typescript-eslint/no-explicit-any
-        if (!(page && page.apiKeys)) {
+        if (!page) {
             return new AccessGrantsPage();
         }
 

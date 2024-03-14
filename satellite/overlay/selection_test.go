@@ -17,7 +17,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/zeebo/errs"
 	"go.uber.org/zap"
-	"golang.org/x/exp/slices"
 
 	"storj.io/common/memory"
 	"storj.io/common/pb"
@@ -26,7 +25,6 @@ import (
 	"storj.io/common/testcontext"
 	"storj.io/storj/private/testplanet"
 	"storj.io/storj/satellite"
-	"storj.io/storj/satellite/nodeselection"
 	"storj.io/storj/satellite/overlay"
 	"storj.io/storj/satellite/reputation"
 )
@@ -115,45 +113,36 @@ func TestMinimumDiskSpace(t *testing.T) {
 	})
 }
 
-func TestOnlineOffline(t *testing.T) {
+func TestOffline(t *testing.T) {
 	testplanet.Run(t, testplanet.Config{
 		SatelliteCount: 1, StorageNodeCount: 4, UplinkCount: 1,
 	}, func(t *testing.T, ctx *testcontext.Context, planet *testplanet.Planet) {
 		satellite := planet.Satellites[0]
 		service := satellite.Overlay.Service
+		// TODO: handle cleanup
 
-		online, offline, err := service.KnownReliable(ctx, []storj.NodeID{
+		result, err := service.KnownUnreliableOrOffline(ctx, []storj.NodeID{
 			planet.StorageNodes[0].ID(),
 		})
 		require.NoError(t, err)
-		require.Empty(t, offline)
-		require.Len(t, online, 1)
+		require.Empty(t, result)
 
-		online, offline, err = service.KnownReliable(ctx, []storj.NodeID{
+		result, err = service.KnownUnreliableOrOffline(ctx, []storj.NodeID{
 			planet.StorageNodes[0].ID(),
 			planet.StorageNodes[1].ID(),
 			planet.StorageNodes[2].ID(),
 		})
 		require.NoError(t, err)
-		require.Empty(t, offline)
-		require.Len(t, online, 3)
+		require.Empty(t, result)
 
-		unreliableNodeID := storj.NodeID{1, 2, 3, 4}
-		online, offline, err = service.KnownReliable(ctx, []storj.NodeID{
+		result, err = service.KnownUnreliableOrOffline(ctx, []storj.NodeID{
 			planet.StorageNodes[0].ID(),
-			unreliableNodeID,
+			{1, 2, 3, 4}, // note that this succeeds by design
 			planet.StorageNodes[2].ID(),
 		})
 		require.NoError(t, err)
-		require.Empty(t, offline)
-		require.Len(t, online, 2)
-
-		require.False(t, slices.ContainsFunc(online, func(node nodeselection.SelectedNode) bool {
-			return node.ID == unreliableNodeID
-		}))
-		require.False(t, slices.ContainsFunc(offline, func(node nodeselection.SelectedNode) bool {
-			return node.ID == unreliableNodeID
-		}))
+		require.Len(t, result, 1)
+		require.Equal(t, result[0], storj.NodeID{1, 2, 3, 4})
 	})
 }
 
@@ -193,7 +182,7 @@ func TestEnsureMinimumRequested(t *testing.T) {
 
 		reputable := map[storj.NodeID]bool{}
 
-		countReputable := func(selected []*nodeselection.SelectedNode) (count int) {
+		countReputable := func(selected []*overlay.SelectedNode) (count int) {
 			for _, n := range selected {
 				if reputable[n.ID] {
 					count++

@@ -117,7 +117,6 @@ func TestGraphqlMutation(t *testing.T) {
 			}, &consoleauth.Hmac{Secret: []byte("my-suppa-secret-key")}),
 			nil,
 			"",
-			"",
 			console.Config{
 				PasswordCost:        console.TestPasswordCost,
 				DefaultProjectLimit: 5,
@@ -139,7 +138,6 @@ func TestGraphqlMutation(t *testing.T) {
 		rootObject[consoleql.LetUsKnowURL] = "letUsKnowURL"
 		rootObject[consoleql.ContactInfoURL] = "contactInfoURL"
 		rootObject[consoleql.TermsAndConditionsURL] = "termsAndConditionsURL"
-		rootObject[consoleql.SatelliteRegion] = "EU1"
 
 		schema, err := consoleql.CreateSchema(log, service, mailService)
 		require.NoError(t, err)
@@ -206,7 +204,7 @@ func TestGraphqlMutation(t *testing.T) {
 		var projectIDField string
 		var projectPublicIDField string
 		t.Run("Create project mutation", func(t *testing.T) {
-			projectInfo := console.UpsertProjectInfo{
+			projectInfo := console.ProjectInfo{
 				Name:        "Project name",
 				Description: "desc",
 			}
@@ -319,7 +317,7 @@ func TestGraphqlMutation(t *testing.T) {
 			data := result.(map[string]interface{})
 			proj := data[consoleql.AddProjectMembersMutation].(map[string]interface{})
 
-			members := proj[consoleql.FieldMembersAndInvitations].(map[string]interface{})
+			members := proj[consoleql.FieldMembers].(map[string]interface{})
 			projectMembers := members[consoleql.FieldProjectMembers].([]interface{})
 
 			assert.Equal(t, project.ID.String(), proj[consoleql.FieldID])
@@ -330,7 +328,7 @@ func TestGraphqlMutation(t *testing.T) {
 
 		t.Run("Add project members mutation", func(t *testing.T) {
 			query := fmt.Sprintf(
-				"mutation {addProjectMembers(projectID:\"%s\",email:[\"%s\",\"%s\"]){id,publicId,name,membersAndInvitations(cursor: { limit: 50, search: \"\", page: 1, order: 1, orderDirection: 2 }){projectMembers{joinedAt}}}}",
+				"mutation {addProjectMembers(projectID:\"%s\",email:[\"%s\",\"%s\"]){id,publicId,name,members(cursor: { limit: 50, search: \"\", page: 1, order: 1, orderDirection: 2 }){projectMembers{joinedAt}}}}",
 				project.ID.String(),
 				user1.Email,
 				user2.Email,
@@ -341,7 +339,7 @@ func TestGraphqlMutation(t *testing.T) {
 
 		t.Run("Add project members mutation with publicId", func(t *testing.T) {
 			query := fmt.Sprintf(
-				"mutation {addProjectMembers(publicId:\"%s\",email:[\"%s\"]){id,publicId,name,membersAndInvitations(cursor: { limit: 50, search: \"\", page: 1, order: 1, orderDirection: 2 }){projectMembers{joinedAt}}}}",
+				"mutation {addProjectMembers(publicId:\"%s\",email:[\"%s\"]){id,publicId,name,members(cursor: { limit: 50, search: \"\", page: 1, order: 1, orderDirection: 2 }){projectMembers{joinedAt}}}}",
 				project.PublicID.String(),
 				user3.Email,
 			)
@@ -351,7 +349,7 @@ func TestGraphqlMutation(t *testing.T) {
 
 		t.Run("Fail add project members mutation without ID", func(t *testing.T) {
 			query := fmt.Sprintf(
-				"mutation {addProjectMembers(email:[\"%s\",\"%s\"]){id,publicId,name,membersAndInvitations(cursor: { limit: 50, search: \"\", page: 1, order: 1, orderDirection: 2 }){projectMembers{joinedAt}}}}",
+				"mutation {addProjectMembers(email:[\"%s\",\"%s\"]){id,publicId,name,members(cursor: { limit: 50, search: \"\", page: 1, order: 1, orderDirection: 2 }){projectMembers{joinedAt}}}}",
 				user1.Email,
 				user2.Email,
 			)
@@ -362,7 +360,7 @@ func TestGraphqlMutation(t *testing.T) {
 
 		t.Run("Delete project members mutation", func(t *testing.T) {
 			query := fmt.Sprintf(
-				"mutation {deleteProjectMembers(projectID:\"%s\",email:[\"%s\",\"%s\",\"%s\"]){id,publicId,name,membersAndInvitations(cursor: { limit: 50, search: \"\", page: 1, order: 1, orderDirection: 2 }){projectMembers{user{id}}}}}",
+				"mutation {deleteProjectMembers(projectID:\"%s\",email:[\"%s\",\"%s\",\"%s\"]){id,publicId,name,members(cursor: { limit: 50, search: \"\", page: 1, order: 1, orderDirection: 2 }){projectMembers{user{id}}}}}",
 				project.ID.String(),
 				user1.Email,
 				user2.Email,
@@ -375,7 +373,7 @@ func TestGraphqlMutation(t *testing.T) {
 			data := result.(map[string]interface{})
 			proj := data[consoleql.DeleteProjectMembersMutation].(map[string]interface{})
 
-			members := proj[consoleql.FieldMembersAndInvitations].(map[string]interface{})
+			members := proj[consoleql.FieldMembers].(map[string]interface{})
 			projectMembers := members[consoleql.FieldProjectMembers].([]interface{})
 			rootMember := projectMembers[0].(map[string]interface{})[consoleql.UserType].(map[string]interface{})
 

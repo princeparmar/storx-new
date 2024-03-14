@@ -21,7 +21,6 @@ import (
 	"storj.io/common/uuid"
 	"storj.io/storj/satellite/audit"
 	"storj.io/storj/satellite/metabase"
-	"storj.io/storj/satellite/nodeselection"
 	"storj.io/storj/satellite/overlay"
 )
 
@@ -47,7 +46,7 @@ type Verifier interface {
 type Overlay interface {
 	// Get looks up the node by nodeID
 	Get(ctx context.Context, nodeID storj.NodeID) (*overlay.NodeDossier, error)
-	SelectAllStorageNodesDownload(ctx context.Context, onlineWindow time.Duration, asOf overlay.AsOfSystemTimeConfig) ([]*nodeselection.SelectedNode, error)
+	SelectAllStorageNodesDownload(ctx context.Context, onlineWindow time.Duration, asOf overlay.AsOfSystemTimeConfig) ([]*overlay.SelectedNode, error)
 }
 
 // SegmentWriter allows writing segments to some output.

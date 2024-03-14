@@ -136,12 +136,11 @@ func NewRepairer(log *zap.Logger, full *identity.FullIdentity,
 		}
 
 		peer.Dialer = rpc.NewDefaultDialer(tlsOptions)
-		peer.Dialer.DialTimeout = config.Repairer.DialTimeout
 	}
 
 	{ // setup overlay
 		var err error
-		peer.Overlay, err = overlay.NewService(log.Named("overlay"), overlayCache, nodeEvents, config.Placement.CreateFilters, config.Console.ExternalAddress, config.Console.SatelliteName, config.Overlay)
+		peer.Overlay, err = overlay.NewService(log.Named("overlay"), overlayCache, nodeEvents, config.Console.ExternalAddress, config.Console.SatelliteName, config.Overlay)
 		if err != nil {
 			return nil, errs.Combine(err, peer.Close())
 		}
@@ -183,7 +182,6 @@ func NewRepairer(log *zap.Logger, full *identity.FullIdentity,
 			// PUT and GET actions which are not used by
 			// repairer so we can set noop implementation.
 			orders.NewNoopDB(),
-			config.Placement.CreateFilters,
 			config.Orders,
 		)
 		if err != nil {
@@ -196,7 +194,6 @@ func NewRepairer(log *zap.Logger, full *identity.FullIdentity,
 			log.Named("reporter"),
 			peer.Reputation,
 			peer.Overlay,
-			metabaseDB,
 			containmentDB,
 			config.Audit.MaxRetriesStatDB,
 			int32(config.Audit.MaxReverifyCount))
@@ -207,13 +204,8 @@ func NewRepairer(log *zap.Logger, full *identity.FullIdentity,
 			log.Named("ec-repair"),
 			peer.Dialer,
 			signing.SigneeFromPeerIdentity(peer.Identity.PeerIdentity()),
-			config.Repairer.DialTimeout,
 			config.Repairer.DownloadTimeout,
 			config.Repairer.InMemoryRepair)
-
-		if len(config.Repairer.RepairExcludedCountryCodes) == 0 {
-			config.Repairer.RepairExcludedCountryCodes = config.Overlay.RepairExcludedCountryCodes
-		}
 
 		peer.SegmentRepairer = repairer.NewSegmentRepairer(
 			log.Named("segment-repair"),
@@ -222,7 +214,6 @@ func NewRepairer(log *zap.Logger, full *identity.FullIdentity,
 			peer.Overlay,
 			peer.Audit.Reporter,
 			peer.EcRepairer,
-			config.Placement.CreateFilters,
 			config.Checker.RepairOverrides,
 			config.Repairer,
 		)

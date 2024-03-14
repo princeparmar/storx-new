@@ -27,7 +27,6 @@ var (
 type Config struct {
 	MaxRepair                     int           `help:"maximum segments that can be repaired concurrently" releaseDefault:"5" devDefault:"1" testDefault:"10"`
 	Interval                      time.Duration `help:"how frequently repairer should try and repair more data" releaseDefault:"5m0s" devDefault:"1m0s" testDefault:"$TESTINTERVAL"`
-	DialTimeout                   time.Duration `help:"time limit for dialing storage node" default:"5s"`
 	Timeout                       time.Duration `help:"time limit for uploading repaired pieces to new storage nodes" default:"5m0s" testDefault:"1m"`
 	DownloadTimeout               time.Duration `help:"time limit for downloading pieces from a node for repair" default:"5m0s" testDefault:"1m"`
 	TotalTimeout                  time.Duration `help:"time limit for an entire repair job, from queue pop to upload completion" default:"45m" testDefault:"10m"`
@@ -36,8 +35,7 @@ type Config struct {
 	InMemoryRepair                bool          `help:"whether to download pieces for repair in memory (true) or download to disk (false)" default:"false"`
 	ReputationUpdateEnabled       bool          `help:"whether the audit score of nodes should be updated as a part of repair" default:"false"`
 	UseRangedLoop                 bool          `help:"whether to enable repair checker observer with ranged loop" default:"true"`
-	RepairExcludedCountryCodes    []string      `help:"list of country codes to treat node from this country as offline" default:"" hidden:"true"`
-	DoDeclumping                  bool          `help:"repair pieces on the same network to other nodes" default:"true"`
+	DoDeclumping                  bool          `help:"repair pieces on the same network to other nodes" default:"false"`
 	DoPlacementCheck              bool          `help:"repair pieces out of segment placement" default:"true"`
 }
 

@@ -1,4 +1,4 @@
-// Copyright (C) 2021 Storx Labs, Inc.
+// Copyright (C) 2021 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -23,64 +23,24 @@
             <div v-if="isLoading" class="project-selection__dropdown__loader-container">
                 <VLoader width="30px" height="30px" />
             </div>
-
-            <template v-else>
-                <div v-if="ownProjects.length" class="project-selection__dropdown__section-head">
-                    <ProjectIcon />
-                    <span class="project-selection__dropdown__section-head__tag">My Projects</span>
-                </div>
-                <div class="project-selection__dropdown__items">
-                    <div
-                        v-for="project in ownProjects"
-                        :key="project.id"
-                        class="project-selection__dropdown__items__choice"
-                        @click.prevent.stop="onProjectSelected(project.id)"
-                        @keyup.enter="onProjectSelected(project.id)"
-                    >
-                        <div v-if="project.isSelected" class="project-selection__dropdown__items__choice__mark-container">
-                            <CheckmarkIcon class="project-selection__dropdown__items__choice__mark-container__image" />
-                        </div>
-                        <p
-                            :class="{
-                                'project-selection__dropdown__items__choice__unselected': !project.isSelected,
-                                'project-selection__dropdown__items__choice__selected': project.isSelected,
-                            }"
-                        >
-                            {{ project.name }}
-                        </p>
+            <div v-else class="project-selection__dropdown__items">
+                <div tabindex="0" class="project-selection__dropdown__items__choice" @click.prevent.stop="closeDropdown">
+                    <div class="project-selection__dropdown__items__choice__mark-container">
+                        <CheckmarkIcon class="project-selection__dropdown__items__choice__mark-container__image" />
                     </div>
+                    <p class="project-selection__dropdown__items__choice__selected">
+                        {{ selectedProject.name }}
+                    </p>
                 </div>
-
-                <div v-if="sharedProjects.length" class="project-selection__dropdown__section-head shared">
-                    <ProjectIcon />
-                    <span class="project-selection__dropdown__section-head__tag shared">Shared with me</span>
+                <div
+                    v-for="project in projects"
+                    :key="project.id"
+                    class="project-selection__dropdown__items__choice"
+                    @click.prevent.stop="onProjectSelected(project.id)"
+                    @keyup.enter="onProjectSelected(project.id)"
+                >
+                    <p class="project-selection__dropdown__items__choice__unselected">{{ project.name }}</p>
                 </div>
-                <div class="project-selection__dropdown__items">
-                    <div
-                        v-for="project in sharedProjects"
-                        :key="project.id"
-                        class="project-selection__dropdown__items__choice"
-                        @click.prevent.stop="onProjectSelected(project.id)"
-                        @keyup.enter="onProjectSelected(project.id)"
-                    >
-                        <div v-if="project.isSelected" class="project-selection__dropdown__items__choice__mark-container">
-                            <CheckmarkIcon class="project-selection__dropdown__items__choice__mark-container__image" />
-                        </div>
-                        <p
-                            :class="{
-                                'project-selection__dropdown__items__choice__unselected': !project.isSelected,
-                                'project-selection__dropdown__items__choice__selected': project.isSelected,
-                            }"
-                        >
-                            {{ project.name }}
-                        </p>
-                    </div>
-                </div>
-            </template>
-
-            <div v-if="isAllProjectsDashboard && isProjectOwner" tabindex="0" class="project-selection__dropdown__link-container" @click.stop="onProjectDetailsClick" @keyup.enter="onProjectDetailsClick">
-                <SettingsIcon />
-                <p class="project-selection__dropdown__link-container__label">Project Settings</p>
             </div>
             <div v-if="isAllProjectsDashboard" tabindex="0" class="project-selection__dropdown__link-container" @click.stop="onAllProjectsClick" @keyup.enter="onAllProjectsClick">
                 <ProjectIcon />
@@ -106,7 +66,8 @@
 import { computed, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
-import { RouteConfig } from '@/types/router';
+import { AnalyticsHttpApi } from '@/api/analytics';
+import { RouteConfig } from '@/router';
 import { AnalyticsErrorEventSource, AnalyticsEvent } from '@/utils/constants/analyticsEventNames';
 import { LocalData } from '@/utils/localData';
 import { Project } from '@/types/projects';
@@ -121,7 +82,6 @@ import { useAccessGrantsStore } from '@/store/modules/accessGrantsStore';
 import { useBucketsStore } from '@/store/modules/bucketsStore';
 import { useProjectsStore } from '@/store/modules/projectsStore';
 import { useConfigStore } from '@/store/modules/configStore';
-import { useAnalyticsStore } from '@/store/modules/analyticsStore';
 
 import VLoader from '@/components/common/VLoader.vue';
 
@@ -131,9 +91,7 @@ import CheckmarkIcon from '@/../static/images/navigation/checkmark.svg';
 import PassphraseIcon from '@/../static/images/navigation/passphrase.svg';
 import ManageIcon from '@/../static/images/navigation/manage.svg';
 import CreateProjectIcon from '@/../static/images/navigation/createProject.svg';
-import SettingsIcon from '@/../static/images/navigation/settings.svg';
 
-const analyticsStore = useAnalyticsStore();
 const bucketsStore = useBucketsStore();
 const appStore = useAppStore();
 const agStore = useAccessGrantsStore();
@@ -147,6 +105,7 @@ const router = useRouter();
 const route = useRoute();
 
 const FIRST_PAGE = 1;
+const analytics: AnalyticsHttpApi = new AnalyticsHttpApi();
 
 const dropdownYPos = ref<number>(0);
 const dropdownXPos = ref<number>(0);
@@ -167,13 +126,6 @@ const isOnboardingTour = computed((): boolean => {
     return route.path.includes(RouteConfig.OnboardingTour.path);
 });
 
-/*
- * Whether the user is the owner of the selected project.
- */
-const isProjectOwner = computed((): boolean => {
-    return userStore.state.user.id === projectsStore.state.selectedProject.ownerId;
-});
-
 /**
  * Indicates if all projects dashboard is enabled.
  */
@@ -189,19 +141,10 @@ const isDropdownShown = computed((): boolean => {
 });
 
 /**
- * Returns user's own projects.
+ * Returns projects list from store.
  */
-const ownProjects = computed((): Project[] => {
-    const projects = projectsStore.projects.filter((p) => p.ownerId === userStore.state.user.id);
-    return projects.sort(compareProjects);
-});
-
-/**
- * Returns projects the user is invited to.
- */
-const sharedProjects = computed((): Project[] => {
-    const projects = projectsStore.projects.filter((p) => p.ownerId !== userStore.state.user.id);
-    return projects.sort(compareProjects);
+const projects = computed((): Project[] => {
+    return projectsStore.projectsWithoutSelected;
 });
 
 /**
@@ -219,16 +162,7 @@ const isBucketsView = computed((): boolean => {
 });
 
 /**
- * This comparator is used to sort projects by isSelected.
- */
-function compareProjects(a: Project, b: Project) {
-    if (a.isSelected) return -1;
-    if (b.isSelected) return 1;
-    return 0;
-}
-
-/**
- * Fetches projects related information and then toggles selection popup.
+ * Fetches projects related information and than toggles selection popup.
  */
 async function toggleSelection(): Promise<void> {
     if (isOnboardingTour.value || !projectSelection.value) return;
@@ -251,7 +185,7 @@ async function toggleSelection(): Promise<void> {
         await projectsStore.getProjects();
         await projectsStore.getProjectLimits(selectedProject.value.id);
     } catch (error) {
-        notify.notifyError(error, AnalyticsErrorEventSource.NAVIGATION_PROJECT_SELECTION);
+        await notify.error(error.message, AnalyticsErrorEventSource.NAVIGATION_PROJECT_SELECTION);
     } finally {
         isLoading.value = false;
     }
@@ -269,7 +203,7 @@ function toggleDropdown(): void {
  * @param projectID
  */
 async function onProjectSelected(projectID: string): Promise<void> {
-    analyticsStore.eventTriggered(AnalyticsEvent.NAVIGATE_PROJECTS);
+    analytics.eventTriggered(AnalyticsEvent.NAVIGATE_PROJECTS);
     projectsStore.selectProject(projectID);
     LocalData.setSelectedProjectId(projectID);
     pmStore.setSearchQuery('');
@@ -301,7 +235,7 @@ async function onProjectSelected(projectID: string): Promise<void> {
                 pmStore.getProjectMembers(FIRST_PAGE, projectID),
             ]);
         } catch (error) {
-            notify.notifyError(error, AnalyticsErrorEventSource.NAVIGATION_PROJECT_SELECTION);
+            await notify.error(error.message, AnalyticsErrorEventSource.NAVIGATION_PROJECT_SELECTION);
         }
 
         return;
@@ -311,7 +245,7 @@ async function onProjectSelected(projectID: string): Promise<void> {
         try {
             await agStore.getAccessGrants(FIRST_PAGE, projectID);
         } catch (error) {
-            notify.error(error.message, AnalyticsErrorEventSource.NAVIGATION_PROJECT_SELECTION);
+            await notify.error(error.message, AnalyticsErrorEventSource.NAVIGATION_PROJECT_SELECTION);
         }
 
         return;
@@ -321,7 +255,7 @@ async function onProjectSelected(projectID: string): Promise<void> {
         try {
             await pmStore.getProjectMembers(FIRST_PAGE, selectedProject.value.id);
         } catch (error) {
-            notify.error(error.message, AnalyticsErrorEventSource.NAVIGATION_PROJECT_SELECTION);
+            await notify.error(error.message, AnalyticsErrorEventSource.NAVIGATION_PROJECT_SELECTION);
         }
     }
 }
@@ -338,8 +272,8 @@ function closeDropdown(): void {
  */
 function onProjectsLinkClick(): void {
     if (route.name !== RouteConfig.ProjectsList.name) {
-        analyticsStore.pageVisit(RouteConfig.ProjectsList.path);
-        analyticsStore.eventTriggered(AnalyticsEvent.MANAGE_PROJECTS_CLICKED);
+        analytics.pageVisit(RouteConfig.ProjectsList.path);
+        analytics.eventTriggered(AnalyticsEvent.MANAGE_PROJECTS_CLICKED);
         router.push(RouteConfig.ProjectsList.path);
     }
 
@@ -350,17 +284,8 @@ function onProjectsLinkClick(): void {
  * Route to all projects page.
  */
 function onAllProjectsClick(): void {
-    analyticsStore.pageVisit(RouteConfig.AllProjectsDashboard.path);
+    analytics.pageVisit(RouteConfig.AllProjectsDashboard.path);
     router.push(RouteConfig.AllProjectsDashboard.path);
-    closeDropdown();
-}
-
-/**
- * Route to project details page.
- */
-function onProjectDetailsClick(): void {
-    analyticsStore.pageVisit(RouteConfig.EditProjectDetails.path);
-    router.push(RouteConfig.EditProjectDetails.path);
     closeDropdown();
 }
 
@@ -378,16 +303,16 @@ function onManagePassphraseClick(): void {
  */
 function onCreateLinkClick(): void {
     if (route.name !== RouteConfig.CreateProject.name) {
-        analyticsStore.eventTriggered(AnalyticsEvent.CREATE_NEW_CLICKED);
+        analytics.eventTriggered(AnalyticsEvent.CREATE_NEW_CLICKED);
 
         const user: User = userStore.state.user;
         const ownProjectsCount: number = projectsStore.projectsCount(user.id);
 
-        if (user.projectLimit > ownProjectsCount) {
-            analyticsStore.pageVisit(RouteConfig.CreateProject.path);
-            appStore.updateActiveModal(MODALS.newCreateProject);
-        } else {
+        if (!user.paidTier || user.projectLimit === ownProjectsCount) {
             appStore.updateActiveModal(MODALS.createProjectPrompt);
+        } else {
+            analytics.pageVisit(RouteConfig.CreateProject.path);
+            appStore.updateActiveModal(MODALS.newCreateProject);
         }
     }
 
@@ -440,11 +365,11 @@ function onCreateLinkClick(): void {
                 border-color: var(--c-grey-1);
 
                 p {
-                    color: var(--c-orange-3);
+                    color: var(--c-blue-3);
                 }
 
                 :deep(path) {
-                    fill: var(--c-orange-3);
+                    fill: var(--c-blue-3);
                 }
             }
 
@@ -452,14 +377,14 @@ function onCreateLinkClick(): void {
                 outline: none;
                 border-color: var(--c-grey-1);
                 background-color: var(--c-grey-1);
-                color: var(--c-orange-3);
+                color: var(--c-blue-3);
 
                 p {
-                    color: var(--c-orange-3);
+                    color: var(--c-blue-3);
                 }
 
                 :deep(path) {
-                    fill: var(--c-orange-3);
+                    fill: var(--c-blue-3);
                 }
             }
         }
@@ -482,36 +407,6 @@ function onCreateLinkClick(): void {
                 border-radius: 8px 8px 0 0;
             }
 
-            &__section-head {
-                display: flex;
-                align-items: center;
-                gap: 24px;
-                height: 48px;
-                box-sizing: border-box;
-                padding: 8px 16px;
-
-                &.shared {
-                    border-top: 1px solid var(--c-grey-2);
-                }
-
-                &__tag {
-                    border: 1px solid var(--c-purple-2);
-                    border-radius: 24px;
-                    padding: 2px 8px;
-                    text-align: center;
-                    font-size: 12px;
-                    font-weight: 600;
-                    line-height: 18px;
-                    color: var(--c-purple-4);
-                    background: var(--c-white);
-
-                    &.shared {
-                        border: 1px solid var(--c-yellow-2);
-                        color: var(--c-yellow-5);
-                    }
-                }
-            }
-
             &__items {
                 overflow-y: auto;
                 max-height: 250px;
@@ -530,7 +425,7 @@ function onCreateLinkClick(): void {
                     &__unselected {
                         font-size: 14px;
                         line-height: 20px;
-                        color: var(--c-grey-6);
+                        color: #1b2533;
                         white-space: nowrap;
                         overflow: hidden;
                         text-overflow: ellipsis;
@@ -549,7 +444,7 @@ function onCreateLinkClick(): void {
                         background-color: #f5f6fa;
 
                         p {
-                            color: var(--c-orange-3);
+                            color: var(--c-blue-3);
                         }
                     }
 
@@ -591,11 +486,11 @@ function onCreateLinkClick(): void {
                     background-color: #f5f6fa;
 
                     p {
-                        color: var(--c-orange-3);
+                        color: var(--c-blue-3);
                     }
 
                     :deep(path) {
-                        fill: var(--c-orange-3);
+                        fill: var(--c-blue-3);
                     }
                 }
 
@@ -610,7 +505,7 @@ function onCreateLinkClick(): void {
         border-color: #000;
 
         p {
-            color: var(--c-orange-6);
+            color: var(--c-blue-6);
             font-family: 'font_bold', sans-serif;
         }
 
@@ -620,15 +515,15 @@ function onCreateLinkClick(): void {
     }
 
     .active:hover {
-        border-color: var(--c-orange-3);
+        border-color: var(--c-blue-3);
         background-color: #f7f8fb;
 
         p {
-            color: var(--c-orange-3);
+            color: var(--c-blue-3);
         }
 
         :deep(path) {
-            fill: var(--c-orange-3);
+            fill: var(--c-blue-3);
         }
     }
 

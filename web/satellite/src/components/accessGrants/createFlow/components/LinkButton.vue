@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Storx Labs, Inc.
+// Copyright (C) 2023 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -15,7 +15,7 @@
 </template>
 
 <script setup lang="ts">
-import { useAnalyticsStore } from '@/store/modules/analyticsStore';
+import { AnalyticsHttpApi } from '@/api/analytics';
 
 import LearnIcon from '@/../static/images/accessGrants/newCreateFlow/learn.svg';
 
@@ -27,13 +27,13 @@ const props = withDefaults(defineProps<{
     withIcon: false,
 });
 
-const analyticsStore = useAnalyticsStore();
+const analytics: AnalyticsHttpApi = new AnalyticsHttpApi();
 
 /**
  * Sends "trackPageVisit" event to segment.
  */
 function trackPageVisit(): void {
-    analyticsStore.pageVisit(props.link);
+    analytics.pageVisit(props.link);
 }
 </script>
 

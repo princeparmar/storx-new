@@ -1,4 +1,4 @@
-// Copyright (C) 2022 Storx Labs, Inc.
+// Copyright (C) 2022 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -9,7 +9,7 @@
                     <img
                         v-if="previewAndMapFailed"
                         class="failed-preview"
-                        :src="ErrorNoticeIcon"
+                        src="/static/static/images/common/errorNotice.svg"
                         alt="failed preview"
                     >
                     <template v-else>
@@ -117,25 +117,20 @@
 import { computed, onBeforeMount, ref, watch } from 'vue';
 import prettyBytes from 'pretty-bytes';
 
-import { AnalyticsErrorEventSource, AnalyticsEvent } from '@/utils/constants/analyticsEventNames';
+import { AnalyticsErrorEventSource } from '@/utils/constants/analyticsEventNames';
 import { useNotify } from '@/utils/hooks';
 import { BrowserObject, useObjectBrowserStore } from '@/store/modules/objectBrowserStore';
 import { useAppStore } from '@/store/modules/appStore';
-import { useLinksharing } from '@/composables/useLinksharing';
-import { useAnalyticsStore } from '@/store/modules/analyticsStore';
 
 import VModal from '@/components/common/VModal.vue';
 import VButton from '@/components/common/VButton.vue';
 import VLoader from '@/components/common/VLoader.vue';
 
-import ErrorNoticeIcon from '@/../static/images/common/errorNotice.svg?url';
 import PlaceholderImage from '@/../static/images/browser/placeholder.svg';
 
-const analyticsStore = useAnalyticsStore();
 const appStore = useAppStore();
 const obStore = useObjectBrowserStore();
 const notify = useNotify();
-const { generateFileOrFolderShareURL, generateObjectPreviewAndMapURL } = useLinksharing();
 
 const isLoading = ref<boolean>(false);
 const previewAndMapFailed = ref<boolean>(false);
@@ -237,13 +232,9 @@ const placeHolderDisplayable = computed((): boolean => {
 async function fetchPreviewAndMapUrl(): Promise<void> {
     isLoading.value = true;
 
-    let url = '';
-    try {
-        url = await generateObjectPreviewAndMapURL(filePath.value);
-    } catch (error) {
-        error.message = `Unable to get file preview and map URL. ${error.message}`;
-        notify.notifyError(error, AnalyticsErrorEventSource.ACCESS_GRANTS_PAGE);
-    }
+    const url: string = await obStore.state.fetchPreviewAndMapUrl(
+        filePath.value,
+    );
 
     if (!url) {
         previewAndMapFailed.value = true;
@@ -269,9 +260,9 @@ async function fetchPreviewAndMapUrl(): Promise<void> {
 /**
  * Download the current opened file.
  */
-async function download(): Promise<void> {
+function download(): void {
     try {
-        await obStore.download(file.value);
+        obStore.download(file.value);
         notify.warning('Do not share download link with other people. If you want to share this data better use "Share" option.');
     } catch (error) {
         notify.error('Can not download your file', AnalyticsErrorEventSource.OBJECT_DETAILS_MODAL);
@@ -302,13 +293,9 @@ async function copy(): Promise<void> {
  * Get the share link of the current opened file.
  */
 async function getSharedLink(): Promise<void> {
-    analyticsStore.eventTriggered(AnalyticsEvent.LINK_SHARED);
-    try {
-        objectLink.value = await generateFileOrFolderShareURL(filePath.value);
-    } catch (error) {
-        error.message = `Unable to get sharing URL. ${error.message}`;
-        notify.notifyError(error, AnalyticsErrorEventSource.OBJECT_DETAILS_MODAL);
-    }
+    objectLink.value = await obStore.state.fetchSharedLink(
+        filePath.value,
+    );
 }
 
 /**

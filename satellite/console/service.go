@@ -4,10 +4,9 @@
 package console
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -19,13 +18,11 @@ import (
 	"github.com/spacemonkeygo/monkit/v3"
 	"github.com/spf13/pflag"
 	"github.com/stripe/stripe-go/v72"
-
 	"github.com/zeebo/errs"
 	"go.uber.org/zap"
 	"golang.org/x/crypto/bcrypt"
 
 	"storj.io/common/currency"
-	"storj.io/common/http/requestid"
 	"storj.io/common/macaroon"
 	"storj.io/common/memory"
 	"storj.io/common/uuid"
@@ -69,15 +66,12 @@ const (
 	projectOwnerDeletionForbiddenErrMsg  = "%s is a project owner and can not be deleted"
 	apiKeyWithNameExistsErrMsg           = "An API Key with this name already exists in this project, please use a different name"
 	apiKeyWithNameDoesntExistErrMsg      = "An API Key with this name doesn't exist in this project."
-	teamMemberDoesNotExistErrMsg         = "There are no team members with the email '%s'. Please try again."
-	activationTokenExpiredErrMsg         = "This activation token has expired, please request another one"
-	usedRegTokenErrMsg                   = "This registration token has already been used"
-	projLimitErrMsg                      = "Sorry, project creation is limited for your account. Please contact support!"
-	projNameErrMsg                       = "The new project must have a name you haven't used before!"
-	projInviteInvalidErrMsg              = "The invitation has expired or is invalid"
-	projInviteAlreadyMemberErrMsg        = "You are already a member of the project"
-	projInviteResponseInvalidErrMsg      = "Invalid project member invitation response"
-	projInviteExistsErrMsg               = "An active invitation for '%s' already exists"
+	teamMemberDoesNotExistErrMsg         = `There is no account on this Satellite for the user(s) you have entered.
+									     Please add team members with active accounts`
+	activationTokenExpiredErrMsg = "This activation token has expired, please request another one"
+	usedRegTokenErrMsg           = "This registration token has already been used"
+	projLimitErrMsg              = "Sorry, project creation is limited for your account. Please contact support!"
+	projNameErrMsg               = "The new project must have a name you haven't used before!"
 )
 
 var (
@@ -137,16 +131,6 @@ var (
 
 	// ErrAlreadyHasPackage is error that occurs when a user tries to update package, but already has one.
 	ErrAlreadyHasPackage = errs.Class("user already has package")
-
-	// ErrAlreadyMember occurs when a user tries to reject an invitation to a project they're already a member of.
-	ErrAlreadyMember = errs.Class("already a member")
-
-	// ErrProjectInviteInvalid occurs when a user tries to respond to an invitation that doesn't exist
-	// or has expired.
-	ErrProjectInviteInvalid = errs.Class("invalid project invitation")
-
-	// ErrAlreadyInvited occurs when trying to invite a user who already has an unexpired invitation.
-	ErrAlreadyInvited = errs.Class("user is already invited")
 )
 
 // Service is handling accounts related logic.
@@ -169,29 +153,8 @@ type Service struct {
 	mailService                *mailservice.Service
 
 	satelliteAddress string
-	satelliteName    string
 
 	config Config
-
-	nowFn func() time.Time
-}
-
-// boris
-func (s *Service) GetUsers() Users {
-	return s.store.Users()
-}
-
-// boris
-func (s *Service) GetProjects() Projects {
-	return s.store.Projects()
-}
-
-// boris
-func (s *Service) IsProjectOwner(ctx context.Context, userID uuid.UUID, projectID uuid.UUID) (isOwner bool, project *Project, err error) {
-	return s.isProjectOwner(ctx, userID, projectID)
-}
-func (s *Service) UpdatingProjects(ctx context.Context, user User, projectID uuid.UUID, updatedProject UpsertProjectInfo) (p *Project, err error) {
-	return s.UpdatingProject(ctx, user, projectID, updatedProject)
 }
 
 func init() {
@@ -214,8 +177,6 @@ type Config struct {
 	AsOfSystemTimeDuration      time.Duration `help:"default duration for AS OF SYSTEM TIME" devDefault:"-5m" releaseDefault:"-5m" testDefault:"0"`
 	LoginAttemptsWithoutPenalty int           `help:"number of times user can try to login without penalty" default:"3"`
 	FailedLoginPenalty          float64       `help:"incremental duration of penalty for failed login attempts in minutes" default:"2.0"`
-	ProjectInvitationExpiration time.Duration `help:"duration that project member invitations are valid for" default:"168h"`
-	UserBalanceForUpgrade       int64         `help:"amount of base units of US micro dollars needed to upgrade user's tier status" default:"10000000"`
 	UsageLimits                 UsageLimitsConfig
 	Captcha                     CaptchaConfig
 	Session                     SessionConfig
@@ -254,7 +215,7 @@ type Payments struct {
 }
 
 // NewService returns new instance of Service.
-func NewService(log *zap.Logger, store DB, restKeys RESTKeys, projectAccounting accounting.ProjectAccounting, projectUsage *accounting.Service, buckets buckets.DB, accounts payments.Accounts, depositWallets payments.DepositWallets, billing billing.TransactionsDB, analytics *analytics.Service, tokens *consoleauth.Service, mailService *mailservice.Service, satelliteAddress string, satelliteName string, config Config) (*Service, error) {
+func NewService(log *zap.Logger, store DB, restKeys RESTKeys, projectAccounting accounting.ProjectAccounting, projectUsage *accounting.Service, buckets buckets.DB, accounts payments.Accounts, depositWallets payments.DepositWallets, billing billing.TransactionsDB, analytics *analytics.Service, tokens *consoleauth.Service, mailService *mailservice.Service, satelliteAddress string, config Config) (*Service, error) {
 	if store == nil {
 		return nil, errs.New("store can't be nil")
 	}
@@ -299,9 +260,7 @@ func NewService(log *zap.Logger, store DB, restKeys RESTKeys, projectAccounting 
 		tokens:                     tokens,
 		mailService:                mailService,
 		satelliteAddress:           satelliteAddress,
-		satelliteName:              satelliteName,
 		config:                     config,
-		nowFn:                      time.Now,
 	}, nil
 }
 
@@ -326,34 +285,11 @@ func (s *Service) auditLog(ctx context.Context, operation string, userID *uuid.U
 	if email != "" {
 		fields = append(fields, zap.String("email", email))
 	}
-	if requestID := requestid.FromContext(ctx); requestID != "" {
-		fields = append(fields, zap.String("requestID", requestID))
-	}
-
 	fields = append(fields, fields...)
 	s.auditLogger.Info("console activity", fields...)
 }
 
 func (s *Service) getUserAndAuditLog(ctx context.Context, operation string, extra ...zap.Field) (*User, error) {
-	user, err := GetUser(ctx)
-	if err != nil {
-		sourceIP, forwardedForIP := getRequestingIP(ctx)
-		s.auditLogger.Info("console activity unauthorized",
-			append(append(
-				make([]zap.Field, 0, len(extra)+4),
-				zap.String("operation", operation),
-				zap.Error(err),
-				zap.String("source-ip", sourceIP),
-				zap.String("forwarded-for-ip", forwardedForIP),
-			), extra...)...)
-		return nil, err
-	}
-	s.auditLog(ctx, operation, &user.ID, user.Email, extra...)
-	return user, nil
-}
-
-// boris
-func (s *Service) GetUserAndAuditLog(ctx context.Context, operation string, extra ...zap.Field) (*User, error) {
 	user, err := GetUser(ctx)
 	if err != nil {
 		sourceIP, forwardedForIP := getRequestingIP(ctx)
@@ -773,7 +709,7 @@ func (s *Service) checkRegistrationSecret(ctx context.Context, tokenSecret Regis
 }
 
 // CreateUser gets password hash value and creates new inactive User.
-func (s *Service) CreateUser(ctx context.Context, user CreateUser, tokenSecret RegistrationSecret, socialsign bool) (u *User, err error) {
+func (s *Service) CreateUser(ctx context.Context, user CreateUser, tokenSecret RegistrationSecret) (u *User, err error) {
 	defer mon.Task()(&ctx)(&err)
 
 	var captchaScore *float64
@@ -793,11 +729,10 @@ func (s *Service) CreateUser(ctx context.Context, user CreateUser, tokenSecret R
 		}
 		captchaScore = score
 	}
-	if !socialsign {
-		if err := user.IsValid(); err != nil {
-			// NOTE: error is already wrapped with an appropriated class.
-			return nil, err
-		}
+
+	if err := user.IsValid(); err != nil {
+		// NOTE: error is already wrapped with an appropriated class.
+		return nil, err
 	}
 
 	registrationToken, err := s.checkRegistrationSecret(ctx, tokenSecret)
@@ -805,50 +740,21 @@ func (s *Service) CreateUser(ctx context.Context, user CreateUser, tokenSecret R
 		return nil, ErrRegToken.Wrap(err)
 	}
 
-	// verified, unverified, err := s.store.Users().GetByEmailWithUnverified(ctx, user.Email)
-	if !socialsign {
-		verified, unverified, err := s.store.Users().GetByEmailWithUnverified(ctx, user.Email)
-		if err != nil {
-			return nil, Error.Wrap(err)
-		}
-		if verified != nil {
-			mon.Counter("create_user_duplicate_verified").Inc(1) //mon:locked
-			return nil, ErrEmailUsed.New(emailUsedErrMsg)
-		} else if len(unverified) != 0 {
-			mon.Counter("create_user_duplicate_unverified").Inc(1) //mon:locked
-			return nil, ErrEmailUsed.New(emailUsedErrMsg)
-		}
-	} else {
-		verified, unverified, err := s.store.Users().GetByEmailWithUnverified_google(ctx, user.Email)
-		if err != nil {
-			return nil, Error.Wrap(err)
-		}
-		if verified != nil {
-			mon.Counter("create_user_duplicate_verified").Inc(1) //mon:locked
-			return nil, ErrEmailUsed.New(emailUsedErrMsg)
-		} else if len(unverified) != 0 {
-			mon.Counter("create_user_duplicate_unverified").Inc(1) //mon:locked
-			return nil, ErrEmailUsed.New(emailUsedErrMsg)
-		}
+	verified, unverified, err := s.store.Users().GetByEmailWithUnverified(ctx, user.Email)
+	if err != nil {
+		return nil, Error.Wrap(err)
+	}
+	if verified != nil {
+		mon.Counter("create_user_duplicate_verified").Inc(1) //mon:locked
+		return nil, ErrEmailUsed.New(emailUsedErrMsg)
+	} else if len(unverified) != 0 {
+		mon.Counter("create_user_duplicate_unverified").Inc(1) //mon:locked
+		return nil, ErrEmailUsed.New(emailUsedErrMsg)
 	}
 
-	// if err != nil {
-	// 	return nil, Error.Wrap(err)
-	// }
-
-	// if verified != nil {
-	// 	mon.Counter("create_user_duplicate_verified").Inc(1) //mon:locked
-	// 	return nil, ErrEmailUsed.New(emailUsedErrMsg)
-	// } else if len(unverified) != 0 {
-	// 	mon.Counter("create_user_duplicate_unverified").Inc(1) //mon:locked
-	// 	return nil, ErrEmailUsed.New(emailUsedErrMsg)
-	// }
-
 	hash, err := bcrypt.GenerateFromPassword([]byte(user.Password), s.config.PasswordCost)
-	if !socialsign {
-		if err != nil {
-			return nil, Error.Wrap(err)
-		}
+	if err != nil {
+		return nil, Error.Wrap(err)
 	}
 
 	// store data
@@ -864,7 +770,7 @@ func (s *Service) CreateUser(ctx context.Context, user CreateUser, tokenSecret R
 			FullName:         user.FullName,
 			ShortName:        user.ShortName,
 			PasswordHash:     hash,
-			Status:           Active,
+			Status:           Inactive,
 			IsProfessional:   user.IsProfessional,
 			Position:         user.Position,
 			CompanyName:      user.CompanyName,
@@ -1165,7 +1071,6 @@ func (s *Service) Token(ctx context.Context, request AuthUser) (response *TokenI
 	}
 
 	user, unverified, err := s.store.Users().GetByEmailWithUnverified(ctx, request.Email)
-
 	if user == nil {
 		if len(unverified) > 0 {
 			mon.Counter("login_email_unverified").Inc(1) //mon:locked
@@ -1280,54 +1185,6 @@ func (s *Service) Token(ctx context.Context, request AuthUser) (response *TokenI
 			s.auditLog(ctx, "login: failed mfa missing", &user.ID, user.Email)
 			return nil, ErrMFAMissing.New(mfaRequiredErrMsg)
 		}
-	}
-
-	if user.FailedLoginCount != 0 {
-		user.FailedLoginCount = 0
-		loginLockoutExpirationPtr := &time.Time{}
-		err = s.store.Users().Update(ctx, user.ID, UpdateUserRequest{
-			FailedLoginCount:       &user.FailedLoginCount,
-			LoginLockoutExpiration: &loginLockoutExpirationPtr,
-		})
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	response, err = s.GenerateSessionToken(ctx, user.ID, user.Email, request.IP, request.UserAgent)
-	if err != nil {
-		return nil, err
-	}
-
-	mon.Counter("login_success").Inc(1) //mon:locked
-
-	return response, nil
-}
-
-func (s *Service) Token_google(ctx context.Context, request AuthUser) (response *TokenInfo, err error) {
-	defer mon.Task()(&ctx)(&err)
-
-	mon.Counter("login_attempt").Inc(1) //mon:locked
-
-	user, unverified, err := s.store.Users().GetByEmailWithUnverified_google(ctx, request.Email)
-
-	if user == nil {
-		if len(unverified) > 0 {
-			mon.Counter("login_email_unverified").Inc(1) //mon:locked
-			s.auditLog(ctx, "login: failed email unverified", nil, request.Email)
-		} else {
-			mon.Counter("login_email_invalid").Inc(1) //mon:locked
-			s.auditLog(ctx, "login: failed invalid email", nil, request.Email)
-		}
-		return nil, ErrLoginCredentials.New(credentialsErrMsg)
-	}
-
-	now := time.Now()
-
-	if user.LoginLockoutExpiration.After(now) {
-		mon.Counter("login_locked_out").Inc(1) //mon:locked
-		s.auditLog(ctx, "login: failed account locked out", &user.ID, request.Email)
-		return nil, ErrLoginCredentials.New(credentialsErrMsg)
 	}
 
 	if user.FailedLoginCount != 0 {
@@ -1473,20 +1330,6 @@ func (s *Service) GetUserByEmailWithUnverified(ctx context.Context, email string
 
 	return verified, unverified, err
 }
-func (s *Service) GetUserByEmailWithUnverified_google(ctx context.Context, email string) (verified *User, unverified []User, err error) {
-	defer mon.Task()(&ctx)(&err)
-
-	verified, unverified, err = s.store.Users().GetByEmailWithUnverified_google(ctx, email)
-	if err != nil {
-		return verified, unverified, err
-	}
-
-	if verified == nil && len(unverified) == 0 {
-		err = ErrEmailNotFound.New(emailNotFoundErrMsg)
-	}
-
-	return verified, unverified, err
-}
 
 // UpdateAccount updates User.
 func (s *Service) UpdateAccount(ctx context.Context, fullName string, shortName string) (err error) {
@@ -1619,7 +1462,8 @@ func (s *Service) DeleteAccount(ctx context.Context, password string) (err error
 	return nil
 }
 
-// GetProject is a method for querying project by internal or public ID.
+// GetProject is a method for querying project by id.
+// projectID here may be project.PublicID or project.ID.
 func (s *Service) GetProject(ctx context.Context, projectID uuid.UUID) (p *Project, err error) {
 	defer mon.Task()(&ctx)(&err)
 	user, err := s.getUserAndAuditLog(ctx, "get project", zap.String("projectID", projectID.String()))
@@ -1635,27 +1479,6 @@ func (s *Service) GetProject(ctx context.Context, projectID uuid.UUID) (p *Proje
 	p = isMember.project
 
 	return
-}
-
-// GetProjectNoAuth is a method for querying project by ID or public ID.
-// This is for internal use only as it ignores whether a user is authorized to perform this action.
-// If authorization checking is required, use GetProject.
-func (s *Service) GetProjectNoAuth(ctx context.Context, projectID uuid.UUID) (p *Project, err error) {
-	defer mon.Task()(&ctx)(&err)
-
-	p, err = s.store.Projects().GetByPublicID(ctx, projectID)
-	if err != nil {
-		if errs.Is(err, sql.ErrNoRows) {
-			p, err = s.store.Projects().Get(ctx, projectID)
-			if err != nil {
-				return nil, Error.Wrap(err)
-			}
-		} else {
-			return nil, Error.Wrap(err)
-		}
-	}
-
-	return p, nil
 }
 
 // GetSalt is a method for querying project salt by id.
@@ -1689,24 +1512,6 @@ func (s *Service) GetUsersProjects(ctx context.Context) (ps []Project, err error
 	}
 
 	return
-}
-
-// GetMinimalProject returns a ProjectInfo copy of a project.
-func (s *Service) GetMinimalProject(project *Project) ProjectInfo {
-	info := ProjectInfo{
-		ID:          project.PublicID,
-		Name:        project.Name,
-		OwnerID:     project.OwnerID,
-		Description: project.Description,
-		MemberCount: project.MemberCount,
-		CreatedAt:   project.CreatedAt,
-	}
-
-	// if edgeURLs, ok := s.config.PlacementEdgeURLOverrides.Get(project.DefaultPlacement); ok {
-	// 	info.EdgeURLOverrides = &edgeURLs
-	// }
-
-	return info
 }
 
 // GenGetUsersProjects is a method for querying all projects for generated api.
@@ -1750,7 +1555,7 @@ func (s *Service) GetUsersOwnedProjectsPage(ctx context.Context, cursor Projects
 }
 
 // CreateProject is a method for creating new project.
-func (s *Service) CreateProject(ctx context.Context, projectInfo UpsertProjectInfo) (p *Project, err error) {
+func (s *Service) CreateProject(ctx context.Context, projectInfo ProjectInfo) (p *Project, err error) {
 	defer mon.Task()(&ctx)(&err)
 	user, err := s.getUserAndAuditLog(ctx, "create project")
 	if err != nil {
@@ -1779,15 +1584,13 @@ func (s *Service) CreateProject(ctx context.Context, projectInfo UpsertProjectIn
 		bandwidthLimit := memory.Size(newProjectLimits.Bandwidth)
 		p, err = tx.Projects().Insert(ctx,
 			&Project{
-				Description:             projectInfo.Description,
-				Name:                    projectInfo.Name,
-				OwnerID:                 user.ID,
-				UserAgent:               user.UserAgent,
-				StorageLimit:            &storageLimit,
-				BandwidthLimit:          &bandwidthLimit,
-				SegmentLimit:            &newProjectLimits.Segment,
-				DefaultPlacement:        user.DefaultPlacement,
-				PrevDaysUntilExpiration: 0,
+				Description:    projectInfo.Description,
+				Name:           projectInfo.Name,
+				OwnerID:        user.ID,
+				UserAgent:      user.UserAgent,
+				StorageLimit:   &storageLimit,
+				BandwidthLimit: &bandwidthLimit,
+				SegmentLimit:   &newProjectLimits.Segment,
 			},
 		)
 		if err != nil {
@@ -1814,7 +1617,7 @@ func (s *Service) CreateProject(ctx context.Context, projectInfo UpsertProjectIn
 }
 
 // GenCreateProject is a method for creating new project for generated api.
-func (s *Service) GenCreateProject(ctx context.Context, projectInfo UpsertProjectInfo) (p *Project, httpError api.HTTPError) {
+func (s *Service) GenCreateProject(ctx context.Context, projectInfo ProjectInfo) (p *Project, httpError api.HTTPError) {
 	var err error
 	defer mon.Task()(&ctx)(&err)
 
@@ -1848,15 +1651,13 @@ func (s *Service) GenCreateProject(ctx context.Context, projectInfo UpsertProjec
 		bandwidthLimit := memory.Size(newProjectLimits.Bandwidth)
 		p, err = tx.Projects().Insert(ctx,
 			&Project{
-				Description:             projectInfo.Description,
-				Name:                    projectInfo.Name,
-				OwnerID:                 user.ID,
-				UserAgent:               user.UserAgent,
-				StorageLimit:            &storageLimit,
-				BandwidthLimit:          &bandwidthLimit,
-				SegmentLimit:            &newProjectLimits.Segment,
-				DefaultPlacement:        user.DefaultPlacement,
-				PrevDaysUntilExpiration: 0,
+				Description:    projectInfo.Description,
+				Name:           projectInfo.Name,
+				OwnerID:        user.ID,
+				UserAgent:      user.UserAgent,
+				StorageLimit:   &storageLimit,
+				BandwidthLimit: &bandwidthLimit,
+				SegmentLimit:   &newProjectLimits.Segment,
 			},
 		)
 		if err != nil {
@@ -1960,94 +1761,7 @@ func (s *Service) GenDeleteProject(ctx context.Context, projectID uuid.UUID) (ht
 
 // UpdateProject is a method for updating project name and description by id.
 // projectID here may be project.PublicID or project.ID.
-
-// boris --userID added as parameter.
-func (s *Service) UpdatingProject(ctx context.Context, user User, projectID uuid.UUID, updatedProject UpsertProjectInfo) (p *Project, err error) {
-	defer mon.Task()(&ctx)(&err)
-
-	err = ValidateNameAndDescription(updatedProject.Name, updatedProject.Description)
-	if err != nil {
-		return nil, Error.Wrap(err)
-	}
-
-	_, project, err := s.isProjectOwner(ctx, user.ID, projectID)
-	if err != nil {
-		return nil, Error.Wrap(err)
-	}
-
-	if updatedProject.Name != project.Name {
-		passesNameCheck, err := s.checkProjectName(ctx, updatedProject, user.ID)
-		if err != nil || !passesNameCheck {
-			return nil, ErrProjName.Wrap(err)
-		}
-	}
-	project.Name = updatedProject.Name
-	project.Description = updatedProject.Description
-	//boris
-	project.CreatedAt = updatedProject.CreatedAt
-	project.PrevDaysUntilExpiration = updatedProject.PrevDaysUntilExpiration
-
-	if project.BandwidthLimit != nil && *project.BandwidthLimit == 0 {
-		return nil, Error.New("current bandwidth limit for project is set to 0 (updating disabled)")
-	}
-	if project.StorageLimit != nil && *project.StorageLimit == 0 {
-		return nil, Error.New("current storage limit for project is set to 0 (updating disabled)")
-	}
-	if updatedProject.StorageLimit <= 0 || updatedProject.BandwidthLimit <= 0 {
-		return nil, Error.New("project limits must be greater than 0")
-	}
-
-	if updatedProject.StorageLimit > s.config.UsageLimits.Storage.Paid && updatedProject.StorageLimit > *project.StorageLimit {
-		return nil, Error.New("specified storage limit exceeds allowed maximum for current tier")
-	}
-
-	if updatedProject.BandwidthLimit > s.config.UsageLimits.Bandwidth.Paid && updatedProject.BandwidthLimit > *project.BandwidthLimit {
-		return nil, Error.New("specified bandwidth limit exceeds allowed maximum for current tier")
-	}
-
-	storageUsed, err := s.projectUsage.GetProjectStorageTotals(ctx, project.ID)
-	if err != nil {
-		return nil, Error.Wrap(err)
-	}
-	if updatedProject.StorageLimit.Int64() < storageUsed {
-		return nil, Error.New("cannot set storage limit below current usage")
-	}
-
-	bandwidthUsed, err := s.projectUsage.GetProjectBandwidthTotals(ctx, project.ID)
-	if err != nil {
-		return nil, Error.Wrap(err)
-	}
-	if updatedProject.BandwidthLimit.Int64() < bandwidthUsed {
-		return nil, Error.New("cannot set bandwidth limit below current usage")
-	}
-	/*
-		The purpose of userSpecifiedBandwidthLimit and userSpecifiedStorageLimit is to know if a user has set a bandwidth
-		or storage limit in the UI (to ensure their limits are not unintentionally modified by the satellite admin),
-		the BandwidthLimit and StorageLimit is still used for verifying limits during uploads and downloads.
-	*/
-	if project.StorageLimit != nil && updatedProject.StorageLimit != *project.StorageLimit {
-		project.UserSpecifiedStorageLimit = new(memory.Size)
-		*project.UserSpecifiedStorageLimit = updatedProject.StorageLimit
-	}
-	if project.BandwidthLimit != nil && updatedProject.BandwidthLimit != *project.BandwidthLimit {
-		project.UserSpecifiedBandwidthLimit = new(memory.Size)
-		*project.UserSpecifiedBandwidthLimit = updatedProject.BandwidthLimit
-	}
-
-	project.StorageLimit = new(memory.Size)
-	*project.StorageLimit = updatedProject.StorageLimit
-	project.BandwidthLimit = new(memory.Size)
-	*project.BandwidthLimit = updatedProject.BandwidthLimit
-
-	err = s.store.Projects().Update(ctx, project)
-	if err != nil {
-		return nil, Error.Wrap(err)
-	}
-
-	return project, nil
-}
-
-func (s *Service) UpdateProject(ctx context.Context, projectID uuid.UUID, updatedProject UpsertProjectInfo) (p *Project, err error) {
+func (s *Service) UpdateProject(ctx context.Context, projectID uuid.UUID, updatedProject ProjectInfo) (p *Project, err error) {
 	defer mon.Task()(&ctx)(&err)
 
 	user, err := s.getUserAndAuditLog(ctx, "update project name and description", zap.String("projectID", projectID.String()))
@@ -2060,11 +1774,12 @@ func (s *Service) UpdateProject(ctx context.Context, projectID uuid.UUID, update
 		return nil, Error.Wrap(err)
 	}
 
-	_, project, err := s.isProjectOwner(ctx, user.ID, projectID)
+	isMember, err := s.isProjectMember(ctx, user.ID, projectID)
 	if err != nil {
 		return nil, Error.Wrap(err)
 	}
 
+	project := isMember.project
 	if updatedProject.Name != project.Name {
 		passesNameCheck, err := s.checkProjectName(ctx, updatedProject, user.ID)
 		if err != nil || !passesNameCheck {
@@ -2073,9 +1788,7 @@ func (s *Service) UpdateProject(ctx context.Context, projectID uuid.UUID, update
 	}
 	project.Name = updatedProject.Name
 	project.Description = updatedProject.Description
-	//boris
-	project.CreatedAt = updatedProject.CreatedAt
-	project.PrevDaysUntilExpiration = updatedProject.PrevDaysUntilExpiration
+
 	if user.PaidTier {
 		if project.BandwidthLimit != nil && *project.BandwidthLimit == 0 {
 			return nil, Error.New("current bandwidth limit for project is set to 0 (updating disabled)")
@@ -2139,7 +1852,7 @@ func (s *Service) UpdateProject(ctx context.Context, projectID uuid.UUID, update
 }
 
 // GenUpdateProject is a method for updating project name and description by id for generated api.
-func (s *Service) GenUpdateProject(ctx context.Context, projectID uuid.UUID, projectInfo UpsertProjectInfo) (p *Project, httpError api.HTTPError) {
+func (s *Service) GenUpdateProject(ctx context.Context, projectID uuid.UUID, projectInfo ProjectInfo) (p *Project, httpError api.HTTPError) {
 	var err error
 	defer mon.Task()(&ctx)(&err)
 
@@ -2295,9 +2008,9 @@ func (s *Service) AddProjectMembers(ctx context.Context, projectID uuid.UUID, em
 	return users, nil
 }
 
-// DeleteProjectMembersAndInvitations removes users and invitations by email from given project.
+// DeleteProjectMembers removes users by email from given project.
 // projectID here may be project.PublicID or project.ID.
-func (s *Service) DeleteProjectMembersAndInvitations(ctx context.Context, projectID uuid.UUID, emails []string) (err error) {
+func (s *Service) DeleteProjectMembers(ctx context.Context, projectID uuid.UUID, emails []string) (err error) {
 	defer mon.Task()(&ctx)(&err)
 	user, err := s.getUserAndAuditLog(ctx, "delete project members", zap.String("projectID", projectID.String()), zap.Strings("emails", emails))
 	if err != nil {
@@ -2312,24 +2025,13 @@ func (s *Service) DeleteProjectMembersAndInvitations(ctx context.Context, projec
 	projectID = isMember.project.ID
 
 	var userIDs []uuid.UUID
-	var invitedEmails []string
+	var userErr errs.Group
 
+	// collect user querying errors
 	for _, email := range emails {
-		invite, err := s.store.ProjectInvitations().Get(ctx, projectID, email)
-		if err == nil {
-			invitedEmails = append(invitedEmails, email)
-			continue
-		}
-		if !errs.Is(err, sql.ErrNoRows) {
-			return Error.Wrap(err)
-		}
-
 		user, err := s.store.Users().GetByEmail(ctx, email)
 		if err != nil {
-			if invite == nil {
-				return ErrValidation.New(teamMemberDoesNotExistErrMsg, email)
-			}
-			invitedEmails = append(invitedEmails, email)
+			userErr.Add(err)
 			continue
 		}
 
@@ -2344,16 +2046,14 @@ func (s *Service) DeleteProjectMembersAndInvitations(ctx context.Context, projec
 		userIDs = append(userIDs, user.ID)
 	}
 
+	if err = userErr.Err(); err != nil {
+		return ErrValidation.New(teamMemberDoesNotExistErrMsg)
+	}
+
 	// delete project members in transaction scope
-	err = s.store.WithTx(ctx, func(ctx context.Context, tx DBTx) (err error) {
+	err = s.store.WithTx(ctx, func(ctx context.Context, tx DBTx) error {
 		for _, uID := range userIDs {
 			err = tx.ProjectMembers().Delete(ctx, uID, projectID)
-			if err != nil {
-				return err
-			}
-		}
-		for _, email := range invitedEmails {
-			err = tx.ProjectInvitations().Delete(ctx, projectID, email)
 			if err != nil {
 				return err
 			}
@@ -2366,8 +2066,8 @@ func (s *Service) DeleteProjectMembersAndInvitations(ctx context.Context, projec
 	return Error.Wrap(err)
 }
 
-// GetProjectMembersAndInvitations returns the project members and invitations for a given project.
-func (s *Service) GetProjectMembersAndInvitations(ctx context.Context, projectID uuid.UUID, cursor ProjectMembersCursor) (pmp *ProjectMembersPage, err error) {
+// GetProjectMembers returns ProjectMembers for given Project.
+func (s *Service) GetProjectMembers(ctx context.Context, projectID uuid.UUID, cursor ProjectMembersCursor) (pmp *ProjectMembersPage, err error) {
 	defer mon.Task()(&ctx)(&err)
 
 	user, err := s.getUserAndAuditLog(ctx, "get project members", zap.String("projectID", projectID.String()))
@@ -2384,7 +2084,7 @@ func (s *Service) GetProjectMembersAndInvitations(ctx context.Context, projectID
 		cursor.Limit = maxLimit
 	}
 
-	pmp, err = s.store.ProjectMembers().GetPagedWithInvitationsByProjectID(ctx, projectID, cursor)
+	pmp, err = s.store.ProjectMembers().GetPagedByProjectID(ctx, projectID, cursor)
 	if err != nil {
 		return nil, Error.Wrap(err)
 	}
@@ -2659,28 +2359,6 @@ func (s *Service) DeleteAPIKeys(ctx context.Context, ids []uuid.UUID) (err error
 	return Error.Wrap(err)
 }
 
-// GetAllAPIKeyNamesByProjectID returns all api key names by project ID.
-func (s *Service) GetAllAPIKeyNamesByProjectID(ctx context.Context, projectID uuid.UUID) (names []string, err error) {
-	defer mon.Task()(&ctx)(&err)
-
-	user, err := s.getUserAndAuditLog(ctx, "get all api key names by project ID", zap.String("projectID", projectID.String()))
-	if err != nil {
-		return nil, Error.Wrap(err)
-	}
-
-	isMember, err := s.isProjectMember(ctx, user.ID, projectID)
-	if err != nil {
-		return nil, Error.Wrap(err)
-	}
-
-	names, err = s.store.APIKeys().GetAllNamesByProjectID(ctx, isMember.project.ID)
-	if err != nil {
-		return nil, Error.Wrap(err)
-	}
-
-	return names, nil
-}
-
 // DeleteAPIKeyByNameAndProjectID deletes api key by name and project ID.
 // ID here may be project.publicID or project.ID.
 func (s *Service) DeleteAPIKeyByNameAndProjectID(ctx context.Context, name string, projectID uuid.UUID) (err error) {
@@ -2807,12 +2485,12 @@ func (s *Service) GetBucketTotals(ctx context.Context, projectID uuid.UUID, curs
 		return nil, Error.Wrap(err)
 	}
 
-	isMember, err := s.isProjectMember(ctx, user.ID, projectID)
+	_, err = s.isProjectMember(ctx, user.ID, projectID)
 	if err != nil {
 		return nil, Error.Wrap(err)
 	}
 
-	usage, err := s.projectAccounting.GetBucketTotals(ctx, isMember.project.ID, cursor, before)
+	usage, err := s.projectAccounting.GetBucketTotals(ctx, projectID, cursor, before)
 	if err != nil {
 		return nil, Error.Wrap(err)
 	}
@@ -2974,7 +2652,7 @@ func (s *Service) GetProjectUsageLimits(ctx context.Context, projectID uuid.UUID
 		return nil, Error.Wrap(err)
 	}
 
-	prUsageLimits, err := s.getProjectUsageLimits(ctx, isMember.project.ID, false)
+	prUsageLimits, err := s.getProjectUsageLimits(ctx, isMember.project.ID)
 	if err != nil {
 		return nil, Error.Wrap(err)
 	}
@@ -3016,7 +2694,7 @@ func (s *Service) GetTotalUsageLimits(ctx context.Context) (_ *ProjectUsageLimit
 	var totalBandwidthUsed int64
 
 	for _, pr := range projects {
-		prUsageLimits, err := s.getProjectUsageLimits(ctx, pr.ID, true)
+		prUsageLimits, err := s.getProjectUsageLimits(ctx, pr.ID)
 		if err != nil {
 			return nil, Error.Wrap(err)
 		}
@@ -3035,7 +2713,7 @@ func (s *Service) GetTotalUsageLimits(ctx context.Context) (_ *ProjectUsageLimit
 	}, nil
 }
 
-func (s *Service) getProjectUsageLimits(ctx context.Context, projectID uuid.UUID, getBandwidthTotals bool) (_ *ProjectUsageLimits, err error) {
+func (s *Service) getProjectUsageLimits(ctx context.Context, projectID uuid.UUID) (_ *ProjectUsageLimits, err error) {
 	defer mon.Task()(&ctx)(&err)
 
 	storageLimit, err := s.projectUsage.GetProjectStorageLimit(ctx, projectID)
@@ -3055,18 +2733,10 @@ func (s *Service) getProjectUsageLimits(ctx context.Context, projectID uuid.UUID
 	if err != nil {
 		return nil, err
 	}
-
-	var bandwidthUsed int64
-	if getBandwidthTotals {
-		bandwidthUsed, err = s.projectUsage.GetProjectBandwidthTotals(ctx, projectID)
-	} else {
-		now := s.nowFn()
-		bandwidthUsed, err = s.projectUsage.GetProjectBandwidth(ctx, projectID, now.Year(), now.Month(), now.Day())
-	}
+	bandwidthUsed, err := s.projectUsage.GetProjectBandwidthTotals(ctx, projectID)
 	if err != nil {
 		return nil, err
 	}
-
 	segmentUsed, err := s.projectUsage.GetProjectSegmentTotals(ctx, projectID)
 	if err != nil {
 		return nil, err
@@ -3180,7 +2850,7 @@ func (s *Service) checkProjectLimit(ctx context.Context, userID uuid.UUID) (curr
 		return 0, Error.Wrap(err)
 	}
 
-	projects, err := s.store.Projects().GetOwn(ctx, userID)
+	projects, err := s.GetUsersProjects(ctx)
 	if err != nil {
 		return 0, Error.Wrap(err)
 	}
@@ -3193,7 +2863,7 @@ func (s *Service) checkProjectLimit(ctx context.Context, userID uuid.UUID) (curr
 }
 
 // checkProjectName is used to check if user has used project name before.
-func (s *Service) checkProjectName(ctx context.Context, projectInfo UpsertProjectInfo, userID uuid.UUID) (passesNameCheck bool, err error) {
+func (s *Service) checkProjectName(ctx context.Context, projectInfo ProjectInfo, userID uuid.UUID) (passesNameCheck bool, err error) {
 	defer mon.Task()(&ctx)(&err)
 	passesCheck := true
 
@@ -3249,9 +2919,10 @@ func (s *Service) authorize(ctx context.Context, userID uuid.UUID, expiration ti
 	if err != nil {
 		return nil, Error.New("authorization failed. no user with id: %s", userID.String())
 	}
-	// if user.Status != Active {
-	// 	return nil, Error.New("authorization failed. no active user with id: %s", userID.String())
-	// }
+
+	if user.Status != Active {
+		return nil, Error.New("authorization failed. no active user with id: %s", userID.String())
+	}
 	return WithUser(ctx, user), nil
 }
 
@@ -3265,9 +2936,16 @@ type isProjectMember struct {
 func (s *Service) isProjectOwner(ctx context.Context, userID uuid.UUID, projectID uuid.UUID) (isOwner bool, project *Project, err error) {
 	defer mon.Task()(&ctx)(&err)
 
-	project, err = s.GetProjectNoAuth(ctx, projectID)
+	project, err = s.store.Projects().GetByPublicID(ctx, projectID)
 	if err != nil {
-		return false, nil, err
+		if errors.Is(err, sql.ErrNoRows) {
+			project, err = s.store.Projects().Get(ctx, projectID)
+			if err != nil {
+				return false, nil, Error.Wrap(err)
+			}
+		} else {
+			return false, nil, Error.Wrap(err)
+		}
 	}
 
 	if project.OwnerID != userID {
@@ -3281,10 +2959,14 @@ func (s *Service) isProjectOwner(ctx context.Context, userID uuid.UUID, projectI
 // projectID can be either private ID or public ID (project.ID/project.PublicID).
 func (s *Service) isProjectMember(ctx context.Context, userID uuid.UUID, projectID uuid.UUID) (_ isProjectMember, err error) {
 	defer mon.Task()(&ctx)(&err)
-
-	project, err := s.GetProjectNoAuth(ctx, projectID)
+	var project *Project
+	project, err = s.store.Projects().GetByPublicID(ctx, projectID)
 	if err != nil {
-		return isProjectMember{}, err
+		tempError := err
+		project, err = s.store.Projects().Get(ctx, projectID)
+		if err != nil {
+			return isProjectMember{}, Error.Wrap(errs.Combine(tempError, err))
+		}
 	}
 
 	memberships, err := s.store.ProjectMembers().GetByMemberID(ctx, userID)
@@ -3333,12 +3015,6 @@ func EtherscanURL(tx string) string {
 
 // ErrWalletNotClaimed shows that no address is claimed by the user.
 var ErrWalletNotClaimed = errs.Class("wallet is not claimed")
-
-// TestSwapDepositWallets replaces the existing handler for deposit wallets with
-// the one specified for use in testing.
-func (payment Payments) TestSwapDepositWallets(dw payments.DepositWallets) {
-	payment.service.depositWallets = dw
-}
 
 // ClaimWallet requests a new wallet for the users to be used for payments. If wallet is already claimed,
 // it will return with the info without error.
@@ -3406,10 +3082,6 @@ func (payment Payments) WalletPayments(ctx context.Context) (_ WalletPayments, e
 	if err != nil {
 		return WalletPayments{}, Error.Wrap(err)
 	}
-	txns, err := payment.service.billing.ListSource(ctx, user.ID, billing.StorjScanBonusSource)
-	if err != nil {
-		return WalletPayments{}, Error.Wrap(err)
-	}
 
 	var paymentInfos []PaymentInfo
 	for _, walletPayment := range walletPayments {
@@ -3435,50 +3107,10 @@ func (payment Payments) WalletPayments(ctx context.Context) (_ WalletPayments, e
 			Timestamp: txInfo.CreatedAt.UTC(),
 		})
 	}
-	for _, txn := range txns {
-		var meta struct {
-			ReferenceID string
-			LogIndex    int
-		}
-		err = json.NewDecoder(bytes.NewReader(txn.Metadata)).Decode(&meta)
-		if err != nil {
-			return WalletPayments{}, Error.Wrap(err)
-		}
-		paymentInfos = append(paymentInfos, PaymentInfo{
-			ID:        fmt.Sprintf("%s#%d", meta.ReferenceID, meta.LogIndex),
-			Type:      txn.Source,
-			Wallet:    address.Hex(),
-			Amount:    txn.Amount,
-			Status:    string(txn.Status),
-			Link:      EtherscanURL(meta.ReferenceID),
-			Timestamp: txn.Timestamp,
-		})
-	}
 
 	return WalletPayments{
 		Payments: paymentInfos,
 	}, nil
-}
-
-// WalletPaymentsWithConfirmations returns with all the native blockchain payments (including pending) for a user's wallet.
-func (payment Payments) WalletPaymentsWithConfirmations(ctx context.Context) (paymentsWithConfirmations []payments.WalletPaymentWithConfirmations, err error) {
-	defer mon.Task()(&ctx)(&err)
-
-	user, err := GetUser(ctx)
-	if err != nil {
-		return nil, Error.Wrap(err)
-	}
-	address, err := payment.service.depositWallets.Get(ctx, user.ID)
-	if err != nil {
-		return nil, Error.Wrap(err)
-	}
-
-	paymentsWithConfirmations, err = payment.service.depositWallets.PaymentsWithConfirmations(ctx, address)
-	if err != nil {
-		return nil, Error.Wrap(err)
-	}
-
-	return
 }
 
 // Purchase makes a purchase of `price` amount with description of `desc` and payment method with id of `paymentMethodID`.
@@ -3735,335 +3367,4 @@ func (s *Service) SetUserSettings(ctx context.Context, request UpsertUserSetting
 	}
 
 	return settings, nil
-}
-
-// GetUserProjectInvitations returns a user's pending project member invitations.
-func (s *Service) GetUserProjectInvitations(ctx context.Context) (_ []ProjectInvitation, err error) {
-	defer mon.Task()(&ctx)(&err)
-
-	user, err := s.getUserAndAuditLog(ctx, "get project member invitations")
-	if err != nil {
-		return nil, Error.Wrap(err)
-	}
-
-	invites, err := s.store.ProjectInvitations().GetByEmail(ctx, user.Email)
-	if err != nil {
-		return nil, Error.Wrap(err)
-	}
-
-	var active []ProjectInvitation
-	for _, invite := range invites {
-		if !s.IsProjectInvitationExpired(&invite) {
-			active = append(active, invite)
-		}
-	}
-
-	return active, nil
-}
-
-// ProjectInvitationResponse represents a response to a project member invitation.
-type ProjectInvitationResponse int
-
-const (
-	// ProjectInvitationDecline represents rejection of a project member invitation.
-	ProjectInvitationDecline ProjectInvitationResponse = iota
-	// ProjectInvitationAccept represents acceptance of a project member invitation.
-	ProjectInvitationAccept
-)
-
-// RespondToProjectInvitation handles accepting or declining a user's project member invitation.
-// The given project ID may be the internal or public ID.
-func (s *Service) RespondToProjectInvitation(ctx context.Context, projectID uuid.UUID, response ProjectInvitationResponse) (err error) {
-	defer mon.Task()(&ctx)(&err)
-
-	user, err := s.getUserAndAuditLog(ctx, "project member invitation response",
-		zap.String("projectID", projectID.String()),
-		zap.Any("response", response),
-	)
-	if err != nil {
-		return Error.Wrap(err)
-	}
-
-	if response != ProjectInvitationAccept && response != ProjectInvitationDecline {
-		return ErrValidation.New(projInviteResponseInvalidErrMsg)
-	}
-
-	proj, err := s.GetProjectNoAuth(ctx, projectID)
-	if err != nil {
-		return Error.Wrap(err)
-	}
-	projectID = proj.ID
-
-	// log deletion errors that don't affect the outcome
-	deleteWithLog := func() {
-		err := s.store.ProjectInvitations().Delete(ctx, projectID, user.Email)
-		if err != nil {
-			s.log.Warn("error deleting project invitation",
-				zap.Error(err),
-				zap.String("email", user.Email),
-				zap.String("projectID", projectID.String()),
-			)
-		}
-	}
-
-	_, err = s.isProjectMember(ctx, user.ID, projectID)
-	if err == nil {
-		deleteWithLog()
-		if response == ProjectInvitationDecline {
-			return ErrAlreadyMember.New(projInviteAlreadyMemberErrMsg)
-		}
-		return nil
-	}
-
-	invite, err := s.store.ProjectInvitations().Get(ctx, projectID, user.Email)
-	if err != nil {
-		if !errs.Is(err, sql.ErrNoRows) {
-			return Error.Wrap(err)
-		}
-		if response == ProjectInvitationDecline {
-			return nil
-		}
-		return ErrProjectInviteInvalid.New(projInviteInvalidErrMsg)
-	}
-
-	if s.IsProjectInvitationExpired(invite) {
-		return ErrProjectInviteInvalid.New(projInviteInvalidErrMsg)
-	}
-
-	if response == ProjectInvitationDecline {
-		return Error.Wrap(s.store.ProjectInvitations().Delete(ctx, projectID, user.Email))
-	}
-
-	_, err = s.store.ProjectMembers().Insert(ctx, user.ID, projectID)
-	if err != nil {
-		return Error.Wrap(err)
-	}
-
-	deleteWithLog()
-
-	return nil
-}
-
-// InviteProjectMembers invites users by email to given project.
-// If an invitation already exists and has expired, it will be replaced and the user will be sent a new email.
-// projectID here may be project.PublicID or project.ID.
-func (s *Service) InviteProjectMembers(ctx context.Context, projectID uuid.UUID, emails []string) (invites []ProjectInvitation, err error) {
-	defer mon.Task()(&ctx)(&err)
-	user, err := s.getUserAndAuditLog(ctx, "invite project members", zap.String("projectID", projectID.String()), zap.Strings("emails", emails))
-	if err != nil {
-		return nil, Error.Wrap(err)
-	}
-
-	isMember, err := s.isProjectMember(ctx, user.ID, projectID)
-	if err != nil {
-		return nil, Error.Wrap(err)
-	}
-	projectID = isMember.project.ID
-
-	var users []*User
-	var newUserEmails []string
-	for _, email := range emails {
-		invite, err := s.store.ProjectInvitations().Get(ctx, projectID, email)
-		if err != nil && !errs.Is(err, sql.ErrNoRows) {
-			return nil, Error.Wrap(err)
-		}
-		if invite != nil && !s.IsProjectInvitationExpired(invite) {
-			return nil, ErrAlreadyInvited.New(projInviteExistsErrMsg, email)
-		}
-
-		invitedUser, err := s.store.Users().GetByEmail(ctx, email)
-		if err == nil {
-			_, err = s.isProjectMember(ctx, invitedUser.ID, projectID)
-			if err != nil && !ErrNoMembership.Has(err) {
-				return nil, Error.Wrap(err)
-			} else if err == nil {
-				return nil, ErrAlreadyMember.New("%s is already a member", email)
-			}
-			users = append(users, invitedUser)
-		} else if errs.Is(err, sql.ErrNoRows) {
-			newUserEmails = append(newUserEmails, email)
-		} else {
-			return nil, Error.Wrap(err)
-		}
-	}
-
-	inviteTokens := make(map[string]string)
-	// add project invites in transaction scope
-	err = s.store.WithTx(ctx, func(ctx context.Context, tx DBTx) error {
-		for _, email := range emails {
-			invite, err := tx.ProjectInvitations().Upsert(ctx, &ProjectInvitation{
-				ProjectID: projectID,
-				Email:     email,
-				InviterID: &user.ID,
-			})
-			if err != nil {
-				return err
-			}
-			token, err := s.CreateInviteToken(ctx, isMember.project.PublicID, email, invite.CreatedAt)
-			if err != nil {
-				return err
-			}
-			inviteTokens[email] = token
-			invites = append(invites, *invite)
-		}
-		return nil
-	})
-	if err != nil {
-		return nil, Error.Wrap(err)
-	}
-
-	baseLink := fmt.Sprintf("%s/invited", s.satelliteAddress)
-	for _, invited := range users {
-		inviteLink := fmt.Sprintf("%s?invite=%s", baseLink, inviteTokens[invited.Email])
-
-		userName := invited.ShortName
-		if userName == "" {
-			userName = invited.FullName
-		}
-		s.mailService.SendRenderedAsync(
-			ctx,
-			[]post.Address{{Address: invited.Email, Name: userName}},
-			&ExistingUserProjectInvitationEmail{
-				InviterEmail: user.Email,
-				Region:       s.satelliteName,
-				SignInLink:   inviteLink,
-			},
-		)
-	}
-	for _, email := range newUserEmails {
-		inviteLink := fmt.Sprintf("%s?invite=%s", baseLink, inviteTokens[email])
-		s.mailService.SendRenderedAsync(
-			ctx,
-			[]post.Address{{Address: email}},
-			&NewUserProjectInvitationEmail{
-				InviterEmail: user.Email,
-				Region:       s.satelliteName,
-				SignUpLink:   inviteLink,
-			},
-		)
-	}
-
-	return invites, nil
-}
-
-// IsProjectInvitationExpired returns whether the project member invitation has expired.
-func (s *Service) IsProjectInvitationExpired(invite *ProjectInvitation) bool {
-	return time.Now().After(invite.CreatedAt.Add(s.config.ProjectInvitationExpiration))
-}
-
-// GetInviteByToken returns a project invite given an invite token.
-func (s *Service) GetInviteByToken(ctx context.Context, token string) (invite *ProjectInvitation, err error) {
-	defer mon.Task()(&ctx)(&err)
-
-	publicProjectID, email, err := s.ParseInviteToken(ctx, token)
-	if err != nil {
-		return nil, ErrProjectInviteInvalid.Wrap(err)
-	}
-
-	project, err := s.store.Projects().GetByPublicID(ctx, publicProjectID)
-	if err != nil {
-		if !errs.Is(err, sql.ErrNoRows) {
-			return nil, Error.Wrap(err)
-		}
-		return nil, ErrProjectInviteInvalid.New(projInviteInvalidErrMsg)
-	}
-
-	invite, err = s.store.ProjectInvitations().Get(ctx, project.ID, email)
-	if err != nil {
-		if !errs.Is(err, sql.ErrNoRows) {
-			return nil, Error.Wrap(err)
-		}
-		return nil, ErrProjectInviteInvalid.New(projInviteInvalidErrMsg)
-	}
-	if s.IsProjectInvitationExpired(invite) {
-		return nil, ErrProjectInviteInvalid.New(projInviteInvalidErrMsg)
-	}
-
-	return invite, nil
-}
-
-// GetInviteLink returns a link for project invites.
-func (s *Service) GetInviteLink(ctx context.Context, publicProjectID uuid.UUID, email string) (_ string, err error) {
-	defer mon.Task()(&ctx)(&err)
-
-	user, err := s.getUserAndAuditLog(ctx, "get invite link", zap.String("projectID", publicProjectID.String()), zap.String("email", email))
-	if err != nil {
-		return "", Error.Wrap(err)
-	}
-
-	isMember, err := s.isProjectMember(ctx, user.ID, publicProjectID)
-	if err != nil {
-		return "", Error.Wrap(err)
-	}
-
-	invite, err := s.store.ProjectInvitations().Get(ctx, isMember.project.ID, email)
-	if err != nil {
-		if !errs.Is(err, sql.ErrNoRows) {
-			return "", Error.Wrap(err)
-		}
-		return "", ErrProjectInviteInvalid.New(projInviteInvalidErrMsg)
-	}
-
-	token, err := s.CreateInviteToken(ctx, publicProjectID, email, invite.CreatedAt)
-	if err != nil {
-		return "", Error.Wrap(err)
-	}
-
-	return fmt.Sprintf("%s/invited?invite=%s", s.satelliteAddress, token), nil
-}
-
-// CreateInviteToken creates a token for project invite links.
-// Internal use only, since it doesn't check if the project is valid or the user is a member of the project.
-func (s *Service) CreateInviteToken(ctx context.Context, publicProjectID uuid.UUID, email string, inviteDate time.Time) (_ string, err error) {
-	defer mon.Task()(&ctx)(&err)
-
-	linkClaims := consoleauth.Claims{
-		ID:         publicProjectID,
-		Email:      email,
-		Expiration: inviteDate.Add(s.config.ProjectInvitationExpiration),
-	}
-
-	claimJson, err := linkClaims.JSON()
-	if err != nil {
-		return "", err
-	}
-
-	token := consoleauth.Token{Payload: claimJson}
-	signature, err := s.tokens.SignToken(token)
-	if err != nil {
-		return "", err
-	}
-	token.Signature = signature
-
-	return token.String(), nil
-}
-
-// ParseInviteToken parses a token from project invite links.
-func (s *Service) ParseInviteToken(ctx context.Context, token string) (publicID uuid.UUID, email string, err error) {
-	defer mon.Task()(&ctx)(&err)
-
-	parsedToken, err := consoleauth.FromBase64URLString(token)
-	valid, err := s.tokens.ValidateToken(parsedToken)
-	if err != nil {
-		return uuid.UUID{}, "", err
-	}
-	if !valid {
-		return uuid.UUID{}, "", ErrTokenInvalid.New("incorrect signature")
-	}
-
-	claims, err := consoleauth.FromJSON(parsedToken.Payload)
-	if err != nil {
-		return uuid.UUID{}, "", ErrTokenInvalid.New("JSON decoder: %w", err)
-	}
-
-	if time.Now().After(claims.Expiration) {
-		return uuid.UUID{}, "", ErrTokenExpiration.New("invite token expired")
-	}
-
-	return claims.ID, claims.Email, nil
-}
-
-// TestSetNow allows tests to have the Service act as if the current time is whatever they want.
-func (s *Service) TestSetNow(now func() time.Time) {
-	s.nowFn = now
 }

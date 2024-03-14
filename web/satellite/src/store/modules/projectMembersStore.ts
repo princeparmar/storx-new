@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Storx Labs, Inc.
+// Copyright (C) 2023 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 import { reactive } from 'vue';
@@ -7,7 +7,6 @@ import { defineStore } from 'pinia';
 import {
     ProjectMember,
     ProjectMemberCursor,
-    ProjectMemberItemModel,
     ProjectMemberOrderBy,
     ProjectMembersApi,
     ProjectMembersPage,
@@ -20,7 +19,6 @@ export class ProjectMembersState {
     public cursor: ProjectMemberCursor = new ProjectMemberCursor();
     public page: ProjectMembersPage = new ProjectMembersPage();
     public selectedProjectMembersEmails: string[] = [];
-    public lastProjectID = '';
 }
 
 export const useProjectMembersStore = defineStore('projectMembers', () => {
@@ -28,12 +26,8 @@ export const useProjectMembersStore = defineStore('projectMembers', () => {
 
     const api: ProjectMembersApi = new ProjectMembersApiGql();
 
-    async function inviteMembers(emails: string[], projectID: string): Promise<void> {
-        await api.invite(projectID, emails);
-    }
-
-    async function getInviteLink(email: string, projectID: string): Promise<string> {
-        return await api.getInviteLink(projectID, email);
+    async function addProjectMembers(emails: string[], projectID: string): Promise<void> {
+        await api.add(projectID, emails);
     }
 
     async function deleteProjectMembers(projectID: string): Promise<void> {
@@ -45,13 +39,16 @@ export const useProjectMembersStore = defineStore('projectMembers', () => {
     async function getProjectMembers(page: number, projectID: string, limit = DEFAULT_PAGE_LIMIT): Promise<ProjectMembersPage> {
         state.cursor.page = page;
         state.cursor.limit = limit;
-        state.lastProjectID = projectID;
 
         const projectMembersPage: ProjectMembersPage = await api.get(projectID, state.cursor);
 
         state.page = projectMembersPage;
-        state.page.getAllItems().forEach(item => {
-            item.setSelected(state.selectedProjectMembersEmails.includes(item.getEmail()));
+        state.page.projectMembers = state.page.projectMembers.map(member => {
+            if (state.selectedProjectMembersEmails.includes(member.user.email)) {
+                member.isSelected = true;
+            }
+
+            return member;
         });
 
         return projectMembersPage;
@@ -81,30 +78,27 @@ export const useProjectMembersStore = defineStore('projectMembers', () => {
         state.cursor.orderDirection = direction;
     }
 
-    function toggleProjectMemberSelection(projectMember: ProjectMemberItemModel) {
-        const email = projectMember.getEmail();
-
-        if (!state.selectedProjectMembersEmails.includes(email)) {
-            projectMember.setSelected(true);
-            state.selectedProjectMembersEmails.push(email);
+    function toggleProjectMemberSelection(projectMember: ProjectMember) {
+        if (!state.selectedProjectMembersEmails.includes(projectMember.user.email)) {
+            projectMember.isSelected = true;
+            state.selectedProjectMembersEmails.push(projectMember.user.email);
 
             return;
         }
 
-        projectMember.setSelected(false);
+        projectMember.isSelected = false;
         state.selectedProjectMembersEmails = state.selectedProjectMembersEmails.filter(projectMemberEmail => {
-            return projectMemberEmail !== email;
+            return projectMemberEmail !== projectMember.user.email;
         });
     }
 
     function clearProjectMemberSelection() {
         state.selectedProjectMembersEmails = [];
-        state.page.getAllItems().forEach(member => member.setSelected(false));
-    }
+        state.page.projectMembers = state.page.projectMembers.map((projectMember: ProjectMember) => {
+            projectMember.isSelected = false;
 
-    async function refresh(): Promise<void> {
-        clearProjectMemberSelection();
-        await getProjectMembers(state.cursor.page, state.lastProjectID, state.cursor.limit);
+            return projectMember;
+        });
     }
 
     function clear() {
@@ -115,8 +109,7 @@ export const useProjectMembersStore = defineStore('projectMembers', () => {
 
     return {
         state,
-        inviteMembers,
-        getInviteLink,
+        addProjectMembers,
         deleteProjectMembers,
         getProjectMembers,
         setSearchQuery,
@@ -127,7 +120,6 @@ export const useProjectMembersStore = defineStore('projectMembers', () => {
         setPageNumber,
         toggleProjectMemberSelection,
         clearProjectMemberSelection,
-        refresh,
         clear,
     };
 });

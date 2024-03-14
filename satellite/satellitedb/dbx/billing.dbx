@@ -110,13 +110,6 @@ read all (
 	orderby desc billing_transaction.timestamp
 )
 
-read all (
-	select billing_transaction
-	where billing_transaction.user_id = ?
-	where billing_transaction.source = ?
-	orderby desc billing_transaction.timestamp
-)
-
 read first (
 	select billing_transaction
 	where billing_transaction.source = ?

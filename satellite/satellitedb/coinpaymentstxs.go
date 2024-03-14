@@ -53,8 +53,17 @@ func (db *coinPaymentsTransactions) ListAccount(ctx context.Context, userID uuid
 		return nil, err
 	}
 
-	txs, err := convertSlice(dbxTXs, fromDBXCoinpaymentsTransaction)
-	return txs, Error.Wrap(err)
+	var txs []stripe.Transaction
+	for _, dbxTX := range dbxTXs {
+		tx, err := fromDBXCoinpaymentsTransaction(dbxTX)
+		if err != nil {
+			return nil, errs.Wrap(err)
+		}
+
+		txs = append(txs, *tx)
+	}
+
+	return txs, nil
 }
 
 // TestInsert inserts new coinpayments transaction into DB.
@@ -117,17 +126,17 @@ func (db *coinPaymentsTransactions) TestLockRate(ctx context.Context, id coinpay
 	return Error.Wrap(err)
 }
 
-// fromDBXCoinpaymentsTransaction converts *dbx.CoinpaymentsTransaction to stripecoinpayments.Transaction.
-func fromDBXCoinpaymentsTransaction(dbxCPTX *dbx.CoinpaymentsTransaction) (stripe.Transaction, error) {
+// fromDBXCoinpaymentsTransaction converts *dbx.CoinpaymentsTransaction to *stripecoinpayments.Transaction.
+func fromDBXCoinpaymentsTransaction(dbxCPTX *dbx.CoinpaymentsTransaction) (*stripe.Transaction, error) {
 	userID, err := uuid.FromBytes(dbxCPTX.UserId)
 	if err != nil {
-		return stripe.Transaction{}, errs.Wrap(err)
+		return nil, errs.Wrap(err)
 	}
 
 	// TODO: the currency here should be passed in to this function or stored
 	//  in the database.
 
-	return stripe.Transaction{
+	return &stripe.Transaction{
 		ID:        coinpayments.TransactionID(dbxCPTX.Id),
 		AccountID: userID,
 		Address:   dbxCPTX.Address,

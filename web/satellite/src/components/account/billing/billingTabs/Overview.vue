@@ -1,4 +1,4 @@
-// Copyright (C) 2022 Storx Labs, Inc.
+// Copyright (C) 2022 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -25,7 +25,7 @@
                         v-if="showChargesTooltip"
                         class="total-cost__card__charges-tooltip"
                     >
-                        <span class="total-cost__card__charges-tooltip__tooltip-text">If you still have Storage and Egress remaining in your free tier, you won't be charged. This information is to help you estimate what the charges would have been had you graduated to the paid tier.</span>
+                        <span class="total-cost__card__charges-tooltip__tooltip-text">If you still have Storage and Bandwidth remaining in your free tier, you won't be charged. This information is to help you estimate what the charges would have been had you graduated to the paid tier.</span>
                     </div>
                     <p
                         class="total-cost__card__link-text"
@@ -93,14 +93,14 @@ import { computed, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 
 import { centsToDollars } from '@/utils/strings';
-import { RouteConfig } from '@/types/router';
+import { RouteConfig } from '@/router';
 import { SHORT_MONTHS_NAMES } from '@/utils/constants/date';
 import { AccountBalance } from '@/types/payments';
+import { AnalyticsHttpApi } from '@/api/analytics';
 import { AnalyticsErrorEventSource, AnalyticsEvent } from '@/utils/constants/analyticsEventNames';
 import { useNotify } from '@/utils/hooks';
 import { useBillingStore } from '@/store/modules/billingStore';
 import { useProjectsStore } from '@/store/modules/projectsStore';
-import { useAnalyticsStore } from '@/store/modules/analyticsStore';
 
 import UsageAndChargesItem from '@/components/account/billing/billingTabs/UsageAndChargesItem.vue';
 import VButton from '@/components/common/VButton.vue';
@@ -109,7 +109,8 @@ import EstimatedChargesIcon from '@/../static/images/account/billing/totalEstima
 import AvailableBalanceIcon from '@/../static/images/account/billing/availableBalanceIcon.svg';
 import CalendarIcon from '@/../static/images/account/billing/calendar-icon.svg';
 
-const analyticsStore = useAnalyticsStore();
+const analytics: AnalyticsHttpApi = new AnalyticsHttpApi();
+
 const billingStore = useBillingStore();
 const projectsStore = useProjectsStore();
 const notify = useNotify();
@@ -151,12 +152,12 @@ const priceSummary = computed((): number => {
 });
 
 function routeToBillingHistory(): void {
-    analyticsStore.eventTriggered(AnalyticsEvent.SEE_PAYMENTS_CLICKED);
+    analytics.eventTriggered(AnalyticsEvent.SEE_PAYMENTS_CLICKED);
     router.push(RouteConfig.Account.with(RouteConfig.Billing).with(RouteConfig.BillingHistory).path);
 }
 
 function routeToPaymentMethods(): void {
-    analyticsStore.eventTriggered(AnalyticsEvent.EDIT_PAYMENT_METHOD_CLICKED);
+    analytics.eventTriggered(AnalyticsEvent.EDIT_PAYMENT_METHOD_CLICKED);
     router.push(RouteConfig.Account.with(RouteConfig.Billing).with(RouteConfig.BillingPaymentMethods).path);
 }
 
@@ -175,7 +176,7 @@ onMounted(async () => {
     try {
         await projectsStore.getProjects();
     } catch (error) {
-        notify.notifyError(error, AnalyticsErrorEventSource.BILLING_OVERVIEW_TAB);
+        await notify.error(error.message, AnalyticsErrorEventSource.BILLING_OVERVIEW_TAB);
         isDataFetching.value = false;
         return;
     }
@@ -184,7 +185,7 @@ onMounted(async () => {
         await billingStore.getProjectUsageAndChargesCurrentRollup();
         await billingStore.getProjectUsagePriceModel();
     } catch (error) {
-        notify.notifyError(error, AnalyticsErrorEventSource.BILLING_OVERVIEW_TAB);
+        await notify.error(error.message, AnalyticsErrorEventSource.BILLING_OVERVIEW_TAB);
     }
 
     isDataFetching.value = false;

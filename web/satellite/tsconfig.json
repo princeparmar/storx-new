@@ -16,15 +16,13 @@
     "resolveJsonModule": true,
     "useUnknownInCatchVariables": false, // TODO: reenable it later
     "types": [
-      "vuetify",
+      "webpack-env",
+      "jest",
       "filesystem"
     ],
     "paths": {
       "@/*": [
         "src/*"
-      ],
-      "@poc/*": [
-        "vuetify-poc/src/*"
       ]
     },
     "lib": [
@@ -35,12 +33,12 @@
     ]
   },
   "include": [
-    "vuetify-poc/src/**/*.ts",
-    "vuetify-poc/src/**/*.vue",
     "src/**/*.ts",
+    "src/**/*.tsx",
     "src/**/*.vue",
     "src/types/*.d.ts",
-    "tests/**/*.ts"
+    "tests/**/*.ts",
+    "tests/**/*.tsx"
   ],
   "exclude": [
     "node_modules"

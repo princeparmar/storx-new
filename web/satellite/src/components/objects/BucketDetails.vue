@@ -1,4 +1,4 @@
-// Copyright (C) 2022 Storx Labs, Inc.
+// Copyright (C) 2022 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -15,17 +15,7 @@
                 <p>{{ bucket.name }} created at {{ creationDate }}</p>
             </div>
         </div>
-        <VButton
-            class="bucket-details__button"
-            width="unset"
-            border-radius="8px"
-            font-size="12px"
-            icon="back"
-            label="Back"
-            is-white
-            :on-press="openBucket"
-        />
-        <bucket-details-overview :bucket="bucket" />
+        <bucket-details-overview class="bucket-details__table" :bucket="bucket" />
         <VOverallLoader v-if="isLoading" />
     </div>
 </template>
@@ -35,8 +25,9 @@ import { computed, onBeforeMount, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
 import { Bucket } from '@/types/buckets';
-import { RouteConfig } from '@/types/router';
+import { RouteConfig } from '@/router';
 import { MONTHS_NAMES } from '@/utils/constants/date';
+import { AnalyticsHttpApi } from '@/api/analytics';
 import { MODALS } from '@/utils/constants/appStatePopUps';
 import { EdgeCredentials } from '@/types/accessGrants';
 import { AnalyticsErrorEventSource } from '@/utils/constants/analyticsEventNames';
@@ -44,21 +35,20 @@ import { useNotify } from '@/utils/hooks';
 import { useAppStore } from '@/store/modules/appStore';
 import { useBucketsStore } from '@/store/modules/bucketsStore';
 import { useProjectsStore } from '@/store/modules/projectsStore';
-import { useAnalyticsStore } from '@/store/modules/analyticsStore';
 
 import BucketDetailsOverview from '@/components/objects/BucketDetailsOverview.vue';
 import VOverallLoader from '@/components/common/VOverallLoader.vue';
-import VButton from '@/components/common/VButton.vue';
 
 import ArrowRightIcon from '@/../static/images/common/arrowRight.svg';
 
-const analyticsStore = useAnalyticsStore();
 const bucketsStore = useBucketsStore();
 const appStore = useAppStore();
 const projectsStore = useProjectsStore();
 const notify = useNotify();
 const router = useRouter();
 const route = useRoute();
+
+const analytics: AnalyticsHttpApi = new AnalyticsHttpApi();
 
 const isLoading = ref<boolean>(false);
 
@@ -80,8 +70,6 @@ const edgeCredentials = computed((): EdgeCredentials => {
  * Bucket from store found by router prop.
  */
 const bucket = computed((): Bucket => {
-    if (!projectsStore.state.selectedProject.id) return new Bucket();
-
     const data = bucketsStore.state.page.buckets.find(
         (bucket: Bucket) => bucket.name === route.query.bucketName,
     );
@@ -117,19 +105,19 @@ async function openBucket(): Promise<void> {
                 await bucketsStore.setS3Client(projectsStore.state.selectedProject.id);
                 isLoading.value = false;
             } catch (error) {
-                notify.notifyError(error, AnalyticsErrorEventSource.BUCKET_DETAILS_PAGE);
+                notify.error(error.message, AnalyticsErrorEventSource.BUCKET_DETAILS_PAGE);
                 isLoading.value = false;
                 return;
             }
         }
 
-        analyticsStore.pageVisit(RouteConfig.Buckets.with(RouteConfig.UploadFile).path);
-        await router.push(RouteConfig.Buckets.with(RouteConfig.UploadFile).path);
+        analytics.pageVisit(RouteConfig.Buckets.with(RouteConfig.UploadFile).path);
+        router.push(RouteConfig.Buckets.with(RouteConfig.UploadFile).path);
 
         return;
     }
 
-    appStore.updateActiveModal(MODALS.enterBucketPassphrase);
+    appStore.updateActiveModal(MODALS.openBucket);
 }
 
 /**
@@ -146,9 +134,6 @@ onBeforeMount((): void => {
 <style lang="scss" scoped>
 .bucket-details {
     width: 100%;
-    display: flex;
-    flex-direction: column;
-    gap: 24px;
 
     &__header {
         display: flex;
@@ -187,15 +172,8 @@ onBeforeMount((): void => {
         }
     }
 
-    &__button {
-        padding: 6px 16px;
-        box-shadow: 0 0 20px rgb(0 0 0 / 4%);
-        align-self: flex-start;
-
-        :deep(.label) {
-            color: var(--c-black) !important;
-            line-height: 20px;
-        }
+    &__table {
+        margin-top: 40px;
     }
 }
 </style>

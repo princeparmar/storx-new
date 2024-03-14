@@ -1,4 +1,4 @@
-// Copyright (C) 2022 Storx Labs, Inc.
+// Copyright (C) 2022 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -66,9 +66,9 @@
     </div>
 </template>
 
-<script setup lang="ts">
+<script lang="ts">
 
-import { computed, onBeforeMount, ref, watch } from 'vue';
+import { computed, defineComponent, onBeforeMount, ref } from 'vue';
 
 import ErrorIcon from '@/../static/images/register/ErrorInfo.svg';
 import PasswordShownIcon from '@/../static/images/common/passwordShown.svg';
@@ -77,116 +77,125 @@ import PasswordHiddenIcon from '@/../static/images/common/passwordHidden.svg';
 const textType = 'text';
 const passwordType = 'password';
 
-const props = withDefaults(defineProps<{
-    additionalLabel?: string,
-    initValue?: string,
-    label?: string,
-    height?: string,
-    width?: string,
-    error?: string,
-    placeholder?: string,
-    roleDescription?: string,
-    currentLimit?: number,
-    maxSymbols?: number,
-    isOptional?: boolean,
-    isLimitShown?: boolean,
-    isMultiline?: boolean,
-    isLoading?: boolean,
-    isPassword?: boolean,
-    isWhite?: boolean,
-    withIcon?: boolean,
-    disabled?: boolean,
-}>(), {
-    additionalLabel: '',
-    initValue: '',
-    placeholder: '',
-    label: '',
-    error: '',
-    roleDescription: 'input-container',
-    height: '48px',
-    width: '100%',
-    currentLimit: 0,
-    maxSymbols: Number.MAX_SAFE_INTEGER,
-    isOptional: false,
-    isLimitShown: false,
-    isLoading: false,
-    isPassword: false,
-    isWhite: false,
-    withIcon: false,
-    disabled: false,
-});
-
-const emit = defineEmits(['showPasswordStrength', 'hidePasswordStrength', 'setData']);
-
-const value = ref('');
-const isPasswordShown = ref(false);
-const type = ref(textType);
-
-const isPasswordHiddenState = computed(() => {
-    return props.isPassword && !isPasswordShown.value;
-});
-
-const isPasswordShownState = computed(() => {
-    return props.isPassword && isPasswordShown.value;
-});
-
-/**
- * Returns style objects depends on props.
- */
-const style = computed(() => {
-    return {
-        inputStyle: {
-            width: props.width,
-            height: props.height,
-            padding: props.withIcon ? '0 30px 0 50px' : '',
+export default defineComponent({
+    name: 'VInput',
+    components: {
+        PasswordHiddenIcon,
+        PasswordShownIcon,
+        ErrorIcon,
+    },
+    props:  {
+        additionalLabel: {
+            type: String,
+            default: '',
         },
-        labelStyle: {
-            color: props.isWhite ? 'white' : '#354049',
+        currentLimit: {
+            type: Number,
+            default: 0,
         },
-        errorStyle: {
-            color: props.isWhite ? 'white' : '#FF5560',
+        isOptional: Boolean,
+        isLimitShown: Boolean,
+        isMultiline: Boolean,
+        isLoading: Boolean,
+        initValue: {
+            type: String,
+            default: '',
         },
-    };
-});
+        label: {
+            type: String,
+            default: '',
+        },
+        placeholder: {
+            type: String,
+            default: 'default',
+        },
+        isPassword: Boolean,
+        height: {
+            type: String,
+            default: '48px',
+        },
+        width: {
+            type: String,
+            default: '100%',
+        },
+        error: {
+            type: String,
+            default: '',
+        },
+        maxSymbols: {
+            type: Number,
+            default: Number.MAX_SAFE_INTEGER,
+        },
+        isWhite: Boolean,
+        withIcon: Boolean,
+        disabled: Boolean,
+        roleDescription: {
+            type: String,
+            default: 'input-container',
+        },
+    },
+    emits: ['showPasswordStrength', 'hidePasswordStrength', 'setData'],
+    setup(props, ctx) {
+        const value = ref('');
+        const isPasswordShown = ref(false);
+        const type = ref(textType);
 
-function showPasswordStrength(): void {
-    emit('showPasswordStrength');
-}
+        onBeforeMount(() => {
+            type.value = props.isPassword ? passwordType : textType;
+            value.value = props.initValue;
+        });
+        return {
+            isPasswordHiddenState: computed(() => {
+                return props.isPassword && !isPasswordShown.value;
+            }),
+            isPasswordShownState: computed(() => {
+                return props.isPassword && isPasswordShown.value;
+            }),
+            /**
+             * Returns style objects depends on props.
+             */
+            style: computed(() => {
+                return {
+                    inputStyle: {
+                        width: props.width,
+                        height: props.height,
+                        padding: props.withIcon ? '0 30px 0 50px' : '',
+                    },
+                    labelStyle: {
+                        color: props.isWhite ? 'white' : '#354049',
+                    },
+                    errorStyle: {
+                        color: props.isWhite ? 'white' : '#FF5560',
+                    },
+                };
+            }),
+            showPasswordStrength(): void {
+                ctx.emit('showPasswordStrength');
+            },
+            hidePasswordStrength(): void {
+                ctx.emit('hidePasswordStrength');
+            },
+            /**
+             * triggers on input.
+             */
+            onInput(event: Event): void {
+                const target = event.target as HTMLInputElement;
+                value.value = target.value;
 
-function hidePasswordStrength(): void {
-    emit('hidePasswordStrength');
-}
-
-/**
- * triggers on input.
- */
-function onInput(event: Event): void {
-    const target = event.target as HTMLInputElement;
-    value.value = target.value;
-
-    emit('setData', target.value);
-}
-
-/**
- * Triggers input type between text and password to show/hide symbols.
- */
-function changeVision(): void {
-    isPasswordShown.value = !isPasswordShown.value;
-    type.value = isPasswordShown.value ? textType : passwordType;
-}
-
-watch(() => props.initValue, (val, oldVal) => {
-    if (val === oldVal) return;
-    value.value = val;
-});
-
-onBeforeMount(() => {
-    type.value = props.isPassword ? passwordType : textType;
-
-    if (props.initValue) {
-        value.value = props.initValue;
-        emit('setData', props.initValue);
-    }
+                ctx.emit('setData', value.value);
+            },
+            /**
+             * Triggers input type between text and password to show/hide symbols.
+             */
+            changeVision(): void {
+                isPasswordShown.value = !isPasswordShown.value;
+                type.value = isPasswordShown.value ? textType : passwordType;
+            },
+            value,
+            isPasswordShown,
+            type,
+        };
+    },
 });
 </script>
 
@@ -236,14 +245,12 @@ onBeforeMount(() => {
                 width: 100%;
                 display: flex;
                 justify-content: space-between;
-                align-items: center;
                 font-size: 16px;
                 line-height: 21px;
                 color: #354049;
 
                 & .add-label {
-                    font-size: 12px;
-                    line-height: 18px;
+                    font-size: 'font_medium' sans-serif;
                     color: var(--c-grey-5) !important;
                 }
             }

@@ -1,34 +1,28 @@
-// Copyright (C) 2022 Storx Labs, Inc.
+// Copyright (C) 2022 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 import { defineStore } from 'pinia';
 
 import { AnalyticsHttpApi } from '@/api/analytics';
-import { AnalyticsErrorEventSource, AnalyticsEvent } from '@/utils/constants/analyticsEventNames';
 
 export const useAnalyticsStore = defineStore('analytics', () => {
     const analytics: AnalyticsHttpApi = new AnalyticsHttpApi();
 
-    function eventTriggered(eventName: AnalyticsEvent, props?: {[p: string]: string}): void {
-        analytics.eventTriggered(eventName, props).catch(_ => {});
+    function eventTriggered(eventName: string): void {
+        analytics.eventTriggered(eventName).then(r => {}).catch();
     }
 
-    function linkEventTriggered(eventName: AnalyticsEvent, link: string): void {
-        analytics.linkEventTriggered(eventName, link).catch(_ => {});
+    function linkEventTriggered(eventName: string, link: string): void {
+        analytics.linkEventTriggered(eventName, link).then(r => {}).catch();
     }
 
-    function pageVisit(pageName: string): void {
-        analytics.pageVisit(pageName).catch(_ => {});
-    }
-
-    function errorEventTriggered(source: AnalyticsErrorEventSource): void {
-        analytics.errorEventTriggered(source).catch(_ => {});
+    function pageVisited(pageName: string): void {
+        analytics.pageVisit(pageName).then(r => {}).catch();
     }
 
     return {
         eventTriggered,
-        errorEventTriggered,
         linkEventTriggered,
-        pageVisit,
+        pageVisited,
     };
 });

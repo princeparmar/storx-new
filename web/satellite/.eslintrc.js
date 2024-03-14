@@ -1,4 +1,4 @@
-// Copyright (C) 2021 Storx Labs, Inc.
+// Copyright (C) 2021 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 module.exports = {
@@ -18,8 +18,11 @@ module.exports = {
         parser: '@typescript-eslint/parser',
         sourceType: 'module',
         ecmaVersion: 2020,
+        vueFeatures: {
+            filter: true,
+        },
     },
-    plugins: ['eslint-plugin-import'],
+    plugins: ['storj', 'eslint-plugin-import'],
     rules: {
         'linebreak-style': ['error', 'unix'],
 
@@ -44,7 +47,7 @@ module.exports = {
                 },
                 {
                     'group': 'internal',
-                    'pattern': '@?(poc)/components/**',
+                    'pattern': '@/components/**',
                     'position': 'after',
                 },
                 {
@@ -80,13 +83,13 @@ module.exports = {
         'vue/no-unused-refs': ['warn'],
         'vue/no-unused-vars': ['warn'],
         'vue/no-useless-v-bind': ['warn'],
-        'vue/no-v-model-argument': ['off'],
-        'vue/valid-v-slot': ['error', { 'allowModifiers': true }],
 
         'vue/no-useless-template-attributes': ['off'], // TODO: fix later
         'vue/no-multiple-template-root': ['off'], // it's possible to have multiple roots in template in Vue 3
 
         'vue/no-undef-components': ['warn', { ignorePatterns: ['router-link', 'router-view'] }],
+
+        'storj/vue/require-annotation': 'warn',
 
         'vue/no-v-html': ['error'],
     },

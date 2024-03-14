@@ -1,4 +1,4 @@
-// Copyright (C) 2022 Storx Labs, Inc.
+// Copyright (C) 2022 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -78,8 +78,8 @@ watch(() => props.dashboardRef, () => {
     align-items: center;
     padding: 1.375rem;
     font-family: 'font_regular', sans-serif;
-    background-color: var(--c-light-orange-1);
-    border: 1px solid var(--c-light-orange-2);
+    background-color: var(--c-light-blue-1);
+    border: 1px solid var(--c-light-blue-2);
     border-radius: 10px;
     box-shadow: 0 7px 20px rgba(0 0 0 / 15%);
 
@@ -95,7 +95,7 @@ watch(() => props.dashboardRef, () => {
         margin-right: 1.375rem;
 
         :deep(path) {
-            fill: var(--c-orange-4);
+            fill: var(--c-blue-4);
         }
     }
 

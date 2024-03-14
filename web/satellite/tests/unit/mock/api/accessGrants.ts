@@ -1,4 +1,4 @@
-// Copyright (C) 2020 Storx Labs, Inc.
+// Copyright (C) 2020 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 import {
@@ -34,10 +34,6 @@ export class AccessGrantsMock implements AccessGrantsApi {
 
     deleteByNameAndProjectID(_name: string, _projectID: string): Promise<void> {
         return Promise.resolve();
-    }
-
-    getAllAPIKeyNames(_projectID: string): Promise<string[]> {
-        return Promise.resolve([]);
     }
 
     getGatewayCredentials(_accessGrant: string, _requestURL: string): Promise<EdgeCredentials> {

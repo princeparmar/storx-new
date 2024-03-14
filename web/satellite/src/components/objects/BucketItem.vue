@@ -1,4 +1,4 @@
-// Copyright (C) 2021 Storx Labs, Inc.
+// Copyright (C) 2021 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -18,10 +18,6 @@
                         <details-icon />
                         <p class="bucket-item__functional__dropdown__item__label">View Bucket Details</p>
                     </div>
-                    <div class="bucket-item__functional__dropdown__item" @click.stop="onShareClick">
-                        <share-icon />
-                        <p class="bucket-item__functional__dropdown__item__label">Share Bucket</p>
-                    </div>
                     <div class="bucket-item__functional__dropdown__item delete" @click.stop="onDeleteClick">
                         <delete-icon />
                         <p class="bucket-item__functional__dropdown__item__label">Delete Bucket</p>
@@ -36,24 +32,20 @@
 import { computed, onMounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
-import { RouteConfig } from '@/types/router';
+import { RouteConfig } from '@/router';
 import { Bucket } from '@/types/buckets';
 import { LocalData } from '@/utils/localData';
 import { MODALS } from '@/utils/constants/appStatePopUps';
 import { useResize } from '@/composables/resize';
 import { useAppStore } from '@/store/modules/appStore';
-import { useBucketsStore } from '@/store/modules/bucketsStore';
-import { ShareType } from '@/types/browser';
 
 import TableItem from '@/components/common/TableItem.vue';
 
 import DeleteIcon from '@/../static/images/objects/delete.svg';
 import DetailsIcon from '@/../static/images/objects/details.svg';
-import ShareIcon from '@/../static/images/objects/share.svg';
 import DotsIcon from '@/../static/images/objects/dots.svg';
 
 const appStore = useAppStore();
-const bucketsStore = useBucketsStore();
 const router = useRouter();
 const route = useRoute();
 const { screenWidth } = useResize();
@@ -100,7 +92,7 @@ const itemToRender = computed((): { [key: string]: string | string[] } => {
     return { info: [
         props.itemData.name,
         `Storage ${props.itemData.storage.toFixed(2)}GB`,
-        `Egress ${props.itemData.egress.toFixed(2)}GB`,
+        `Bandwidth ${props.itemData.egress.toFixed(2)}GB`,
         `Objects ${props.itemData.objectCount.toString()}`,
         `Segments ${props.itemData.segmentCount.toString()}`,
         `Created ${formattedDate.value}`,
@@ -145,23 +137,6 @@ function onDetailsClick(): void {
     closeDropdown();
 }
 
-/**
- * Opens the Share modal for this bucket.
- */
-function onShareClick(): void {
-    bucketsStore.setFileComponentBucketName(props.itemData.name);
-    appStore.setShareModalType(ShareType.Bucket);
-
-    if (bucketsStore.state.promptForPassphrase) {
-        appStore.updateActiveModal(MODALS.enterBucketPassphrase);
-        bucketsStore.setEnterPassphraseCallback((): void => {
-            appStore.updateActiveModal(MODALS.share);
-        });
-        return;
-    }
-    appStore.updateActiveModal(MODALS.share);
-}
-
 onMounted((): void => {
     isGuideShown.value = !LocalData.getBucketGuideHidden();
 });
@@ -200,10 +175,10 @@ onMounted((): void => {
                     &:hover {
                         background-color: #f4f5f7;
                         font-family: 'font_medium', sans-serif;
-                        color: var(--c-orange-3);
+                        color: var(--c-blue-3);
 
                         svg :deep(path) {
-                            fill: var(--c-orange-3);
+                            fill: var(--c-blue-3);
                         }
                     }
                 }
@@ -221,7 +196,7 @@ onMounted((): void => {
                 flex-direction: column;
                 align-items: flex-start;
                 transform: translateX(-100%);
-                background-color: var(--c-orange-3);
+                background-color: var(--c-blue-3);
                 text-align: center;
                 border-radius: 8px;
                 box-sizing: border-box;
@@ -243,7 +218,7 @@ onMounted((): void => {
                     left: 10%;
                     border-width: 5px;
                     border-style: solid;
-                    border-color: var(--c-orange-3) transparent transparent;
+                    border-color: var(--c-blue-3) transparent transparent;
                     transform: rotate(180deg);
 
                     @media screen and (width <= 550px) {
@@ -286,7 +261,7 @@ onMounted((): void => {
                             font-weight: 700;
                             font-size: 13px;
                             line-height: 20px;
-                            color: var(--c-orange-3);
+                            color: var(--c-blue-3);
                         }
                     }
                 }

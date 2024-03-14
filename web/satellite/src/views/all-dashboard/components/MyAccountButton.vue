@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Storx Labs, Inc.
+// Copyright (C) 2023 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -52,12 +52,13 @@
 import { computed, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
-import { RouteConfig } from '@/types/router';
+import { RouteConfig } from '@/router';
 import { useNotify } from '@/utils/hooks';
 import {
     AnalyticsErrorEventSource,
     AnalyticsEvent,
 } from '@/utils/constants/analyticsEventNames';
+import { AnalyticsHttpApi } from '@/api/analytics';
 import { AuthHttpApi } from '@/api/auth';
 import { APP_STATE_DROPDOWNS } from '@/utils/constants/appStatePopUps';
 import { useABTestingStore } from '@/store/modules/abTestingStore';
@@ -71,7 +72,6 @@ import { useProjectsStore } from '@/store/modules/projectsStore';
 import { useNotificationsStore } from '@/store/modules/notificationsStore';
 import { useObjectBrowserStore } from '@/store/modules/objectBrowserStore';
 import { useConfigStore } from '@/store/modules/configStore';
-import { useAnalyticsStore } from '@/store/modules/analyticsStore';
 
 import AccountIcon from '@/../static/images/navigation/account.svg';
 import ArrowDownIcon from '@/../static/images/common/dropIcon.svg';
@@ -85,9 +85,9 @@ const router = useRouter();
 const route = useRoute();
 const notify = useNotify();
 
+const analytics = new AnalyticsHttpApi();
 const auth = new AuthHttpApi();
 
-const analyticsStore = useAnalyticsStore();
 const configStore = useConfigStore();
 const projectsStore = useProjectsStore();
 const bucketsStore = useBucketsStore();
@@ -137,7 +137,7 @@ function navigateToBilling(): void {
 
     const routeConf = billing.with(RouteConfig.BillingOverview2).path;
     router.push(routeConf);
-    analyticsStore.pageVisit(routeConf);
+    analytics.pageVisit(routeConf);
 }
 
 /**
@@ -150,7 +150,7 @@ function navigateToSettings(): void {
         return;
     }
 
-    analyticsStore.pageVisit(settings);
+    analytics.pageVisit(settings);
     router.push(settings).catch(() => {return;});
 }
 
@@ -158,7 +158,7 @@ function navigateToSettings(): void {
  * Logouts user and navigates to login page.
  */
 async function onLogout(): Promise<void> {
-    analyticsStore.pageVisit(RouteConfig.Login.path);
+    analytics.pageVisit(RouteConfig.Login.path);
     await router.push(RouteConfig.Login.path);
 
     await Promise.all([
@@ -176,10 +176,10 @@ async function onLogout(): Promise<void> {
     ]);
 
     try {
-        analyticsStore.eventTriggered(AnalyticsEvent.LOGOUT_CLICKED);
+        analytics.eventTriggered(AnalyticsEvent.LOGOUT_CLICKED);
         await auth.logout();
     } catch (error) {
-        notify.notifyError(error, AnalyticsErrorEventSource.NAVIGATION_ACCOUNT_AREA);
+        await notify.error(error.message, AnalyticsErrorEventSource.NAVIGATION_ACCOUNT_AREA);
     }
 }
 </script>
@@ -189,20 +189,19 @@ async function onLogout(): Promise<void> {
     position: relative;
     display: flex;
     align-items: center;
-    padding: 10px 16px;
+    padding: 14px 18px;
     box-sizing: border-box;
+    color: var(--c-grey-6);
     cursor: pointer;
     background: var(--c-white);
     border: 1px solid var(--c-grey-3);
     border-radius: 8px;
     height: 44px;
-    color: var(--c-black);
-    box-shadow: 0 0 20px rgb(0 0 0 / 4%);
 
     &:hover,
     &:active,
     &:focus {
-        border: 1px solid var(--c-orange-3);
+        border: 1px solid var(--c-blue-3);
     }
 
     &__button {
@@ -214,32 +213,25 @@ async function onLogout(): Promise<void> {
         &__icon {
             transition-duration: 0.5s;
             margin-right: 10px;
-            height: 16px;
-            width: 16px;
-
-            :deep(path) {
-                fill: var(--c-black);
-            }
         }
 
         &__label {
             font-family: 'font_medium', sans-serif;
-            line-height: 20px;
-            font-weight: 700;
-            font-size: 12px;
-            color: var(--c-black);
+            font-size: 16px;
+            line-height: 23px;
+            color: var(--c-grey-6);
             margin-right: 10px;
             white-space: nowrap;
         }
 
         &__label.active {
-            color: var(--c-orange-3);
+            color: var(--c-blue-3);
         }
 
         &__icon.active {
 
             :deep(path) {
-                fill: var(--c-orange-3);
+                fill: var(--c-blue-3);
             }
         }
     }
@@ -296,7 +288,7 @@ async function onLogout(): Promise<void> {
                 &__link:focus {
 
                     svg :deep(path) {
-                        fill: var(--c-orange-3);
+                        fill: var(--c-blue-3);
                     }
                 }
             }
@@ -325,11 +317,11 @@ async function onLogout(): Promise<void> {
                 background-color: var(--c-grey-1);
 
                 p {
-                    color: var(--c-orange-3);
+                    color: var(--c-blue-3);
                 }
 
                 :deep(path) {
-                    fill: var(--c-orange-3);
+                    fill: var(--c-blue-3);
                 }
             }
 
@@ -347,14 +339,14 @@ async function onLogout(): Promise<void> {
         transform: rotate(180deg) scaleX(-1);
 
         :deep(path) {
-            fill: var(--c-orange-3);
+            fill: var(--c-blue-3);
         }
     }
 
     &__arrow.hovered {
 
         :deep(path) {
-            fill: var(--c-orange-3);
+            fill: var(--c-blue-3);
         }
     }
 }

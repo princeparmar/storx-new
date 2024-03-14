@@ -1,4 +1,4 @@
-// Copyright (C) 2021 Storx Labs, Inc.
+// Copyright (C) 2021 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -80,22 +80,23 @@
 import QRCode from 'qrcode';
 import { computed, onMounted, ref } from 'vue';
 
+import { AnalyticsHttpApi } from '@/api/analytics';
 import { AnalyticsErrorEventSource, AnalyticsEvent } from '@/utils/constants/analyticsEventNames';
 import { useNotify } from '@/utils/hooks';
 import { useUsersStore } from '@/store/modules/usersStore';
 import { useAppStore } from '@/store/modules/appStore';
 import { useConfigStore } from '@/store/modules/configStore';
-import { useAnalyticsStore } from '@/store/modules/analyticsStore';
 
 import ConfirmMFAInput from '@/components/account/mfa/ConfirmMFAInput.vue';
 import VButton from '@/components/common/VButton.vue';
 import VModal from '@/components/common/VModal.vue';
 
-const analyticsStore = useAnalyticsStore();
 const configStore = useConfigStore();
 const appStore = useAppStore();
 const usersStore = useUsersStore();
 const notify = useNotify();
+
+const analytics: AnalyticsHttpApi = new AnalyticsHttpApi();
 
 const isScan = ref<boolean>(true);
 const isEnable = ref<boolean>(false);
@@ -152,7 +153,7 @@ async function showCodes(): Promise<void> {
         isEnable.value = false;
         isCodes.value = true;
     } catch (error) {
-        notify.notifyError(error, AnalyticsErrorEventSource.ENABLE_MFA_MODAL);
+        await notify.error(error.message, AnalyticsErrorEventSource.ENABLE_MFA_MODAL);
     }
 }
 
@@ -177,10 +178,10 @@ async function enable(): Promise<void> {
         await usersStore.getUser();
         await showCodes();
 
-        analyticsStore.eventTriggered(AnalyticsEvent.MFA_ENABLED);
-        notify.success('MFA was enabled successfully');
+        analytics.eventTriggered(AnalyticsEvent.MFA_ENABLED);
+        await notify.success('MFA was enabled successfully');
     } catch (error) {
-        notify.notifyError(error, AnalyticsErrorEventSource.ENABLE_MFA_MODAL);
+        await notify.error(error.message, AnalyticsErrorEventSource.ENABLE_MFA_MODAL);
         isError.value = true;
     }
 
@@ -195,7 +196,7 @@ onMounted(async (): Promise<void> => {
     try {
         await QRCode.toCanvas(canvas.value, qrLink);
     } catch (error) {
-        notify.error(error.message, AnalyticsErrorEventSource.ENABLE_MFA_MODAL);
+        await notify.error(error.message, AnalyticsErrorEventSource.ENABLE_MFA_MODAL);
     }
 });
 </script>

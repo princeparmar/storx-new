@@ -66,10 +66,10 @@ type Satellite struct {
 
 	Core       *satellite.Core
 	API        *satellite.API
-	UI         *satellite.UI
 	Repairer   *satellite.Repairer
 	Auditor    *satellite.Auditor
 	Admin      *satellite.Admin
+	GC         *satellite.GarbageCollection
 	GCBF       *satellite.GarbageCollectionBF
 	RangedLoop *satellite.RangedLoop
 
@@ -173,14 +173,9 @@ type Satellite struct {
 		Service *mailservice.Service
 	}
 
-	ConsoleBackend struct {
+	Console struct {
 		Listener net.Listener
 		Service  *console.Service
-		Endpoint *consoleweb.Server
-	}
-
-	ConsoleFrontend struct {
-		Listener net.Listener
 		Endpoint *consoleweb.Server
 	}
 
@@ -226,7 +221,7 @@ func (system *Satellite) AddUser(ctx context.Context, newUser console.CreateUser
 	}
 
 	newUser.Password = newUser.FullName
-	user, err := system.API.Console.Service.CreateUser(ctx, newUser, regToken.Secret, false)
+	user, err := system.API.Console.Service.CreateUser(ctx, newUser, regToken.Secret)
 	if err != nil {
 		return nil, errs.Wrap(err)
 	}
@@ -261,7 +256,7 @@ func (system *Satellite) AddProject(ctx context.Context, ownerID uuid.UUID, name
 	if err != nil {
 		return nil, errs.Wrap(err)
 	}
-	project, err := system.API.Console.Service.CreateProject(ctx, console.UpsertProjectInfo{
+	project, err := system.API.Console.Service.CreateProject(ctx, console.ProjectInfo{
 		Name: name,
 	})
 	if err != nil {
@@ -290,6 +285,7 @@ func (system *Satellite) Close() error {
 		system.Repairer.Close(),
 		system.Auditor.Close(),
 		system.Admin.Close(),
+		system.GC.Close(),
 		system.GCBF.Close(),
 	)
 }
@@ -304,11 +300,6 @@ func (system *Satellite) Run(ctx context.Context) (err error) {
 	group.Go(func() error {
 		return errs2.IgnoreCanceled(system.API.Run(ctx))
 	})
-	if system.UI != nil {
-		group.Go(func() error {
-			return errs2.IgnoreCanceled(system.UI.Run(ctx))
-		})
-	}
 	group.Go(func() error {
 		return errs2.IgnoreCanceled(system.Repairer.Run(ctx))
 	})
@@ -317,6 +308,9 @@ func (system *Satellite) Run(ctx context.Context) (err error) {
 	})
 	group.Go(func() error {
 		return errs2.IgnoreCanceled(system.Admin.Run(ctx))
+	})
+	group.Go(func() error {
+		return errs2.IgnoreCanceled(system.GC.Run(ctx))
 	})
 	group.Go(func() error {
 		return errs2.IgnoreCanceled(system.GCBF.Run(ctx))
@@ -422,6 +416,10 @@ func (planet *Planet) newSatellite(ctx context.Context, prefix string, index int
 	config.Tally.ReadRollupBatchSize = 0
 	config.Rollup.DeleteTallies = false
 	config.Payments.BonusRate = 0
+	config.Payments.NodeEgressBandwidthPrice = 0
+	config.Payments.NodeRepairBandwidthPrice = 0
+	config.Payments.NodeAuditBandwidthPrice = 0
+	config.Payments.NodeDiskSpacePrice = 0
 	config.Identity.CertPath = ""
 	config.Identity.KeyPath = ""
 	config.Metainfo.DatabaseURL = ""
@@ -530,15 +528,6 @@ func (planet *Planet) newSatellite(ctx context.Context, prefix string, index int
 		return nil, errs.Wrap(err)
 	}
 
-	// only run if front-end endpoints on console back-end server are disabled.
-	var ui *satellite.UI
-	if !config.Console.FrontendEnable {
-		ui, err = planet.newUI(ctx, index, identity, config, api.ExternalAddress, api.Console.Listener.Addr().String())
-		if err != nil {
-			return nil, errs.Wrap(err)
-		}
-	}
-
 	adminPeer, err := planet.newAdmin(ctx, index, identity, db, metabaseDB, config, versionInfo)
 	if err != nil {
 		return nil, errs.Wrap(err)
@@ -550,6 +539,11 @@ func (planet *Planet) newSatellite(ctx context.Context, prefix string, index int
 	}
 
 	auditorPeer, err := planet.newAuditor(ctx, index, identity, db, metabaseDB, config, versionInfo)
+	if err != nil {
+		return nil, errs.Wrap(err)
+	}
+
+	gcPeer, err := planet.newGarbageCollection(ctx, index, identity, db, metabaseDB, config, versionInfo)
 	if err != nil {
 		return nil, errs.Wrap(err)
 	}
@@ -568,23 +562,23 @@ func (planet *Planet) newSatellite(ctx context.Context, prefix string, index int
 		peer.Mail.EmailReminders.TestSetLinkAddress("http://" + api.Console.Listener.Addr().String() + "/")
 	}
 
-	return createNewSystem(prefix, log, config, peer, api, ui, repairerPeer, auditorPeer, adminPeer, gcBFPeer, rangedLoopPeer), nil
+	return createNewSystem(prefix, log, config, peer, api, repairerPeer, auditorPeer, adminPeer, gcPeer, gcBFPeer, rangedLoopPeer), nil
 }
 
 // createNewSystem makes a new Satellite System and exposes the same interface from
 // before we split out the API. In the short term this will help keep all the tests passing
 // without much modification needed. However long term, we probably want to rework this
 // so it represents how the satellite will run when it is made up of many processes.
-func createNewSystem(name string, log *zap.Logger, config satellite.Config, peer *satellite.Core, api *satellite.API, ui *satellite.UI, repairerPeer *satellite.Repairer, auditorPeer *satellite.Auditor, adminPeer *satellite.Admin, gcBFPeer *satellite.GarbageCollectionBF, rangedLoopPeer *satellite.RangedLoop) *Satellite {
+func createNewSystem(name string, log *zap.Logger, config satellite.Config, peer *satellite.Core, api *satellite.API, repairerPeer *satellite.Repairer, auditorPeer *satellite.Auditor, adminPeer *satellite.Admin, gcPeer *satellite.GarbageCollection, gcBFPeer *satellite.GarbageCollectionBF, rangedLoopPeer *satellite.RangedLoop) *Satellite {
 	system := &Satellite{
 		Name:       name,
 		Config:     config,
 		Core:       peer,
 		API:        api,
-		UI:         ui,
 		Repairer:   repairerPeer,
 		Auditor:    auditorPeer,
 		Admin:      adminPeer,
+		GC:         gcPeer,
 		GCBF:       gcBFPeer,
 		RangedLoop: rangedLoopPeer,
 	}
@@ -632,7 +626,7 @@ func createNewSystem(name string, log *zap.Logger, config satellite.Config, peer
 	system.Audit.Reporter = auditorPeer.Audit.Reporter
 	system.Audit.ContainmentSyncChore = peer.Audit.ContainmentSyncChore
 
-	system.GarbageCollection.Sender = peer.GarbageCollection.Sender
+	system.GarbageCollection.Sender = gcPeer.GarbageCollection.Sender
 
 	system.ExpiredDeletion.Chore = peer.ExpiredDeletion.Chore
 	system.ZombieDeletion.Chore = peer.ZombieDeletion.Chore
@@ -674,15 +668,6 @@ func (planet *Planet) newAPI(ctx context.Context, index int, identity *identity.
 	planet.databases = append(planet.databases, rollupsWriteCacheCloser{rollupsWriteCache})
 
 	return satellite.NewAPI(log, identity, db, metabaseDB, revocationDB, liveAccounting, rollupsWriteCache, &config, versionInfo, nil)
-}
-
-func (planet *Planet) newUI(ctx context.Context, index int, identity *identity.FullIdentity, config satellite.Config, satelliteAddr, consoleAPIAddr string) (_ *satellite.UI, err error) {
-	defer mon.Task()(&ctx)(&err)
-
-	prefix := "satellite-ui" + strconv.Itoa(index)
-	log := planet.log.Named(prefix)
-
-	return satellite.NewUI(log, identity, &config, nil, satelliteAddr, consoleAPIAddr)
 }
 
 func (planet *Planet) newAdmin(ctx context.Context, index int, identity *identity.FullIdentity, db satellite.DB, metabaseDB *metabase.DB, config satellite.Config, versionInfo version.Info) (_ *satellite.Admin, err error) {
@@ -732,6 +717,20 @@ func (cache rollupsWriteCacheCloser) Close() error {
 	return cache.RollupsWriteCache.CloseAndFlush(context.TODO())
 }
 
+func (planet *Planet) newGarbageCollection(ctx context.Context, index int, identity *identity.FullIdentity, db satellite.DB, metabaseDB *metabase.DB, config satellite.Config, versionInfo version.Info) (_ *satellite.GarbageCollection, err error) {
+	defer mon.Task()(&ctx)(&err)
+
+	prefix := "satellite-gc" + strconv.Itoa(index)
+	log := planet.log.Named(prefix)
+
+	revocationDB, err := revocation.OpenDBFromCfg(ctx, config.Server.Config)
+	if err != nil {
+		return nil, errs.Wrap(err)
+	}
+	planet.databases = append(planet.databases, revocationDB)
+	return satellite.NewGarbageCollection(log, identity, db, metabaseDB, revocationDB, versionInfo, &config, nil)
+}
+
 func (planet *Planet) newGarbageCollectionBF(ctx context.Context, index int, db satellite.DB, metabaseDB *metabase.DB, config satellite.Config, versionInfo version.Info) (_ *satellite.GarbageCollectionBF, err error) {
 	defer mon.Task()(&ctx)(&err)
 
@@ -751,6 +750,7 @@ func (planet *Planet) newRangedLoop(ctx context.Context, index int, db satellite
 
 	prefix := "satellite-ranged-loop" + strconv.Itoa(index)
 	log := planet.log.Named(prefix)
+
 	return satellite.NewRangedLoop(log, db, metabaseDB, &config, nil)
 }
 

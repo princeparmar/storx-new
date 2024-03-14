@@ -4,7 +4,6 @@
 package admin
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -16,11 +15,9 @@ import (
 
 	"github.com/gorilla/mux"
 	"github.com/gorilla/schema"
-	"github.com/zeebo/errs/v2"
 
 	"storj.io/common/macaroon"
 	"storj.io/common/memory"
-	"storj.io/common/storj"
 	"storj.io/common/uuid"
 	"storj.io/storj/satellite/buckets"
 	"storj.io/storj/satellite/console"
@@ -443,82 +440,6 @@ func (server *Server) renameProject(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (server *Server) updateProjectsUserAgent(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-
-	vars := mux.Vars(r)
-	projectUUIDString, ok := vars["project"]
-	if !ok {
-		sendJSONError(w, "project-uuid missing",
-			"", http.StatusBadRequest)
-		return
-	}
-
-	projectUUID, err := uuid.FromString(projectUUIDString)
-	if err != nil {
-		sendJSONError(w, "invalid project-uuid",
-			err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	project, err := server.db.Console().Projects().Get(ctx, projectUUID)
-	if errors.Is(err, sql.ErrNoRows) {
-		sendJSONError(w, "project with specified uuid does not exist",
-			"", http.StatusNotFound)
-		return
-	}
-	if err != nil {
-		sendJSONError(w, "error getting project",
-			err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	creationDatePlusMonth := project.CreatedAt.AddDate(0, 1, 0)
-	if time.Now().After(creationDatePlusMonth) {
-		sendJSONError(w, "this project was created more than a month ago",
-			"we should update user agent only for recently created projects", http.StatusBadRequest)
-		return
-	}
-
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		sendJSONError(w, "failed to read body",
-			err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	var input struct {
-		UserAgent string `json:"userAgent"`
-	}
-
-	err = json.Unmarshal(body, &input)
-	if err != nil {
-		sendJSONError(w, "failed to unmarshal request",
-			err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	if input.UserAgent == "" {
-		sendJSONError(w, "UserAgent was not provided",
-			"", http.StatusBadRequest)
-		return
-	}
-
-	newUserAgent := []byte(input.UserAgent)
-
-	if bytes.Equal(project.UserAgent, newUserAgent) {
-		sendJSONError(w, "new UserAgent is equal to existing projects UserAgent",
-			"", http.StatusBadRequest)
-		return
-	}
-
-	err = server._updateProjectsUserAgent(ctx, project.ID, newUserAgent)
-	if err != nil {
-		sendJSONError(w, "failed to update projects user agent",
-			err.Error(), http.StatusInternalServerError)
-	}
-}
-
 func (server *Server) deleteProject(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
@@ -581,45 +502,6 @@ func (server *Server) deleteProject(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (server *Server) _updateProjectsUserAgent(ctx context.Context, projectID uuid.UUID, newUserAgent []byte) (err error) {
-	err = server.db.Console().Projects().UpdateUserAgent(ctx, projectID, newUserAgent)
-	if err != nil {
-		return err
-	}
-
-	listOptions := buckets.ListOptions{
-		Direction: buckets.DirectionForward,
-	}
-
-	allowedBuckets := macaroon.AllowedBuckets{
-		All: true,
-	}
-
-	projectBuckets, err := server.db.Buckets().ListBuckets(ctx, projectID, listOptions, allowedBuckets)
-	if err != nil {
-		return err
-	}
-
-	var errList errs.Group
-	for _, bucket := range projectBuckets.Items {
-		err = server.db.Buckets().UpdateUserAgent(ctx, projectID, bucket.Name, newUserAgent)
-		if err != nil {
-			errList.Append(err)
-		}
-
-		err = server.db.Attribution().UpdateUserAgent(ctx, projectID, bucket.Name, newUserAgent)
-		if err != nil {
-			errList.Append(err)
-		}
-	}
-
-	if errList.Err() != nil {
-		return errList.Err()
-	}
-
-	return nil
-}
-
 func (server *Server) checkInvoicing(ctx context.Context, w http.ResponseWriter, projectID uuid.UUID) (openInvoices bool) {
 	year, month, _ := server.nowFn().UTC().Date()
 	firstOfMonth := time.Date(year, month, 1, 0, 0, 0, 0, time.UTC)
@@ -656,7 +538,7 @@ func (server *Server) checkUsage(ctx context.Context, w http.ResponseWriter, pro
 	if err != nil {
 		sendJSONError(w, "unable to get project details",
 			err.Error(), http.StatusInternalServerError)
-		return false
+		return
 	}
 
 	// If user is paid tier, check the usage limit, otherwise it is ok to delete it.
@@ -664,7 +546,7 @@ func (server *Server) checkUsage(ctx context.Context, w http.ResponseWriter, pro
 	if err != nil {
 		sendJSONError(w, "unable to project owner tier",
 			err.Error(), http.StatusInternalServerError)
-		return false
+		return
 	}
 	if paid {
 		// check current month usage and do not allow deletion if usage exists
@@ -696,55 +578,6 @@ func (server *Server) checkUsage(ctx context.Context, w http.ResponseWriter, pro
 
 	// If we have open invoice items, do not delete the project yet and wait for invoice completion.
 	return server.checkInvoicing(ctx, w, projectID)
-}
-
-func (server *Server) createGeofenceForProject(w http.ResponseWriter, r *http.Request) {
-	placement, err := parsePlacementConstraint(r.URL.Query().Get("region"))
-	if err != nil {
-		sendJSONError(w, err.Error(), "available: EU, EEA, US, DE, NR", http.StatusBadRequest)
-		return
-	}
-
-	server.setGeofenceForProject(w, r, placement)
-}
-
-func (server *Server) deleteGeofenceForProject(w http.ResponseWriter, r *http.Request) {
-	server.setGeofenceForProject(w, r, storj.EveryCountry)
-}
-
-func (server *Server) setGeofenceForProject(w http.ResponseWriter, r *http.Request, placement storj.PlacementConstraint) {
-	ctx := r.Context()
-
-	vars := mux.Vars(r)
-	projectUUIDString, ok := vars["project"]
-	if !ok {
-		sendJSONError(w, "project-uuid missing",
-			"", http.StatusBadRequest)
-		return
-	}
-
-	projectUUID, err := uuid.FromString(projectUUIDString)
-	if err != nil {
-		sendJSONError(w, "invalid project-uuid",
-			err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	project, err := server.db.Console().Projects().Get(ctx, projectUUID)
-	if errors.Is(err, sql.ErrNoRows) {
-		sendJSONError(w, "project with specified uuid does not exist",
-			"", http.StatusNotFound)
-		return
-	}
-
-	project.DefaultPlacement = placement
-
-	err = server.db.Console().Projects().Update(ctx, project)
-	if err != nil {
-		sendJSONError(w, "unable to set geofence for project",
-			err.Error(), http.StatusInternalServerError)
-		return
-	}
 }
 
 func bucketNames(buckets []buckets.Bucket) []string {

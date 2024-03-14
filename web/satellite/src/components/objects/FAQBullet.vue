@@ -1,4 +1,4 @@
-// Copyright (C) 2021 Storx Labs, Inc.
+// Copyright (C) 2021 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -56,7 +56,7 @@ function toggle(): void {
                 font-size: 16px;
                 line-height: 32px;
                 letter-spacing: 0.75px;
-                color: var(--c-orange-6);
+                color: var(--c-blue-6);
             }
         }
 

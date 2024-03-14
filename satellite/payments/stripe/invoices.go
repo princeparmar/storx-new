@@ -75,87 +75,25 @@ func (invoices *invoices) Pay(ctx context.Context, invoiceID, paymentMethodID st
 	}, nil
 }
 
-func (invoices *invoices) Get(ctx context.Context, invoiceID string) (*payments.Invoice, error) {
-	params := &stripe.InvoiceParams{
-		Params: stripe.Params{
-			Context: ctx,
-		},
-	}
-	inv, err := invoices.service.stripeClient.Invoices().Get(invoiceID, params)
-	if err != nil {
-		return nil, Error.Wrap(err)
-	}
-
-	total := inv.Total
-	if inv.Lines != nil {
-		for _, line := range inv.Lines.Data {
-			// If amount is negative, this is a coupon or a credit line item.
-			// Add them to the total.
-			if line.Amount < 0 {
-				total -= line.Amount
-			}
-		}
-	}
-
-	return &payments.Invoice{
-		ID:          inv.ID,
-		CustomerID:  inv.Customer.ID,
-		Description: inv.Description,
-		Amount:      total,
-		Status:      convertStatus(inv.Status),
-		Link:        inv.InvoicePDF,
-		Start:       time.Unix(inv.PeriodStart, 0),
-	}, nil
-}
-
 // AttemptPayOverdueInvoices attempts to pay a user's open, overdue invoices.
 func (invoices *invoices) AttemptPayOverdueInvoices(ctx context.Context, userID uuid.UUID) (err error) {
-	defer mon.Task()(&ctx, userID)(&err)
-
 	customerID, err := invoices.service.db.Customers().GetCustomerID(ctx, userID)
 	if err != nil {
 		return Error.Wrap(err)
 	}
 
-	stripeInvoices, err := invoices.service.getInvoices(ctx, customerID, time.Unix(0, 0))
-	if err != nil {
-		return Error.Wrap(err)
+	params := &stripe.InvoiceListParams{
+		ListParams: stripe.ListParams{Context: ctx},
+		Customer:   &customerID,
+		Status:     stripe.String(string(stripe.InvoiceStatusOpen)),
 	}
 
-	if len(stripeInvoices) == 0 {
-		return nil
-	}
-
-	// first check users token balance
-	monetaryTokenBalance, err := invoices.service.billingDB.GetBalance(ctx, userID)
-	if err != nil {
-		invoices.service.log.Error("error getting token balance", zap.Error(err))
-		return Error.Wrap(err)
-	}
-	if monetaryTokenBalance.BaseUnits() > 0 {
-		err := invoices.service.PayInvoicesWithTokenBalance(ctx, userID, customerID, stripeInvoices)
-		if err != nil {
-			invoices.service.log.Error("error paying invoice(s) with token balance", zap.Error(err))
-			return Error.Wrap(err)
-		}
-		// get invoices again to see if any are still unpaid
-		stripeInvoices, err = invoices.service.getInvoices(ctx, customerID, time.Unix(0, 0))
-		if err != nil {
-			invoices.service.log.Error("error getting invoices for stripe customer", zap.String(customerID, customerID), zap.Error(err))
-			return Error.Wrap(err)
-		}
-	}
-	if len(stripeInvoices) > 0 {
-		return invoices.attemptPayOverdueInvoicesWithCC(ctx, stripeInvoices)
-	}
-	return nil
-}
-
-// AttemptPayOverdueInvoices attempts to pay a user's open, overdue invoices.
-func (invoices *invoices) attemptPayOverdueInvoicesWithCC(ctx context.Context, stripeInvoices []stripe.Invoice) (err error) {
 	var errGrp errs.Group
 
-	for _, stripeInvoice := range stripeInvoices {
+	invoicesIterator := invoices.service.stripeClient.Invoices().List(params)
+	for invoicesIterator.Next() {
+		stripeInvoice := invoicesIterator.Invoice()
+
 		params := &stripe.InvoicePayParams{Params: stripe.Params{Context: ctx}}
 		invResponse, err := invoices.service.stripeClient.Invoices().Pay(stripeInvoice.ID, params)
 		if err != nil {
@@ -167,6 +105,10 @@ func (invoices *invoices) attemptPayOverdueInvoicesWithCC(ctx context.Context, s
 			errGrp.Add(Error.New("invoice not paid after payment triggered %s", stripeInvoice.ID))
 		}
 
+	}
+
+	if err = invoicesIterator.Err(); err != nil {
+		return Error.Wrap(err)
 	}
 
 	return errGrp.Err()
@@ -219,20 +161,13 @@ func (invoices *invoices) List(ctx context.Context, userID uuid.UUID) (invoicesL
 	return invoicesList, nil
 }
 
-func (invoices *invoices) ListFailed(ctx context.Context, userID *uuid.UUID) (invoicesList []payments.Invoice, err error) {
+func (invoices *invoices) ListFailed(ctx context.Context) (invoicesList []payments.Invoice, err error) {
 	defer mon.Task()(&ctx)(&err)
 
+	status := string(stripe.InvoiceStatusOpen)
 	params := &stripe.InvoiceListParams{
 		ListParams: stripe.ListParams{Context: ctx},
-		Status:     stripe.String(string(stripe.InvoiceStatusOpen)),
-	}
-
-	if userID != nil {
-		customerID, err := invoices.service.db.Customers().GetCustomerID(ctx, *userID)
-		if err != nil {
-			return nil, Error.Wrap(err)
-		}
-		params.Customer = &customerID
+		Status:     &status,
 	}
 
 	invoicesIterator := invoices.service.stripeClient.Invoices().List(params)

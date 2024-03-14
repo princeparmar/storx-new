@@ -23,9 +23,7 @@ type WebappSessions interface {
 	// DeleteAllByUserID deletes all webapp sessions by user ID.
 	DeleteAllByUserID(ctx context.Context, userID uuid.UUID) (int64, error)
 	// UpdateExpiration updates the expiration time of the session.
-	UpdateExpiration(ctx context.Context, sessionID uuid.UUID, expiresAt time.Time) error
-	// DeleteExpired deletes all sessions that have expired before the provided timestamp.
-	DeleteExpired(ctx context.Context, now time.Time, asOfSystemTimeInterval time.Duration, pageSize int) error
+	UpdateExpiration(ctx context.Context, sessionID uuid.UUID, expiresAt time.Time) (err error)
 }
 
 // WebappSession represents a session on the satellite web app.

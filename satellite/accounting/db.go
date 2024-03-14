@@ -111,16 +111,16 @@ type ProjectUsageByDay struct {
 
 // BucketUsage consist of total bucket usage for period.
 type BucketUsage struct {
-	ProjectID  uuid.UUID `json:"projectID"`
-	BucketName string    `json:"bucketName"`
+	ProjectID  uuid.UUID
+	BucketName string
 
-	Storage      float64 `json:"storage"`
-	Egress       float64 `json:"egress"`
-	ObjectCount  int64   `json:"objectCount"`
-	SegmentCount int64   `json:"segmentCount"`
+	Storage      float64
+	Egress       float64
+	ObjectCount  int64
+	SegmentCount int64
 
-	Since  time.Time `json:"since"`
-	Before time.Time `json:"before"`
+	Since  time.Time
+	Before time.Time
 }
 
 // BucketUsageCursor holds info for bucket usage
@@ -133,15 +133,15 @@ type BucketUsageCursor struct {
 
 // BucketUsagePage represents bucket usage page result.
 type BucketUsagePage struct {
-	BucketUsages []BucketUsage `json:"bucketUsages"`
+	BucketUsages []BucketUsage
 
-	Search string `json:"search"`
-	Limit  uint   `json:"limit"`
-	Offset uint64 `json:"offset"`
+	Search string
+	Limit  uint
+	Offset uint64
 
-	PageCount   uint   `json:"pageCount"`
-	CurrentPage uint   `json:"currentPage"`
-	TotalCount  uint64 `json:"totalCount"`
+	PageCount   uint
+	CurrentPage uint
+	TotalCount  uint64
 }
 
 // BucketUsageRollup is total bucket usage info
@@ -212,15 +212,10 @@ type ProjectAccounting interface {
 	GetTallies(ctx context.Context) ([]BucketTally, error)
 	// CreateStorageTally creates a record for BucketStorageTally in the accounting DB table
 	CreateStorageTally(ctx context.Context, tally BucketStorageTally) error
-	// GetNonEmptyTallyBucketsInRange returns a list of bucket locations within the given range
-	// whose most recent tally does not represent empty usage.
-	GetNonEmptyTallyBucketsInRange(ctx context.Context, from, to metabase.BucketLocation) ([]metabase.BucketLocation, error)
 	// GetProjectSettledBandwidthTotal returns the sum of GET bandwidth usage settled for a projectID in the past time frame.
 	GetProjectSettledBandwidthTotal(ctx context.Context, projectID uuid.UUID, from time.Time) (_ int64, err error)
 	// GetProjectBandwidth returns project allocated bandwidth for the specified year, month and day.
 	GetProjectBandwidth(ctx context.Context, projectID uuid.UUID, year int, month time.Month, day int, asOfSystemInterval time.Duration) (int64, error)
-	// GetProjectSettledBandwidth returns the used settled bandwidth for the specified year and month.
-	GetProjectSettledBandwidth(ctx context.Context, projectID uuid.UUID, year int, month time.Month, asOfSystemInterval time.Duration) (int64, error)
 	// GetProjectDailyBandwidth returns bandwidth (allocated and settled) for the specified day.
 	GetProjectDailyBandwidth(ctx context.Context, projectID uuid.UUID, year int, month time.Month, day int) (int64, int64, int64, error)
 	// DeleteProjectBandwidthBefore deletes project bandwidth rollups before the given time

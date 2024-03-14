@@ -115,29 +115,18 @@ func TestBucketNameValidation(t *testing.T) {
 			"192.168.1.234", "testBUCKET",
 			"test/bucket",
 			"testbucket-64-0123456789012345678901234567890123456789012345abcd",
-			"test\\", "test%",
 		}
 		for _, name := range invalidNames {
-
-			_, err = metainfoClient.CreateBucket(ctx, metaclient.CreateBucketParams{
-				Name: []byte(name),
-			})
-			require.Error(t, err, "bucket name: %v", name)
-			require.True(t, errs2.IsRPC(err, rpcstatus.InvalidArgument))
-		}
-
-		invalidNames = []string{
-			"", "t", "te",
-			"testbucket-64-0123456789012345678901234567890123456789012345abcd",
-		}
-		for _, name := range invalidNames {
-			// BeginObject validates only bucket name length
 			_, err = metainfoClient.BeginObject(ctx, metaclient.BeginObjectParams{
 				Bucket:             []byte(name),
 				EncryptedObjectKey: []byte("123"),
 			})
 			require.Error(t, err, "bucket name: %v", name)
-			require.True(t, errs2.IsRPC(err, rpcstatus.InvalidArgument))
+
+			_, err = metainfoClient.CreateBucket(ctx, metaclient.CreateBucketParams{
+				Name: []byte(name),
+			})
+			require.Error(t, err, "bucket name: %v", name)
 		}
 	})
 }
@@ -267,33 +256,5 @@ func TestListBucketsWithAttribution(t *testing.T) {
 			require.NoError(t, err)
 			require.True(t, bucketExists(tc, buckets))
 		}
-	})
-}
-
-func TestBucketCreationWithDefaultPlacement(t *testing.T) {
-	testplanet.Run(t, testplanet.Config{
-		SatelliteCount: 1, UplinkCount: 1,
-	}, func(t *testing.T, ctx *testcontext.Context, planet *testplanet.Planet) {
-		projectID := planet.Uplinks[0].Projects[0].ID
-
-		// change the default_placement of the project
-		project, err := planet.Satellites[0].API.DB.Console().Projects().Get(ctx, projectID)
-		project.DefaultPlacement = storj.EU
-		require.NoError(t, err)
-		err = planet.Satellites[0].API.DB.Console().Projects().Update(ctx, project)
-		require.NoError(t, err)
-
-		// create a new bucket
-		up, err := planet.Uplinks[0].GetProject(ctx, planet.Satellites[0])
-		require.NoError(t, err)
-
-		_, err = up.CreateBucket(ctx, "eu1")
-		require.NoError(t, err)
-
-		// check if placement is set
-		placement, err := planet.Satellites[0].API.DB.Buckets().GetBucketPlacement(ctx, []byte("eu1"), projectID)
-		require.NoError(t, err)
-		require.Equal(t, storj.EU, placement)
-
 	})
 }

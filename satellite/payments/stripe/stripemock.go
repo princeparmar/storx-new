@@ -356,15 +356,6 @@ func (m *mockCustomers) Update(id string, params *stripe.CustomerParams) (*strip
 	if params.Balance != nil {
 		customer.Balance = *params.Balance
 	}
-	if params.InvoiceSettings != nil {
-		if params.InvoiceSettings.DefaultPaymentMethod != nil {
-			customer.InvoiceSettings = &stripe.CustomerInvoiceSettings{
-				DefaultPaymentMethod: &stripe.PaymentMethod{
-					ID: *params.InvoiceSettings.DefaultPaymentMethod,
-				},
-			}
-		}
-	}
 	// TODO update customer with more params as necessary
 
 	return customer, nil
@@ -506,32 +497,6 @@ type mockInvoices struct {
 	invoiceItems *mockInvoiceItems
 }
 
-func (m *mockInvoices) MarkUncollectible(id string, params *stripe.InvoiceMarkUncollectibleParams) (*stripe.Invoice, error) {
-	for _, invoices := range m.invoices {
-		for _, invoice := range invoices {
-			if invoice.ID == id {
-				invoice.Status = stripe.InvoiceStatusUncollectible
-				return invoice, nil
-			}
-		}
-	}
-
-	return nil, errors.New("invoice not found")
-}
-
-func (m *mockInvoices) VoidInvoice(id string, params *stripe.InvoiceVoidParams) (*stripe.Invoice, error) {
-	for _, invoices := range m.invoices {
-		for _, invoice := range invoices {
-			if invoice.ID == id {
-				invoice.Status = stripe.InvoiceStatusVoid
-				return invoice, nil
-			}
-		}
-	}
-
-	return nil, errors.New("invoice not found")
-}
-
 func newMockInvoices(root *mockStripeState, invoiceItems *mockInvoiceItems) *mockInvoices {
 	return &mockInvoices{
 		root:         root,
@@ -585,10 +550,6 @@ func (m *mockInvoices) New(params *stripe.InvoiceParams) (*stripe.Invoice, error
 		},
 		AmountDue:       amountDue,
 		AmountRemaining: amountDue,
-		Total:           amountDue,
-	}
-	if params.DefaultPaymentMethod != nil {
-		invoice.DefaultPaymentMethod = &stripe.PaymentMethod{ID: *params.DefaultPaymentMethod}
 	}
 
 	m.invoices[*params.Customer] = append(m.invoices[*params.Customer], invoice)
@@ -617,15 +578,6 @@ func (m *mockInvoices) List(listParams *stripe.InvoiceListParams) *invoice.Iter 
 			for _, invoices := range m.invoices {
 				for _, inv := range invoices {
 					if inv.Status == stripe.InvoiceStatus(*listParams.Status) {
-						ret = append(ret, inv)
-					}
-				}
-			}
-		} else if listParams.Customer != nil && listParams.Status != nil {
-			// filter by status and customer
-			for _, invoices := range m.invoices {
-				for _, inv := range invoices {
-					if inv.Status == stripe.InvoiceStatus(*listParams.Status) && inv.Customer.ID == *listParams.Customer {
 						ret = append(ret, inv)
 					}
 				}
@@ -662,9 +614,10 @@ func (m *mockInvoices) Update(id string, params *stripe.InvoiceParams) (invoice 
 // FinalizeInvoice forwards the invoice's status from draft to open.
 func (m *mockInvoices) FinalizeInvoice(id string, params *stripe.InvoiceFinalizeParams) (*stripe.Invoice, error) {
 	for _, invoices := range m.invoices {
-		for _, invoice := range invoices {
+		for i, invoice := range invoices {
 			if invoice.ID == id && invoice.Status == stripe.InvoiceStatusDraft {
 				invoice.Status = stripe.InvoiceStatusOpen
+				m.invoices[invoice.Customer.ID][i].Status = stripe.InvoiceStatusOpen
 				return invoice, nil
 			}
 		}
@@ -686,19 +639,8 @@ func (m *mockInvoices) Pay(id string, params *stripe.InvoicePayParams) (*stripe.
 						invoice.AmountRemaining = 0
 						return invoice, nil
 					}
-				} else if invoice.DefaultPaymentMethod != nil {
-					if invoice.DefaultPaymentMethod.ID == MockInvoicesPaySuccess {
-						invoice.Status = stripe.InvoiceStatusPaid
-						invoice.AmountRemaining = 0
-						return invoice, nil
-					}
-					if invoice.DefaultPaymentMethod.ID == MockInvoicesNewFailure {
-						invoice.Status = stripe.InvoiceStatusOpen
-						return invoice, &stripe.Error{}
-					}
-				} else if invoice.AmountRemaining == 0 || (params.PaidOutOfBand != nil && *params.PaidOutOfBand) {
+				} else if invoice.AmountRemaining == 0 {
 					invoice.Status = stripe.InvoiceStatusPaid
-					invoice.AmountRemaining = 0
 				}
 				return invoice, nil
 			}
@@ -713,34 +655,6 @@ func (m *mockInvoices) Del(id string, params *stripe.InvoiceParams) (*stripe.Inv
 			if invoice.ID == id {
 				m.invoices[invoice.Customer.ID] = append(m.invoices[invoice.Customer.ID][:i], m.invoices[invoice.Customer.ID][i+1:]...)
 				return invoice, nil
-			}
-		}
-	}
-	return nil, nil
-}
-
-func (m *mockInvoices) Get(id string, params *stripe.InvoiceParams) (*stripe.Invoice, error) {
-	for _, invoices := range m.invoices {
-		for _, inv := range invoices {
-			if inv.ID == id {
-				items, ok := m.invoiceItems.items[inv.Customer.ID]
-				if ok {
-					amountDue := int64(0)
-					lineData := make([]*stripe.InvoiceLine, 0, len(params.InvoiceItems))
-					for _, item := range items {
-						if item.Invoice != inv {
-							continue
-						}
-						lineData = append(lineData, &stripe.InvoiceLine{
-							InvoiceItem: item.ID,
-							Amount:      item.Amount,
-						})
-						amountDue += item.Amount
-					}
-					inv.Lines.Data = lineData
-					inv.Total = amountDue
-				}
-				return inv, nil
 			}
 		}
 	}

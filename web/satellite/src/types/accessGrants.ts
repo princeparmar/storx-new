@@ -1,10 +1,18 @@
-// Copyright (C) 2020 Storx Labs, Inc.
+// Copyright (C) 2020 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 import { SortDirection } from '@/types/common';
 import { DEFAULT_PAGE_LIMIT } from '@/types/pagination';
 
 export type OnHeaderClickCallback = (sortBy: AccessGrantsOrderBy, sortDirection: SortDirection) => Promise<void>;
+
+/**
+ * AccessGrantsWorker provides access to the WASM module.
+ */
+export interface AccessGrantsWorkerFactory {
+    // TODO: this should be converted to a proper interface.
+    create(): Worker;
+}
 
 /**
  * Exposes all access grants-related functionality.
@@ -43,14 +51,6 @@ export interface AccessGrantsApi {
     deleteByNameAndProjectID(name: string, projectID: string): Promise<void>;
 
     /**
-     * Fetch all API key names.
-     *
-     * @returns string[]
-     * @throws Error
-     */
-    getAllAPIKeyNames(projectId: string): Promise<string[]>
-
-    /**
      * Get gateway credentials using access grant
      *
      * @returns EdgeCredentials
@@ -65,8 +65,6 @@ export interface AccessGrantsApi {
 export enum AccessGrantsOrderBy {
     NAME = 1,
     CREATED_AT,
-    name = 1,
-    createdAt = 2,
 }
 
 /**

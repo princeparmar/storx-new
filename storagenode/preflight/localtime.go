@@ -5,7 +5,6 @@ package preflight
 
 import (
 	"context"
-	"fmt"
 	"math"
 	"time"
 
@@ -89,13 +88,12 @@ func (localTime *LocalTime) Check(ctx context.Context) (err error) {
 
 	errsCounter := 0
 	for _, result := range results {
-		fmt.Println("error", result)
 		if ErrClockOutOfSyncMajor.Has(result) {
 			errsCounter++
 		}
 	}
 	if errsCounter == len(satellites) {
-		return ErrClockOutOfSyncMajor.New("system clock is out of sync with all trusted satellites %d", errsCounter)
+		return ErrClockOutOfSyncMajor.New("system clock is out of sync with all trusted satellites")
 	}
 
 	localTime.log.Info("local system clock is in sync with trusted satellites' system clock.")

@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Storx Labs, Inc.
+// Copyright (C) 2023 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -78,9 +78,10 @@
 import { ref } from 'vue';
 import { useRouter } from 'vue-router';
 
-import { RouteConfig } from '@/types/router';
+import { RouteConfig } from '@/router';
 import { ProjectFields } from '@/types/projects';
 import { LocalData } from '@/utils/localData';
+import { AnalyticsHttpApi } from '@/api/analytics';
 import { AnalyticsErrorEventSource } from '@/utils/constants/analyticsEventNames';
 import { MODALS } from '@/utils/constants/appStatePopUps';
 import { useNotify } from '@/utils/hooks';
@@ -90,7 +91,6 @@ import { useAppStore } from '@/store/modules/appStore';
 import { useBucketsStore } from '@/store/modules/bucketsStore';
 import { useProjectsStore } from '@/store/modules/projectsStore';
 import { useConfigStore } from '@/store/modules/configStore';
-import { useAnalyticsStore } from '@/store/modules/analyticsStore';
 
 import VLoader from '@/components/common/VLoader.vue';
 import VInput from '@/components/common/VInput.vue';
@@ -99,7 +99,6 @@ import VButton from '@/components/common/VButton.vue';
 
 import BlueBoxIcon from '@/../static/images/common/blueBox.svg';
 
-const analyticsStore = useAnalyticsStore();
 const configStore = useConfigStore();
 const bucketsStore = useBucketsStore();
 const appStore = useAppStore();
@@ -115,6 +114,8 @@ const hasDescription = ref(false);
 const isLoading = ref(false);
 const projectName = ref('');
 const nameError = ref('');
+
+const analytics = new AnalyticsHttpApi();
 
 /**
  * Sets project name from input value.
@@ -153,7 +154,7 @@ async function onCreateProjectClick(): Promise<void> {
     } catch (error) {
         isLoading.value = false;
         nameError.value = error.message;
-        analyticsStore.errorEventTriggered(AnalyticsErrorEventSource.CREATE_PROJECT_MODAL);
+        analytics.errorEventTriggered(AnalyticsErrorEventSource.CREATE_PROJECT_MODAL);
 
         return;
     }
@@ -177,13 +178,13 @@ async function onCreateProjectClick(): Promise<void> {
     bucketsStore.clearS3Data();
 
     if (usersStore.shouldOnboard && configStore.state.config.allProjectsDashboard) {
-        analyticsStore.pageVisit(RouteConfig.OnboardingTour.with(RouteConfig.OverviewStep).path);
+        analytics.pageVisit(RouteConfig.OnboardingTour.with(RouteConfig.OverviewStep).path);
         await router.push(RouteConfig.OnboardingTour.with(RouteConfig.OverviewStep).path);
         return;
     }
 
-    analyticsStore.pageVisit(RouteConfig.ProjectDashboard.path);
-    await router.push(RouteConfig.ProjectDashboard.path);
+    analytics.pageVisit(RouteConfig.ProjectDashboard.path);
+    router.push(RouteConfig.ProjectDashboard.path);
 
     if (usersStore.state.settings.passphrasePrompt) {
         appStore.updateActiveModal(MODALS.enterPassphrase);

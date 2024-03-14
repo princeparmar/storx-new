@@ -1,4 +1,4 @@
-// Copyright (C) 2022 Storx Labs, Inc.
+// Copyright (C) 2022 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -10,7 +10,7 @@
                 <div class="navigation-area__container__wrap__edit">
                     <ProjectSelection />
                 </div>
-                <!-- <div class="navigation-area__container__wrap__border" /> -->
+                <div class="navigation-area__container__wrap__border" />
                 <router-link
                     v-for="navItem in navigation"
                     :key="navItem.name"
@@ -83,12 +83,12 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
-import { RouteConfig } from '@/types/router';
+import { AnalyticsHttpApi } from '@/api/analytics';
+import { RouteConfig } from '@/router';
 import { NavigationLink } from '@/types/navigation';
 import { APP_STATE_DROPDOWNS } from '@/utils/constants/appStatePopUps';
 import { useAppStore } from '@/store/modules/appStore';
 import { useConfigStore } from '@/store/modules/configStore';
-import { useAnalyticsStore } from '@/store/modules/analyticsStore';
 
 import ProjectSelection from '@/components/navigation/ProjectSelection.vue';
 import GuidesDropdown from '@/components/navigation/GuidesDropdown.vue';
@@ -106,13 +106,13 @@ import ResourcesIcon from '@/../static/images/navigation/resources.svg';
 import QuickStartIcon from '@/../static/images/navigation/quickStart.svg';
 import ArrowIcon from '@/../static/images/navigation/arrowExpandRight.svg';
 
-const analyticsStore = useAnalyticsStore();
 const configStore = useConfigStore();
 const appStore = useAppStore();
 const router = useRouter();
 const route = useRoute();
 
 const TWENTY_PIXELS = 20;
+const analytics: AnalyticsHttpApi = new AnalyticsHttpApi();
 const navigation: NavigationLink[] = [
     RouteConfig.ProjectDashboard.withIcon(DashboardIcon),
     RouteConfig.Buckets.withIcon(BucketsIcon),
@@ -256,7 +256,7 @@ function trackClickEvent(path: string): void {
     if (path === '/account/billing') {
         routeToOverview();
     } else {
-        analyticsStore.pageVisit(path);
+        analytics.pageVisit(path);
     }
 }
 
@@ -361,23 +361,23 @@ onBeforeUnmount(() => {
                     }
 
                     &:hover {
-                        border-color: var(--c-blue-3);
-                        background-color: var(--c-blue-3);
-                        color: var(--c-orange-3);
+                        border-color: var(--c-grey-1);
+                        background-color: var(--c-grey-1);
+                        color: var(--c-blue-3);
 
                         :deep(path) {
-                            fill: var(--c-orange-3);
+                            fill: var(--c-blue-3);
                         }
                     }
 
                     &:focus {
                         outline: none;
-                        border-color: var(--c-blue-3);
-                        background-color: var(--c-blue-3);
-                        color: var(--c-orange-3);
+                        border-color: var(--c-grey-1);
+                        background-color: var(--c-grey-1);
+                        color: var(--c-blue-3);
 
                         :deep(path) {
-                            fill: var(--c-orange-3);
+                            fill: var(--c-blue-3);
                         }
                     }
                 }
@@ -395,7 +395,7 @@ onBeforeUnmount(() => {
     .router-link-active,
     .active {
         border-color: #000;
-        color: var(--c-orange-6);
+        color: var(--c-blue-6);
         font-family: 'font_bold', sans-serif;
 
         :deep(path) {
@@ -403,11 +403,11 @@ onBeforeUnmount(() => {
         }
 
         &:hover {
-            color: var(--c-orange-3);
-            border-color: var(--c-orange-3);
+            color: var(--c-blue-3);
+            border-color: var(--c-blue-3);
 
             :deep(path) {
-                fill: var(--c-orange-3);
+                fill: var(--c-blue-3);
             }
         }
     }
@@ -435,13 +435,13 @@ onBeforeUnmount(() => {
         font-family: 'font_bold', sans-serif;
         font-size: 14px;
         line-height: 22px;
-        color: var(--c-orange-6);
+        color: var(--c-blue-6);
     }
 
     :deep(.dropdown-item__text__label) {
         font-size: 12px;
         line-height: 21px;
-        color: var(--c-orange-6);
+        color: var(--c-blue-6);
     }
 
     :deep(.dropdown-item:first-of-type) {
@@ -458,7 +458,7 @@ onBeforeUnmount(() => {
 
     :deep(.dropdown-item:hover h2),
     :deep(.dropdown-item:hover p) {
-        color: var(--c-orange-3);
+        color: var(--c-blue-3);
     }
 
     @media screen and (width <= 1280px) {

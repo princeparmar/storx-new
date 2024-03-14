@@ -5,10 +5,7 @@ package overlay_test
 
 import (
 	"context"
-	"fmt"
-	"math/rand"
 	"strconv"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -17,17 +14,14 @@ import (
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 
-	"storj.io/common/identity/testidentity"
 	"storj.io/common/memory"
 	"storj.io/common/pb"
 	"storj.io/common/storj"
-	"storj.io/common/storj/location"
 	"storj.io/common/sync2"
 	"storj.io/common/testcontext"
 	"storj.io/common/testrand"
 	"storj.io/storj/private/testplanet"
 	"storj.io/storj/satellite"
-	"storj.io/storj/satellite/nodeselection"
 	"storj.io/storj/satellite/overlay"
 	"storj.io/storj/satellite/satellitedb/satellitedbtest"
 )
@@ -63,8 +57,6 @@ func TestRefresh(t *testing.T) {
 			db.OverlayCache(),
 			lowStaleness,
 			nodeSelectionConfig,
-			nodeselection.NodeFilters{},
-			overlay.NewPlacementRules().CreateFilters,
 		)
 		require.NoError(t, err)
 
@@ -75,6 +67,10 @@ func TestRefresh(t *testing.T) {
 		// the cache should have no nodes to start
 		err = cache.Refresh(ctx)
 		require.NoError(t, err)
+		reputable, new, err := cache.Size(ctx)
+		require.NoError(t, err)
+		require.Equal(t, 0, reputable)
+		require.Equal(t, 0, new)
 
 		// add some nodes to the database
 		const nodeCount = 2
@@ -83,13 +79,17 @@ func TestRefresh(t *testing.T) {
 		// confirm nodes are in the cache once
 		err = cache.Refresh(ctx)
 		require.NoError(t, err)
+		reputable, new, err = cache.Size(ctx)
+		require.NoError(t, err)
+		require.Equal(t, 2, new)
+		require.Equal(t, 0, reputable)
 	})
 }
 
 func addNodesToNodesTable(ctx context.Context, t *testing.T, db overlay.DB, count, makeReputable int) (ids []storj.NodeID) {
 	for i := 0; i < count; i++ {
-		subnet := strconv.Itoa(i/3) + ".1.2"
-		addr := fmt.Sprintf("%s.%d:8080", subnet, i%3+1)
+		subnet := strconv.Itoa(i) + ".1.2"
+		addr := subnet + ".3:8080"
 		n := overlay.NodeCheckInInfo{
 			NodeID: storj.NodeID{byte(i)},
 			Address: &pb.NodeAddress{
@@ -107,7 +107,6 @@ func addNodesToNodesTable(ctx context.Context, t *testing.T, db overlay.DB, coun
 				Timestamp:  time.Time{},
 				Release:    true,
 			},
-			CountryCode: location.Germany + location.CountryCode(i%2),
 		}
 		err := db.UpdateCheckIn(ctx, n, time.Now().UTC(), nodeSelectionConfig)
 		require.NoError(t, err)
@@ -127,21 +126,21 @@ func addNodesToNodesTable(ctx context.Context, t *testing.T, db overlay.DB, coun
 type mockdb struct {
 	mu        sync.Mutex
 	callCount int
-	reputable []*nodeselection.SelectedNode
-	new       []*nodeselection.SelectedNode
+	reputable []*overlay.SelectedNode
+	new       []*overlay.SelectedNode
 }
 
-func (m *mockdb) SelectAllStorageNodesUpload(ctx context.Context, selectionCfg overlay.NodeSelectionConfig) (reputable, new []*nodeselection.SelectedNode, err error) {
+func (m *mockdb) SelectAllStorageNodesUpload(ctx context.Context, selectionCfg overlay.NodeSelectionConfig) (reputable, new []*overlay.SelectedNode, err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	sync2.Sleep(ctx, 500*time.Millisecond)
 	m.callCount++
 
-	reputable = make([]*nodeselection.SelectedNode, len(m.reputable))
+	reputable = make([]*overlay.SelectedNode, len(m.reputable))
 	for i, n := range m.reputable {
 		reputable[i] = n.Clone()
 	}
-	new = make([]*nodeselection.SelectedNode, len(m.new))
+	new = make([]*overlay.SelectedNode, len(m.new))
 	for i, n := range m.new {
 		new[i] = n.Clone()
 	}
@@ -160,8 +159,6 @@ func TestRefreshConcurrent(t *testing.T) {
 		&mockDB,
 		highStaleness,
 		nodeSelectionConfig,
-		nodeselection.NodeFilters{},
-		overlay.NewPlacementRules().CreateFilters,
 	)
 	require.NoError(t, err)
 
@@ -187,8 +184,6 @@ func TestRefreshConcurrent(t *testing.T) {
 		&mockDB,
 		lowStaleness,
 		nodeSelectionConfig,
-		nodeselection.NodeFilters{},
-		overlay.NewPlacementRules().CreateFilters,
 	)
 	require.NoError(t, err)
 	ctx.Go(func() error { return cache.Run(cacheCtx) })
@@ -213,16 +208,10 @@ func TestGetNodes(t *testing.T) {
 			DistinctIP:       true,
 			MinimumDiskSpace: 100 * memory.MiB,
 		}
-		placementRules := overlay.NewPlacementRules()
-		placementRules.AddPlacementRule(storj.PlacementConstraint(5), nodeselection.NodeFilters{}.WithCountryFilter(location.NewSet(location.Germany)))
-		placementRules.AddPlacementRule(storj.PlacementConstraint(6), nodeselection.WithAnnotation(nodeselection.NodeFilters{}.WithCountryFilter(location.NewSet(location.Germany)), overlay.AutoExcludeSubnet, overlay.AutoExcludeSubnetOFF))
-
 		cache, err := overlay.NewUploadSelectionCache(zap.NewNop(),
 			db.OverlayCache(),
 			lowStaleness,
 			nodeSelectionConfig,
-			nodeselection.NodeFilters{},
-			placementRules.CreateFilters,
 		)
 		require.NoError(t, err)
 
@@ -230,113 +219,32 @@ func TestGetNodes(t *testing.T) {
 		defer cacheCancel()
 		ctx.Go(func() error { return cache.Run(cacheCtx) })
 
-		// add 10 nodes to the database and vet 8
-		// 4 subnets   [A  A  A  B  B  B  C  C  C  D]
-		// 2 countries [DE X  DE x  DE x  DE x  DE x]
-		// vetted      [1  1  1  1  1  1  1  1  0  0]
-		const nodeCount = 10
-		nodeIds := addNodesToNodesTable(ctx, t, db.OverlayCache(), nodeCount, 8)
-		require.Len(t, nodeIds, 8)
+		// the cache should have no nodes to start
+		reputable, new, err := cache.Size(ctx)
+		require.NoError(t, err)
+		require.Equal(t, 0, reputable)
+		require.Equal(t, 0, new)
 
-		t.Run("normal selection", func(t *testing.T) {
-			t.Run("get 2", func(t *testing.T) {
-				t.Parallel()
-				// confirm cache.GetNodes returns the correct nodes
-				selectedNodes, err := cache.GetNodes(ctx, overlay.FindStorageNodesRequest{RequestedCount: 2})
-				require.NoError(t, err)
-				require.Len(t, selectedNodes, 2)
+		// add 4 nodes to the database and vet 2
+		const nodeCount = 4
+		nodeIds := addNodesToNodesTable(ctx, t, db.OverlayCache(), nodeCount, 2)
+		require.Len(t, nodeIds, 2)
 
-				for _, node := range selectedNodes {
-					require.NotEqual(t, node.ID, "")
-					require.NotEqual(t, node.Address.Address, "")
-					require.NotEqual(t, node.LastIPPort, "")
-					require.NotEqual(t, node.LastNet, "")
-					require.NotEqual(t, node.LastNet, "")
-				}
-			})
-			t.Run("too much", func(t *testing.T) {
-				t.Parallel()
-				// we have 5 subnets (1 new, 4 vetted), with two nodes in each
-				_, err := cache.GetNodes(ctx, overlay.FindStorageNodesRequest{RequestedCount: 6})
-				require.Error(t, err)
-			})
-
-		})
-
-		t.Run("using country filter", func(t *testing.T) {
-			t.Run("normal", func(t *testing.T) {
-				t.Parallel()
-				selectedNodes, err := cache.GetNodes(ctx, overlay.FindStorageNodesRequest{
-					RequestedCount: 3,
-					Placement:      5,
-				})
-				require.NoError(t, err)
-				require.Len(t, selectedNodes, 3)
-			})
-			t.Run("too much", func(t *testing.T) {
-				t.Parallel()
-				_, err := cache.GetNodes(ctx, overlay.FindStorageNodesRequest{
-					RequestedCount: 4,
-					Placement:      5,
-				})
-				require.Error(t, err)
-			})
-		})
-
-		t.Run("using country without subnets", func(t *testing.T) {
-			t.Run("normal", func(t *testing.T) {
-				t.Parallel()
-				// it's possible to get 5 only because we don't use subnet exclusions.
-				selectedNodes, err := cache.GetNodes(ctx, overlay.FindStorageNodesRequest{
-					RequestedCount: 5,
-					Placement:      6,
-				})
-				require.NoError(t, err)
-				require.Len(t, selectedNodes, 5)
-			})
-			t.Run("too much", func(t *testing.T) {
-				t.Parallel()
-				_, err := cache.GetNodes(ctx, overlay.FindStorageNodesRequest{
-					RequestedCount: 6,
-					Placement:      6,
-				})
-				require.Error(t, err)
-			})
-		})
-
-		t.Run("using country without subnets and exclusions", func(t *testing.T) {
-			// DE nodes: 0 (subet:A), 2 (A), 4 (B) 6(C) 8(C, but not vetted)
-			// if everything works well, we can exclude 0, and got 3 (2,4,6)
-			// unless somebody removes the 2 (because it's in the same subnet as 0)
-			selectedNodes, err := cache.GetNodes(ctx, overlay.FindStorageNodesRequest{
-				RequestedCount: 3,
-				Placement:      6,
-				ExcludedIDs: []storj.NodeID{
-					nodeIds[0],
-				},
-			})
-			require.NoError(t, err)
-			require.Len(t, selectedNodes, 3)
-		})
-
-		t.Run("check subnet selection", func(t *testing.T) {
-			for i := 0; i < 10; i++ {
-				selectedNodes, err := cache.GetNodes(ctx, overlay.FindStorageNodesRequest{
-					RequestedCount: 3,
-					Placement:      0,
-				})
-				require.NoError(t, err)
-
-				subnets := map[string]struct{}{}
-				for _, node := range selectedNodes {
-					subnets[node.LastNet] = struct{}{}
-				}
-
-				require.Len(t, selectedNodes, 3)
-				require.Len(t, subnets, 3)
-			}
-		})
-
+		// confirm cache.GetNodes returns the correct nodes
+		selectedNodes, err := cache.GetNodes(ctx, overlay.FindStorageNodesRequest{RequestedCount: 2})
+		require.NoError(t, err)
+		reputable, new, err = cache.Size(ctx)
+		require.NoError(t, err)
+		require.Equal(t, 2, new)
+		require.Equal(t, 2, reputable)
+		require.Equal(t, 2, len(selectedNodes))
+		for _, node := range selectedNodes {
+			require.NotEqual(t, node.ID, "")
+			require.NotEqual(t, node.Address.Address, "")
+			require.NotEqual(t, node.LastIPPort, "")
+			require.NotEqual(t, node.LastNet, "")
+			require.NotEqual(t, node.LastNet, "")
+		}
 	})
 }
 
@@ -354,6 +262,9 @@ func TestGetNodesExcludeCountryCodes(t *testing.T) {
 		// we only expect one node to be returned, even though we requested two, so there will be an error
 		require.Error(t, err)
 
+		_, new, err := cache.Size(ctx)
+		require.NoError(t, err)
+		require.Equal(t, 2, new)
 		require.Equal(t, 1, len(selectedNodes))
 		// the node that was returned should be the one that does not have the "FR" country code
 		require.Equal(t, planet.StorageNodes[1].ID(), selectedNodes[0].ID)
@@ -364,13 +275,13 @@ func TestGetNodesConcurrent(t *testing.T) {
 	ctx := testcontext.New(t)
 	defer ctx.Cleanup()
 
-	reputableNodes := []*nodeselection.SelectedNode{{
+	reputableNodes := []*overlay.SelectedNode{{
 		ID:         storj.NodeID{1},
 		Address:    &pb.NodeAddress{Address: "127.0.0.9"},
 		LastNet:    "127.0.0",
 		LastIPPort: "127.0.0.9:8000",
 	}}
-	newNodes := []*nodeselection.SelectedNode{{
+	newNodes := []*overlay.SelectedNode{{
 		ID:         storj.NodeID{1},
 		Address:    &pb.NodeAddress{Address: "127.0.0.10"},
 		LastNet:    "127.0.0",
@@ -387,8 +298,6 @@ func TestGetNodesConcurrent(t *testing.T) {
 		&mockDB,
 		highStaleness,
 		nodeSelectionConfig,
-		nodeselection.NodeFilters{},
-		overlay.NewPlacementRules().CreateFilters,
 	)
 	require.NoError(t, err)
 
@@ -434,8 +343,6 @@ func TestGetNodesConcurrent(t *testing.T) {
 		&mockDB,
 		lowStaleness,
 		nodeSelectionConfig,
-		nodeselection.NodeFilters{},
-		overlay.NewPlacementRules().CreateFilters,
 	)
 	require.NoError(t, err)
 
@@ -473,7 +380,7 @@ func TestGetNodesDistinct(t *testing.T) {
 	ctx := testcontext.New(t)
 	defer ctx.Cleanup()
 
-	reputableNodes := []*nodeselection.SelectedNode{{
+	reputableNodes := []*overlay.SelectedNode{{
 		ID:         testrand.NodeID(),
 		Address:    &pb.NodeAddress{Address: "127.0.0.9"},
 		LastNet:    "127.0.0",
@@ -495,7 +402,7 @@ func TestGetNodesDistinct(t *testing.T) {
 		LastIPPort: "127.0.2.7:8000",
 	}}
 
-	newNodes := []*nodeselection.SelectedNode{{
+	newNodes := []*overlay.SelectedNode{{
 		ID:         testrand.NodeID(),
 		Address:    &pb.NodeAddress{Address: "127.0.0.10"},
 		LastNet:    "127.0.0",
@@ -526,8 +433,6 @@ func TestGetNodesDistinct(t *testing.T) {
 			&mockDB,
 			highStaleness,
 			config,
-			nodeselection.NodeFilters{}.WithAutoExcludeSubnets(),
-			overlay.NewPlacementRules().CreateFilters,
 		)
 		require.NoError(t, err)
 
@@ -555,7 +460,7 @@ func TestGetNodesDistinct(t *testing.T) {
 
 	{ // test that distinctIP=true allows selecting 6 nodes
 		// emulate DistinctIP=false behavior by filling in LastNets with unique addresses
-		for _, nodeList := range [][]*nodeselection.SelectedNode{reputableNodes, newNodes} {
+		for _, nodeList := range [][]*overlay.SelectedNode{reputableNodes, newNodes} {
 			for i := range nodeList {
 				nodeList[i].LastNet = nodeList[i].LastIPPort
 			}
@@ -567,8 +472,6 @@ func TestGetNodesDistinct(t *testing.T) {
 			&mockDB,
 			highStaleness,
 			config,
-			nodeselection.NodeFilters{},
-			overlay.NewPlacementRules().CreateFilters,
 		)
 		require.NoError(t, err)
 
@@ -592,14 +495,18 @@ func TestGetNodesError(t *testing.T) {
 		&mockDB,
 		highStaleness,
 		nodeSelectionConfig,
-		nodeselection.NodeFilters{},
-		overlay.NewPlacementRules().CreateFilters,
 	)
 	require.NoError(t, err)
 
 	cacheCtx, cacheCancel := context.WithCancel(ctx)
 	defer cacheCancel()
 	ctx.Go(func() error { return cache.Run(cacheCtx) })
+
+	// there should be 0 nodes in the cache
+	reputable, new, err := cache.Size(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 0, reputable)
+	require.Equal(t, 0, new)
 
 	// since the cache has no nodes, we should not be able
 	// to get 2 storage nodes from it and we expect an error
@@ -621,8 +528,6 @@ func TestNewNodeFraction(t *testing.T) {
 			db.OverlayCache(),
 			lowStaleness,
 			nodeSelectionConfig,
-			nodeselection.NodeFilters{},
-			overlay.NewPlacementRules().CreateFilters,
 		)
 		require.NoError(t, err)
 
@@ -633,15 +538,22 @@ func TestNewNodeFraction(t *testing.T) {
 		// the cache should have no nodes to start
 		err = cache.Refresh(ctx)
 		require.NoError(t, err)
+		reputable, new, err := cache.Size(ctx)
+		require.NoError(t, err)
+		require.Equal(t, 0, reputable)
+		require.Equal(t, 0, new)
 
 		// add some nodes to the database, some are reputable and some are new nodes
-		// 3 nodes per net --> we need 4 net (* 3 node) reputable + 1 net (* 3 node) new to select 5 with 0.2 percentage new
-		const nodeCount = 15
-		repIDs := addNodesToNodesTable(ctx, t, db.OverlayCache(), nodeCount, 12)
-		require.Len(t, repIDs, 12)
+		const nodeCount = 10
+		repIDs := addNodesToNodesTable(ctx, t, db.OverlayCache(), nodeCount, 4)
+		require.Len(t, repIDs, 4)
 		// confirm nodes are in the cache once
 		err = cache.Refresh(ctx)
 		require.NoError(t, err)
+		reputable, new, err = cache.Size(ctx)
+		require.NoError(t, err)
+		require.Equal(t, 6, new)
+		require.Equal(t, 4, reputable)
 
 		// select nodes and confirm correct new node fraction
 		n, err := cache.GetNodes(ctx, overlay.FindStorageNodesRequest{RequestedCount: 5})
@@ -657,92 +569,4 @@ func TestNewNodeFraction(t *testing.T) {
 		}
 		require.Equal(t, len(n)-reputableCount, int(5*newNodeFraction)) // 1, 1
 	})
-}
-
-func BenchmarkGetNodes(b *testing.B) {
-	newNodes := 2000
-	oldNodes := 18000
-	required := 110
-	if testing.Short() {
-		newNodes = 10
-		oldNodes = 50
-		required = 2
-	}
-
-	ctx, cancel := context.WithCancel(testcontext.New(b))
-	defer cancel()
-	log, err := zap.NewDevelopment()
-	require.NoError(b, err)
-	placement := overlay.NewPlacementRules()
-	placement.AddLegacyStaticRules()
-	defaultFilter := nodeselection.NodeFilters{}
-
-	db := NewMockUploadSelectionDb(
-		generatedSelectedNodes(b, oldNodes),
-		generatedSelectedNodes(b, newNodes),
-	)
-	cache, err := overlay.NewUploadSelectionCache(log, db, 10*time.Minute, overlay.NodeSelectionConfig{
-		NewNodeFraction: 0.1,
-	}, defaultFilter, placement.CreateFilters)
-	require.NoError(b, err)
-
-	go func() {
-		_ = cache.Run(ctx)
-	}()
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_, err := cache.GetNodes(ctx, overlay.FindStorageNodesRequest{
-			RequestedCount: required,
-			Placement:      storj.US,
-		})
-		require.NoError(b, err)
-	}
-}
-
-// MockUploadSelection implements overlay.UploadSelectionDB with a static list.
-type MockUploadSelectionDB struct {
-	new       []*nodeselection.SelectedNode
-	reputable []*nodeselection.SelectedNode
-}
-
-// NewMockUploadSelectionDb creates a MockUploadSelectionDB with the given reputable and new nodes.
-func NewMockUploadSelectionDb(reputable, new []*nodeselection.SelectedNode) *MockUploadSelectionDB {
-	return &MockUploadSelectionDB{
-		new:       new,
-		reputable: reputable,
-	}
-
-}
-
-// SelectAllStorageNodesUpload implements overlay.UploadSelectionDB.
-func (m MockUploadSelectionDB) SelectAllStorageNodesUpload(ctx context.Context, selectionCfg overlay.NodeSelectionConfig) (reputable, new []*nodeselection.SelectedNode, err error) {
-	return m.reputable, m.new, nil
-}
-
-var _ overlay.UploadSelectionDB = &MockUploadSelectionDB{}
-
-func generatedSelectedNodes(b *testing.B, nodeNo int) []*nodeselection.SelectedNode {
-	nodes := make([]*nodeselection.SelectedNode, nodeNo)
-	ctx := testcontext.New(b)
-	for i := 0; i < nodeNo; i++ {
-		node := nodeselection.SelectedNode{}
-		identity, err := testidentity.NewTestIdentity(ctx)
-		require.NoError(b, err)
-		node.ID = identity.ID
-
-		// with 5% percentage chance, we re-use an existing IP address.
-		if rand.Intn(100) < 5 && i > 0 {
-			prevParts := strings.Split(nodes[rand.Intn(i)].LastIPPort, ":")
-			node.LastIPPort = fmt.Sprintf("%s:%d", prevParts[0], rand.Int31n(10000)+1000)
-		} else {
-			node.LastIPPort = fmt.Sprintf("%d.%d.%d.%d:%d", 10+i/256/256%256, i/256%256, i%256, 1, rand.Int31n(10000)+1000)
-		}
-
-		parts := strings.Split(node.LastIPPort, ".")
-		node.LastNet = fmt.Sprintf("%s.%s.%s.0", parts[0], parts[1], parts[2])
-		node.CountryCode = []location.CountryCode{location.None, location.UnitedStates, location.Germany, location.Hungary, location.Austria}[i%5]
-		nodes[i] = &node
-	}
-	return nodes
 }

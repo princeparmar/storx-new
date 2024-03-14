@@ -1,4 +1,4 @@
-// Copyright (C) 2022 Storx Labs, Inc.
+// Copyright (C) 2022 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -44,12 +44,14 @@
 <script setup lang="ts">
 import { centsToDollars } from '@/utils/strings';
 import { PaymentsHistoryItem, PaymentsHistoryItemStatus } from '@/types/payments';
+import { AnalyticsHttpApi } from '@/api/analytics';
 import { AnalyticsEvent } from '@/utils/constants/analyticsEventNames';
 import { useResize } from '@/composables/resize';
-import { useAnalyticsStore } from '@/store/modules/analyticsStore';
 
 import CheckIcon from '@/../static/images/billing/check-green-circle.svg';
 import Calendar from '@/../static/images/billing/calendar.svg';
+
+const analytics: AnalyticsHttpApi = new AnalyticsHttpApi();
 
 const props = withDefaults(defineProps<{
     item: PaymentsHistoryItem;
@@ -57,11 +59,10 @@ const props = withDefaults(defineProps<{
     item: () => new PaymentsHistoryItem('', '', 0, 0, PaymentsHistoryItemStatus.Pending, '', new Date(), new Date(), 0, 0),
 });
 
-const analyticsStore = useAnalyticsStore();
 const { isMobile, isTablet } = useResize();
 
 function downloadInvoice() {
-    analyticsStore.eventTriggered(AnalyticsEvent.INVOICE_DOWNLOADED);
+    analytics.eventTriggered(AnalyticsEvent.INVOICE_DOWNLOADED);
 
     if (isMobile.value || isTablet.value) {
         window.open(props.item.link, '_blank', 'noreferrer');
@@ -71,7 +72,7 @@ function downloadInvoice() {
 
 <style scoped lang="scss">
     a {
-        color: var(--c-orange-3);
+        color: var(--c-blue-3);
         text-decoration: underline;
     }
 

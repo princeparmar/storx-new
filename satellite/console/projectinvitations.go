@@ -14,8 +14,8 @@ import (
 //
 // architecture: Database
 type ProjectInvitations interface {
-	// Upsert updates a project member invitation if it exists and inserts it otherwise.
-	Upsert(ctx context.Context, invite *ProjectInvitation) (*ProjectInvitation, error)
+	// Insert inserts a project member invitation into the database.
+	Insert(ctx context.Context, invite *ProjectInvitation) (*ProjectInvitation, error)
 	// Get returns a project member invitation from the database.
 	Get(ctx context.Context, projectID uuid.UUID, email string) (*ProjectInvitation, error)
 	// GetByProjectID returns all of the project member invitations for the project specified by the given ID.
@@ -24,6 +24,8 @@ type ProjectInvitations interface {
 	GetByEmail(ctx context.Context, email string) ([]ProjectInvitation, error)
 	// Delete removes a project member invitation from the database.
 	Delete(ctx context.Context, projectID uuid.UUID, email string) error
+	// DeleteBefore deletes project member invitations created prior to some time from the database.
+	DeleteBefore(ctx context.Context, before time.Time, asOfSystemTimeInterval time.Duration, pageSize int) error
 }
 
 // ProjectInvitation represents a pending project member invitation.

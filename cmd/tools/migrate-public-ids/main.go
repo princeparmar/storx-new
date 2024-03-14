@@ -7,7 +7,7 @@ import (
 	"context"
 	"errors"
 
-	pgx "github.com/jackc/pgx/v5"
+	pgx "github.com/jackc/pgx/v4"
 	"github.com/spacemonkeygo/monkit/v3"
 	"github.com/spf13/cobra"
 	flag "github.com/spf13/pflag"

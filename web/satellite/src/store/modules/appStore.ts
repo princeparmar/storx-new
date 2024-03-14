@@ -1,7 +1,7 @@
-// Copyright (C) 2023 Storx Labs, Inc.
+// Copyright (C) 2023 Storj Labs, Inc.
 // See LICENSE for copying information.
 
-import {  reactive } from 'vue';
+import { Component, reactive } from 'vue';
 import { defineStore } from 'pinia';
 
 import { OnboardingOS, PricingPlanInfo } from '@/types/common';
@@ -9,11 +9,11 @@ import { FetchState } from '@/utils/constants/fetchStateEnum';
 import { ManageProjectPassphraseStep } from '@/types/managePassphrase';
 import { LocalData } from '@/utils/localData';
 import { LimitToChange } from '@/types/projects';
-import { ShareType } from '@/types/browser';
 
 class AppState {
     public fetchState = FetchState.LOADING;
     public isSuccessfulPasswordResetShown = false;
+    public isUpdateSessionTimeoutBanner = !LocalData.getSessionTimeoutBannerAcknowledged();
     public hasJustLoggedIn = false;
     public onbAGStepBackRoute = '';
     public onbAPIKeyStepBackRoute = '';
@@ -25,17 +25,15 @@ class AppState {
     public selectedPricingPlan: PricingPlanInfo | null = null;
     public managePassphraseStep: ManageProjectPassphraseStep | undefined = undefined;
     public activeDropdown = 'none';
-    public activeModal: any | null = null;
+    public activeModal: Component | null = null;
     public isUploadingModal = false;
-    public isGalleryView = false;
     // this field is mainly used on the all projects dashboard as an exit condition
     // for when the dashboard opens the pricing plan and the pricing plan navigates back repeatedly.
     public hasShownPricingPlan = false;
     public error: ErrorPageState = new ErrorPageState();
+    public isLargeUploadNotificationShown = true;
     public isLargeUploadWarningNotificationShown = false;
     public activeChangeLimit: LimitToChange = LimitToChange.Storage;
-    public isProjectTableViewEnabled = LocalData.getProjectTableViewEnabled();
-    public shareModalType: ShareType = ShareType.File;
 }
 
 class ErrorPageState {
@@ -66,7 +64,7 @@ export const useAppStore = defineStore('app', () => {
         state.isSuccessfulPasswordResetShown = !state.isSuccessfulPasswordResetShown;
     }
 
-    function updateActiveModal(modal: any): void {
+    function updateActiveModal(modal: Component): void {
         if (state.activeModal === modal) {
             state.activeModal = null;
             return;
@@ -84,19 +82,6 @@ export const useAppStore = defineStore('app', () => {
             return;
         }
         state.hasJustLoggedIn = hasJustLoggedIn;
-    }
-
-    function hasProjectTableViewConfigured(): boolean {
-        return LocalData.hasProjectTableViewConfigured();
-    }
-
-    function toggleProjectTableViewEnabled(isProjectTableViewEnabled: boolean | null = null): void {
-        if (isProjectTableViewEnabled === null) {
-            state.isProjectTableViewEnabled = !state.isProjectTableViewEnabled;
-        } else {
-            state.isProjectTableViewEnabled = isProjectTableViewEnabled;
-        }
-        LocalData.setProjectTableViewEnabled(state.isProjectTableViewEnabled);
     }
 
     function changeState(newFetchState: FetchState): void {
@@ -147,12 +132,14 @@ export const useAppStore = defineStore('app', () => {
         state.isLargeUploadWarningNotificationShown = value;
     }
 
-    function setGalleryView(value: boolean): void {
-        state.isGalleryView = value;
+    function setLargeUploadNotification(value: boolean): void {
+        state.isLargeUploadNotificationShown = value;
     }
 
-    function setShareModalType(type: ShareType): void {
-        state.shareModalType = type;
+    function closeUpdateSessionTimeoutBanner(): void {
+        LocalData.setSessionTimeoutBannerAcknowledged();
+
+        state.isUpdateSessionTimeoutBanner = false;
     }
 
     function closeDropdowns(): void {
@@ -182,20 +169,13 @@ export const useAppStore = defineStore('app', () => {
         state.selectedPricingPlan = null;
         state.hasShownPricingPlan = false;
         state.activeDropdown = '';
-        state.isUploadingModal = false;
         state.error.visible = false;
-        state.isGalleryView = false;
-        state.isProjectTableViewEnabled = false;
-        state.shareModalType = ShareType.File;
-        LocalData.removeProjectTableViewConfig();
     }
 
     return {
         state,
         toggleActiveDropdown,
         toggleSuccessfulPasswordReset,
-        toggleProjectTableViewEnabled,
-        hasProjectTableViewConfigured,
         updateActiveModal,
         removeActiveModal,
         toggleHasJustLoggedIn,
@@ -207,13 +187,13 @@ export const useAppStore = defineStore('app', () => {
         setOnboardingOS,
         setActiveChangeLimit,
         setPricingPlan,
-        setGalleryView,
         setManagePassphraseStep,
         setHasShownPricingPlan,
         setUploadingModal,
         setLargeUploadWarningNotification,
-        setShareModalType,
+        setLargeUploadNotification,
         closeDropdowns,
+        closeUpdateSessionTimeoutBanner,
         setErrorPage,
         removeErrorPage,
         clear,

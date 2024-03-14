@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Storx Labs, Inc.
+// Copyright (C) 2023 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -36,7 +36,7 @@ import LoaderImage from '@/../static/images/common/loadIcon.svg';
             width: 90px;
             height: 90px;
             margin: auto 0;
-            border: solid 3px var(--c-orange-3);
+            border: solid 3px var(--c-blue-3);
             border-radius: 50%;
             border-right-color: transparent;
             border-bottom-color: transparent;

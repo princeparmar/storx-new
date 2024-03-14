@@ -9,16 +9,9 @@ import (
 
 	"go.uber.org/zap"
 
+	"storj.io/common/pb"
 	"storj.io/common/sync2"
-	"storj.io/storj/satellite/nodeselection"
-)
-
-const (
-	// AutoExcludeSubnet is placement annotation key to turn off subnet restrictions.
-	AutoExcludeSubnet = "autoExcludeSubnet"
-
-	// AutoExcludeSubnetOFF is the value of AutoExcludeSubnet to disable subnet restrictions.
-	AutoExcludeSubnetOFF = "off"
+	"storj.io/storj/satellite/nodeselection/uploadselection"
 )
 
 // UploadSelectionDB implements the database for upload selection cache.
@@ -26,7 +19,7 @@ const (
 // architecture: Database
 type UploadSelectionDB interface {
 	// SelectAllStorageNodesUpload returns all nodes that qualify to store data, organized as reputable nodes and new nodes
-	SelectAllStorageNodesUpload(ctx context.Context, selectionCfg NodeSelectionConfig) (reputable, new []*nodeselection.SelectedNode, err error)
+	SelectAllStorageNodesUpload(ctx context.Context, selectionCfg NodeSelectionConfig) (reputable, new []*SelectedNode, err error)
 }
 
 // UploadSelectionCacheConfig is a configuration for upload selection cache.
@@ -43,20 +36,15 @@ type UploadSelectionCache struct {
 	db              UploadSelectionDB
 	selectionConfig NodeSelectionConfig
 
-	cache sync2.ReadCacheOf[*nodeselection.State]
-
-	defaultFilters nodeselection.NodeFilters
-	placementRules PlacementRules
+	cache sync2.ReadCacheOf[*uploadselection.State]
 }
 
 // NewUploadSelectionCache creates a new cache that keeps a list of all the storage nodes that are qualified to store data.
-func NewUploadSelectionCache(log *zap.Logger, db UploadSelectionDB, staleness time.Duration, config NodeSelectionConfig, defaultFilter nodeselection.NodeFilters, placementRules PlacementRules) (*UploadSelectionCache, error) {
+func NewUploadSelectionCache(log *zap.Logger, db UploadSelectionDB, staleness time.Duration, config NodeSelectionConfig) (*UploadSelectionCache, error) {
 	cache := &UploadSelectionCache{
 		log:             log,
 		db:              db,
 		selectionConfig: config,
-		defaultFilters:  defaultFilter,
-		placementRules:  placementRules,
 	}
 	return cache, cache.cache.Init(staleness/2, staleness, cache.read)
 }
@@ -77,7 +65,7 @@ func (cache *UploadSelectionCache) Refresh(ctx context.Context) (err error) {
 // refresh calls out to the database and refreshes the cache with the most up-to-date
 // data from the nodes table, then sets time that the last refresh occurred so we know when
 // to refresh again in the future.
-func (cache *UploadSelectionCache) read(ctx context.Context) (_ *nodeselection.State, err error) {
+func (cache *UploadSelectionCache) read(ctx context.Context) (_ *uploadselection.State, err error) {
 	defer mon.Task()(&ctx)(&err)
 
 	reputableNodes, newNodes, err := cache.db.SelectAllStorageNodesUpload(ctx, cache.selectionConfig)
@@ -85,7 +73,7 @@ func (cache *UploadSelectionCache) read(ctx context.Context) (_ *nodeselection.S
 		return nil, Error.Wrap(err)
 	}
 
-	state := nodeselection.NewState(reputableNodes, newNodes)
+	state := uploadselection.NewState(convSelectedNodesToNodes(reputableNodes), convSelectedNodesToNodes(newNodes))
 
 	mon.IntVal("refresh_cache_size_reputable").Observe(int64(len(reputableNodes)))
 	mon.IntVal("refresh_cache_size_new").Observe(int64(len(newNodes)))
@@ -96,7 +84,7 @@ func (cache *UploadSelectionCache) read(ctx context.Context) (_ *nodeselection.S
 // GetNodes selects nodes from the cache that will be used to upload a file.
 // Every node selected will be from a distinct network.
 // If the cache hasn't been refreshed recently it will do so first.
-func (cache *UploadSelectionCache) GetNodes(ctx context.Context, req FindStorageNodesRequest) (_ []*nodeselection.SelectedNode, err error) {
+func (cache *UploadSelectionCache) GetNodes(ctx context.Context, req FindStorageNodesRequest) (_ []*SelectedNode, err error) {
 	defer mon.Task()(&ctx)(&err)
 
 	state, err := cache.cache.Get(ctx, time.Now())
@@ -104,33 +92,54 @@ func (cache *UploadSelectionCache) GetNodes(ctx context.Context, req FindStorage
 		return nil, Error.Wrap(err)
 	}
 
-	placementRules := cache.placementRules(req.Placement)
-	useSubnetExclusion := nodeselection.GetAnnotation(placementRules, AutoExcludeSubnet) != AutoExcludeSubnetOFF
-
-	filters := nodeselection.NodeFilters{placementRules}
-	if len(req.ExcludedIDs) > 0 {
-		if useSubnetExclusion {
-			filters = append(filters, state.ExcludeNetworksBasedOnNodes(req.ExcludedIDs))
-		} else {
-			filters = append(filters, nodeselection.ExcludedIDs(req.ExcludedIDs))
-		}
-	}
-
-	filters = append(filters, cache.defaultFilters)
-
-	selectionReq := nodeselection.Request{
-		Count:       req.RequestedCount,
-		NewFraction: cache.selectionConfig.NewNodeFraction,
-		NodeFilters: filters,
-	}
-
-	if !useSubnetExclusion {
-		selectionReq.SelectionType = nodeselection.SelectionTypeByID
-	}
-
-	selected, err := state.Select(ctx, selectionReq)
-	if nodeselection.ErrNotEnoughNodes.Has(err) {
+	selected, err := state.Select(ctx, uploadselection.Request{
+		Count:                req.RequestedCount,
+		NewFraction:          cache.selectionConfig.NewNodeFraction,
+		ExcludedIDs:          req.ExcludedIDs,
+		Placement:            req.Placement,
+		ExcludedCountryCodes: cache.selectionConfig.UploadExcludedCountryCodes,
+	})
+	if uploadselection.ErrNotEnoughNodes.Has(err) {
 		err = ErrNotEnoughNodes.Wrap(err)
 	}
-	return selected, err
+
+	return convNodesToSelectedNodes(selected), err
+}
+
+// Size returns how many reputable nodes and new nodes are in the cache.
+func (cache *UploadSelectionCache) Size(ctx context.Context) (reputableNodeCount int, newNodeCount int, _ error) {
+	state, err := cache.cache.Get(ctx, time.Now())
+	if err != nil {
+		return 0, 0, Error.Wrap(err)
+	}
+	stats := state.Stats()
+	return stats.Reputable, stats.New, nil
+}
+
+func convNodesToSelectedNodes(nodes []*uploadselection.Node) (xs []*SelectedNode) {
+	for _, n := range nodes {
+		xs = append(xs, &SelectedNode{
+			ID:          n.ID,
+			Address:     pb.NodeFromNodeURL(n.NodeURL).Address,
+			LastNet:     n.LastNet,
+			LastIPPort:  n.LastIPPort,
+			CountryCode: n.CountryCode,
+		})
+	}
+	return xs
+}
+
+func convSelectedNodesToNodes(nodes []*SelectedNode) (xs []*uploadselection.Node) {
+	for _, n := range nodes {
+		xs = append(xs, &uploadselection.Node{
+			NodeURL: (&pb.Node{
+				Id:      n.ID,
+				Address: n.Address,
+			}).NodeURL(),
+			LastNet:     n.LastNet,
+			LastIPPort:  n.LastIPPort,
+			CountryCode: n.CountryCode,
+		})
+	}
+	return xs
 }

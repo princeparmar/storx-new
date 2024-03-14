@@ -1,4 +1,4 @@
-// Copyright (C) 2021 Storx Labs, Inc.
+// Copyright (C) 2021 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -273,14 +273,15 @@ function cancelDeleteSelection(): void {
             }
 
             &.no:hover {
-                color: var(--c-orange-3);
+                color: var(--c-blue-3);
 
                 svg :deep(path) {
-                    fill: var(--c-orange-3);
-                    stroke: var(--c-orange-3);
+                    fill: var(--c-blue-3);
+                    stroke: var(--c-blue-3);
                 }
             }
         }
     }
 }
+
 </style>

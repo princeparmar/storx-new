@@ -1,4 +1,4 @@
-// Copyright (C) 2019 Storx Labs, Inc.
+// Copyright (C) 2019 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 /**
@@ -9,11 +9,12 @@ export class LocalData {
     private static bucketWasCreated = 'bucketWasCreated';
     private static demoBucketCreated = 'demoBucketCreated';
     private static bucketGuideHidden = 'bucketGuideHidden';
+    private static sessionTimeoutBannerAcknowledged = 'sessionTimeoutBannerAcknowledged';
     private static serverSideEncryptionBannerHidden = 'serverSideEncryptionBannerHidden';
     private static serverSideEncryptionModalHidden = 'serverSideEncryptionModalHidden';
+    private static largeUploadNotificationDismissed = 'largeUploadNotificationDismissed';
     private static sessionExpirationDate = 'sessionExpirationDate';
     private static projectLimitBannerHidden = 'projectLimitBannerHidden';
-    private static projectTableViewEnabled = 'projectTableViewEnabled';
 
     public static getSelectedProjectId(): string | null {
         return localStorage.getItem(LocalData.selectedProjectId);
@@ -21,6 +22,10 @@ export class LocalData {
 
     public static setSelectedProjectId(id: string): void {
         localStorage.setItem(LocalData.selectedProjectId, id);
+    }
+
+    public static removeSelectedProjectId(): void {
+        localStorage.removeItem(LocalData.selectedProjectId);
     }
 
     public static getDemoBucketCreatedStatus(): string | null {
@@ -57,6 +62,14 @@ export class LocalData {
         return value === 'true';
     }
 
+    public static getSessionTimeoutBannerAcknowledged(): boolean {
+        return Boolean(localStorage.getItem(LocalData.sessionTimeoutBannerAcknowledged));
+    }
+
+    public static setSessionTimeoutBannerAcknowledged(): void {
+        localStorage.setItem(LocalData.sessionTimeoutBannerAcknowledged, 'true');
+    }
+
     /**
      * "Disable" showing the server-side encryption banner on the bucket page
      */
@@ -81,6 +94,14 @@ export class LocalData {
         return value === 'true';
     }
 
+    public static getLargeUploadNotificationDismissed(): boolean {
+        return Boolean(localStorage.getItem(LocalData.largeUploadNotificationDismissed));
+    }
+
+    public static setLargeUploadNotificationDismissed(): void {
+        localStorage.setItem(LocalData.largeUploadNotificationDismissed, 'true');
+    }
+
     public static getSessionExpirationDate(): Date | null {
         const data: string | null = localStorage.getItem(LocalData.sessionExpirationDate);
         if (data) {
@@ -101,26 +122,8 @@ export class LocalData {
         localStorage.setItem(LocalData.projectLimitBannerHidden, 'true');
     }
 
-    public static getProjectTableViewEnabled(): boolean {
-        const value = localStorage.getItem(LocalData.projectTableViewEnabled);
+    public static getProjectLimitBannerHidden(): boolean {
+        const value = localStorage.getItem(LocalData.projectLimitBannerHidden);
         return value === 'true';
-    }
-
-    public static setProjectTableViewEnabled(enabled: boolean): void {
-        localStorage.setItem(LocalData.projectTableViewEnabled, enabled.toString());
-    }
-
-    /*
-    * Whether a user defined setting has been made for the projects table
-    * */
-    public static hasProjectTableViewConfigured(): boolean {
-        return localStorage.getItem(LocalData.projectTableViewEnabled) !== null;
-    }
-
-    /*
-    * Remove the user defined setting for the projects table;
-    * */
-    public static removeProjectTableViewConfig() {
-        return localStorage.removeItem(LocalData.projectTableViewEnabled);
     }
 }

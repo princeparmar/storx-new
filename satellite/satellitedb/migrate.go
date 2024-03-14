@@ -2383,53 +2383,6 @@ func (db *satelliteDB) ProductionMigration() *migrate.Migration {
 					`ALTER TABLE value_attributions ADD COLUMN partner_id bytea DEFAULT NULL;`,
 				},
 			},
-			{
-				DB:          &db.migrationDB,
-				Description: "add node features",
-				Version:     238,
-				Action: migrate.SQL{
-					`ALTER TABLE nodes ADD COLUMN features integer NOT NULL DEFAULT 0;`,
-				},
-			},
-			{
-				DB:          &db.migrationDB,
-				Description: "add default_placement to users/projects",
-				Version:     239,
-				Action: migrate.SQL{
-					`ALTER TABLE users ADD COLUMN default_placement integer;`,
-					`ALTER TABLE projects ADD COLUMN default_placement integer;`,
-				},
-			},
-			{
-				DB:          &db.migrationDB,
-				Description: "create index on project_id column for project_members",
-				Version:     240,
-				Action: migrate.SQL{
-					`CREATE INDEX project_members_project_id_index ON project_members ( project_id );`,
-				},
-			},
-			{
-				DB:          &db.migrationDB,
-				Description: "create index on project_id column for project_members",
-				Version:     241,
-				Action: migrate.SQL{
-					`CREATE TABLE node_tags (
-						node_id bytea NOT NULL,
-						name text NOT NULL,
-						value bytea NOT NULL,
-						signed_at timestamp with time zone NOT NULL,
-						signer bytea NOT NULL,
-						PRIMARY KEY ( node_id, name, signer ));`,
-				},
-			},
-			{
-				DB:          &db.migrationDB,
-				Description: "add new column prevDays_UntilExpiration in projects table",
-				Version:     242,
-				Action: migrate.SQL{
-					`ALTER TABLE projects ADD COLUMN prevDays_UntilExpiration int NOT NULL DEFAULT 0;`,
-				},
-			},
 			// NB: after updating testdata in `testdata`, run
 			//     `go generate` to update `migratez.go`.
 		},

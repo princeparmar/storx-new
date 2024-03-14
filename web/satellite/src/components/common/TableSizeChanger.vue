@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Storx Labs, Inc.
+// Copyright (C) 2023 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -153,7 +153,7 @@ function toggleSelector() {
 
         &__dropdown {
             position: absolute;
-            top: -190px;
+            top: 35px;
             background: var(--c-white);
             z-index: 999;
             box-sizing: border-box;

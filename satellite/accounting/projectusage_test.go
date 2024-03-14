@@ -182,8 +182,7 @@ func TestProjectSegmentLimit(t *testing.T) {
 			},
 		},
 	}, func(t *testing.T, ctx *testcontext.Context, planet *testplanet.Planet) {
-		// tally self-corrects live accounting, however, it may cause things to be temporarily off by a few segments.
-		planet.Satellites[0].Accounting.Tally.Loop.Pause()
+		data := testrand.Bytes(160 * memory.KiB)
 
 		// set limit manually to 10 segments
 		accountingDB := planet.Satellites[0].DB.ProjectAccounting()
@@ -191,7 +190,6 @@ func TestProjectSegmentLimit(t *testing.T) {
 		require.NoError(t, err)
 
 		// successful upload
-		data := testrand.Bytes(160 * memory.KiB)
 		err = planet.Uplinks[0].Upload(ctx, planet.Satellites[0], "testbucket", "test/path/0", data)
 		require.NoError(t, err)
 
@@ -205,17 +203,14 @@ func TestProjectSegmentLimit(t *testing.T) {
 
 func TestProjectSegmentLimitInline(t *testing.T) {
 	testplanet.Run(t, testplanet.Config{
-		SatelliteCount: 1, UplinkCount: 1,
-	}, func(t *testing.T, ctx *testcontext.Context, planet *testplanet.Planet) {
-		// tally self-corrects live accounting, however, it may cause things to be temporarily off by a few segments.
-		planet.Satellites[0].Accounting.Tally.Loop.Pause()
+		SatelliteCount: 1, UplinkCount: 1}, func(t *testing.T, ctx *testcontext.Context, planet *testplanet.Planet) {
+		data := testrand.Bytes(1 * memory.KiB)
 
 		// set limit manually to 10 segments
 		accountingDB := planet.Satellites[0].DB.ProjectAccounting()
 		err := accountingDB.UpdateProjectSegmentLimit(ctx, planet.Uplinks[0].Projects[0].ID, 10)
 		require.NoError(t, err)
 
-		data := testrand.Bytes(1 * memory.KiB)
 		for i := 0; i < 10; i++ {
 			// successful upload
 			err = planet.Uplinks[0].Upload(ctx, planet.Satellites[0], "testbucket", "test/path/"+strconv.Itoa(i), data)
@@ -265,17 +260,14 @@ func TestProjectBandwidthLimitWithoutCache(t *testing.T) {
 
 func TestProjectSegmentLimitMultipartUpload(t *testing.T) {
 	testplanet.Run(t, testplanet.Config{
-		SatelliteCount: 1, UplinkCount: 1,
-	}, func(t *testing.T, ctx *testcontext.Context, planet *testplanet.Planet) {
-		// tally self-corrects live accounting, however, it may cause things to be temporarily off by a few segments.
-		planet.Satellites[0].Accounting.Tally.Loop.Pause()
+		SatelliteCount: 1, UplinkCount: 1}, func(t *testing.T, ctx *testcontext.Context, planet *testplanet.Planet) {
+		data := testrand.Bytes(1 * memory.KiB)
 
 		// set limit manually to 10 segments
 		accountingDB := planet.Satellites[0].DB.ProjectAccounting()
 		err := accountingDB.UpdateProjectSegmentLimit(ctx, planet.Uplinks[0].Projects[0].ID, 4)
 		require.NoError(t, err)
 
-		data := testrand.Bytes(1 * memory.KiB)
 		for i := 0; i < 4; i++ {
 			// successful upload
 			err = planet.Uplinks[0].Upload(ctx, planet.Satellites[0], "testbucket", "test/path/"+strconv.Itoa(i), data)
@@ -1106,8 +1098,8 @@ func TestProjectUsage_BandwidthDeadAllocation(t *testing.T) {
 		total, err := io.ReadFull(reader, p)
 		require.NoError(t, err)
 		require.Equal(t, total, len(p))
-		require.NoError(t, reader.Close())
 		require.NoError(t, cleanFn())
+		require.NoError(t, reader.Close())
 
 		planet.Satellites[0].Orders.Chore.Loop.TriggerWait()
 

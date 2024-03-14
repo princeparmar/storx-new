@@ -1,4 +1,4 @@
-// Copyright (C) 2022 Storx Labs, Inc.
+// Copyright (C) 2022 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -226,8 +226,8 @@ function remove(): void {
         grid-column: 2;
         width: 42px;
         height: 18px;
-        background: var(--c-orange-1);
-        border: 1px solid var(--c-orange-2);
+        background: var(--c-blue-1);
+        border: 1px solid var(--c-blue-2);
         border-radius: 4px;
         justify-self: end;
         padding: 3px 8px;
@@ -237,7 +237,7 @@ function remove(): void {
         font-family: 'font_bold', sans-serif;
         font-size: 12px;
         line-height: 20px;
-        color: var(--c-orange-4);
+        color: var(--c-blue-4);
     }
 
     &__dots-container {

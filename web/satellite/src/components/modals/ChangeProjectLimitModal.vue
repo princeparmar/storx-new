@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Storx Labs, Inc.
+// Copyright (C) 2023 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -60,9 +60,7 @@
                     <div class="modal__functional__range">
                         <div class="modal__functional__range__labels">
                             <p>0 {{ activeMeasurement }}</p>
-                            <p>
-                                {{ isBandwidthUpdating ? paidBandwidthLimit.toLocaleString() : paidStorageLimit.toLocaleString() }} {{ activeMeasurement }}
-                            </p>
+                            <p>{{ isBandwidthUpdating ? paidBandwidthLimit : paidStorageLimit }} {{ activeMeasurement }}</p>
                         </div>
                         <input
                             ref="rangeInput"
@@ -121,21 +119,22 @@ import { useNotify } from '@/utils/hooks';
 import { LimitToChange, ProjectLimits } from '@/types/projects';
 import { Dimensions, Memory } from '@/utils/bytesSize';
 import { AnalyticsErrorEventSource, AnalyticsEvent } from '@/utils/constants/analyticsEventNames';
+import { AnalyticsHttpApi } from '@/api/analytics';
 import { useLoading } from '@/composables/useLoading';
-import { useAnalyticsStore } from '@/store/modules/analyticsStore';
 
 import VModal from '@/components/common/VModal.vue';
 import VButton from '@/components/common/VButton.vue';
 
 import LimitIcon from '@/../static/images/modals/limit.svg';
 
-const analyticsStore = useAnalyticsStore();
 const appStore = useAppStore();
 const projectsStore = useProjectsStore();
 const configStore = useConfigStore();
 const notify = useNotify();
 
 const { isLoading, withLoading } = useLoading();
+
+const analytics: AnalyticsHttpApi = new AnalyticsHttpApi();
 
 const activeLimit = ref<LimitToChange>(LimitToChange.Storage);
 const activeMeasurement = ref<string>(Dimensions.TB);
@@ -299,13 +298,13 @@ async function onSave(): Promise<void> {
                 const updatedProject = new ProjectLimits(limit);
                 await projectsStore.updateProjectBandwidthLimit(updatedProject);
 
-                analyticsStore.eventTriggered(AnalyticsEvent.PROJECT_BANDWIDTH_LIMIT_UPDATED);
-                notify.success('Project egress limit updated successfully!');
+                analytics.eventTriggered(AnalyticsEvent.PROJECT_BANDWIDTH_LIMIT_UPDATED);
+                notify.success('Project bandwidth limit updated successfully!');
             } else {
                 const updatedProject = new ProjectLimits(0, 0, limit);
                 await projectsStore.updateProjectStorageLimit(updatedProject);
 
-                analyticsStore.eventTriggered(AnalyticsEvent.PROJECT_STORAGE_LIMIT_UPDATED);
+                analytics.eventTriggered(AnalyticsEvent.PROJECT_STORAGE_LIMIT_UPDATED);
                 notify.success('Project storage limit updated successfully!');
             }
 
@@ -378,7 +377,7 @@ onMounted(() => {
                     font-weight: 500;
                     font-size: 14px;
                     line-height: 20px;
-                    color: var(--c-orange-6);
+                    color: var(--c-blue-6);
                     text-align: left;
                     margin-bottom: 8px;
                 }
@@ -452,17 +451,17 @@ onMounted(() => {
         font-weight: 500;
         font-size: 14px;
         line-height: 20px;
-        color: var(--c-orange-6);
+        color: var(--c-blue-6);
         margin-top: 16px;
         text-align: left;
 
         &__link {
             text-decoration: underline !important;
             text-underline-position: under;
-            color: var(--c-orange-6);
+            color: var(--c-blue-6);
 
             &:visited {
-                color: var(--c-orange-6);
+                color: var(--c-blue-6);
             }
         }
     }

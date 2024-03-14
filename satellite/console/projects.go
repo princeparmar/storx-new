@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"storj.io/common/memory"
-	"storj.io/common/storj"
 	"storj.io/common/uuid"
 )
 
@@ -55,9 +54,6 @@ type Projects interface {
 
 	// UpdateUsageLimits is a method for updating project's usage limits.
 	UpdateUsageLimits(ctx context.Context, id uuid.UUID, limits UsageLimits) error
-
-	// UpdateUserAgent is a method for updating projects user agent.
-	UpdateUserAgent(ctx context.Context, id uuid.UUID, userAgent []byte) error
 }
 
 // UsageLimitsConfig is a configuration struct for default per-project usage limits.
@@ -70,19 +66,19 @@ type UsageLimitsConfig struct {
 
 // StorageLimitConfig is a configuration struct for default storage per-project usage limits.
 type StorageLimitConfig struct {
-	Free memory.Size `help:"the default free-tier storage usage limit" default:"2.00GB" testDefault:"2.00 GB"`
+	Free memory.Size `help:"the default free-tier storage usage limit" default:"25.00GB" testDefault:"25.00 GB"`
 	Paid memory.Size `help:"the default paid-tier storage usage limit" default:"25.00TB" testDefault:"25.00 GB"`
 }
 
 // BandwidthLimitConfig is a configuration struct for default bandwidth per-project usage limits.
 type BandwidthLimitConfig struct {
-	Free memory.Size `help:"the default free-tier bandwidth usage limit" default:"2.00GB" testDefault:"2.00 GB"`
+	Free memory.Size `help:"the default free-tier bandwidth usage limit" default:"25.00GB" testDefault:"25.00 GB"`
 	Paid memory.Size `help:"the default paid-tier bandwidth usage limit" default:"100.00TB" testDefault:"25.00 GB"`
 }
 
 // SegmentLimitConfig is a configuration struct for default segments per-project usage limits.
 type SegmentLimitConfig struct {
-	Free int64 `help:"the default free-tier segment usage limit" default:"1000000"`
+	Free int64 `help:"the default free-tier segment usage limit" default:"10000"`
 	Paid int64 `help:"the default paid-tier segment usage limit" default:"100000000"`
 }
 
@@ -97,43 +93,29 @@ type Project struct {
 	ID       uuid.UUID `json:"id"`
 	PublicID uuid.UUID `json:"publicId"`
 
-	Name                        string                    `json:"name"`
-	Description                 string                    `json:"description"`
-	UserAgent                   []byte                    `json:"userAgent"`
-	OwnerID                     uuid.UUID                 `json:"ownerId"`
-	RateLimit                   *int                      `json:"rateLimit"`
-	BurstLimit                  *int                      `json:"burstLimit"`
-	MaxBuckets                  *int                      `json:"maxBuckets"`
-	CreatedAt                   time.Time                 `json:"createdAt"`
-	MemberCount                 int                       `json:"memberCount"`
-	StorageLimit                *memory.Size              `json:"storageLimit"`
-	BandwidthLimit              *memory.Size              `json:"bandwidthLimit"`
-	UserSpecifiedStorageLimit   *memory.Size              `json:"userSpecifiedStorageLimit"`
-	UserSpecifiedBandwidthLimit *memory.Size              `json:"userSpecifiedBandwidthLimit"`
-	SegmentLimit                *int64                    `json:"segmentLimit"`
-	DefaultPlacement            storj.PlacementConstraint `json:"defaultPlacement"`
-	PrevDaysUntilExpiration     int                       `json:"prevDaysUntilExpiration"`
+	Name                        string       `json:"name"`
+	Description                 string       `json:"description"`
+	UserAgent                   []byte       `json:"userAgent"`
+	OwnerID                     uuid.UUID    `json:"ownerId"`
+	RateLimit                   *int         `json:"rateLimit"`
+	BurstLimit                  *int         `json:"burstLimit"`
+	MaxBuckets                  *int         `json:"maxBuckets"`
+	CreatedAt                   time.Time    `json:"createdAt"`
+	MemberCount                 int          `json:"memberCount"`
+	StorageLimit                *memory.Size `json:"storageLimit"`
+	BandwidthLimit              *memory.Size `json:"bandwidthLimit"`
+	UserSpecifiedStorageLimit   *memory.Size `json:"userSpecifiedStorageLimit"`
+	UserSpecifiedBandwidthLimit *memory.Size `json:"userSpecifiedBandwidthLimit"`
+	SegmentLimit                *int64       `json:"segmentLimit"`
 }
 
-// UpsertProjectInfo holds data needed to create/update Project.
-type UpsertProjectInfo struct {
-	Name                    string      `json:"name"`
-	Description             string      `json:"description"`
-	StorageLimit            memory.Size `json:"storageLimit"`
-	BandwidthLimit          memory.Size `json:"bandwidthLimit"`
-	CreatedAt               time.Time   `json:"createdAt"`
-	PrevDaysUntilExpiration int         `json:"prevDaysUntilExpiration"`
-}
-
-// ProjectInfo holds data sent via user facing http endpoints.
+// ProjectInfo holds data needed to create/update Project.
 type ProjectInfo struct {
-	ID                      uuid.UUID `json:"id"`
-	Name                    string    `json:"name"`
-	OwnerID                 uuid.UUID `json:"ownerId"`
-	Description             string    `json:"description"`
-	MemberCount             int       `json:"memberCount"`
-	CreatedAt               time.Time `json:"createdAt"`
-	PrevDaysUntilExpiration int       `json:"prevDaysUntilExpiration"`
+	Name           string      `json:"name"`
+	Description    string      `json:"description"`
+	StorageLimit   memory.Size `json:"storageLimit"`
+	BandwidthLimit memory.Size `json:"bandwidthLimit"`
+	CreatedAt      time.Time   `json:"createdAt"`
 }
 
 // ProjectsCursor holds info for project
@@ -159,19 +141,6 @@ type ProjectsPage struct {
 	TotalCount  int64
 }
 
-// ProjectInfoPage is similar to ProjectsPage
-// except the Projects field is ProjectInfo and is sent over HTTP API.
-type ProjectInfoPage struct {
-	Projects []ProjectInfo `json:"projects"`
-
-	Limit  int   `json:"limit"`
-	Offset int64 `json:"offset"`
-
-	PageCount   int   `json:"pageCount"`
-	CurrentPage int   `json:"currentPage"`
-	TotalCount  int64 `json:"totalCount"`
-}
-
 // ValidateNameAndDescription validates project name and description strings.
 // Project name must have more than 0 and less than 21 symbols.
 // Project description can't have more than hundred symbols.
@@ -189,16 +158,4 @@ func ValidateNameAndDescription(name string, description string) error {
 	}
 
 	return nil
-}
-
-// GetMinimal returns a ProjectInfo copy of a project.
-func (p Project) GetMinimal() ProjectInfo {
-	return ProjectInfo{
-		ID:          p.PublicID,
-		Name:        p.Name,
-		OwnerID:     p.OwnerID,
-		Description: p.Description,
-		MemberCount: p.MemberCount,
-		CreatedAt:   p.CreatedAt,
-	}
 }

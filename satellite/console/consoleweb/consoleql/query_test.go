@@ -101,7 +101,6 @@ func TestGraphqlQuery(t *testing.T) {
 			}, &consoleauth.Hmac{Secret: []byte("my-suppa-secret-key")}),
 			nil,
 			"",
-			"",
 			console.Config{
 				PasswordCost:        console.TestPasswordCost,
 				DefaultProjectLimit: 5,
@@ -188,7 +187,7 @@ func TestGraphqlQuery(t *testing.T) {
 			return result.Data
 		}
 
-		createdProject, err := service.CreateProject(userCtx, console.UpsertProjectInfo{
+		createdProject, err := service.CreateProject(userCtx, console.ProjectInfo{
 			Name: "TestProject",
 		})
 		require.NoError(t, err)
@@ -286,7 +285,7 @@ func TestGraphqlQuery(t *testing.T) {
 
 		t.Run("Project query team members", func(t *testing.T) {
 			query := fmt.Sprintf(
-				"query {project(id: \"%s\") {membersAndInvitations( cursor: { limit: %d, search: \"%s\", page: %d, order: %d, orderDirection: %d } ) { projectMembers{ user { id, fullName, shortName, email, createdAt }, joinedAt }, search, limit, order, offset, pageCount, currentPage, totalCount } } }",
+				"query {project(id: \"%s\") {members( cursor: { limit: %d, search: \"%s\", page: %d, order: %d, orderDirection: %d } ) { projectMembers{ user { id, fullName, shortName, email, createdAt }, joinedAt }, search, limit, order, offset, pageCount, currentPage, totalCount } } }",
 				createdProject.ID.String(),
 				5,
 				"",
@@ -298,7 +297,7 @@ func TestGraphqlQuery(t *testing.T) {
 
 			data := result.(map[string]interface{})
 			project := data[consoleql.ProjectQuery].(map[string]interface{})
-			members := project[consoleql.FieldMembersAndInvitations].(map[string]interface{})
+			members := project[consoleql.FieldMembers].(map[string]interface{})
 			projectMembers := members[consoleql.FieldProjectMembers].([]interface{})
 
 			assert.Equal(t, 3, len(projectMembers))
@@ -396,7 +395,7 @@ func TestGraphqlQuery(t *testing.T) {
 			assert.True(t, foundKey2)
 		})
 
-		project2, err := service.CreateProject(userCtx, console.UpsertProjectInfo{
+		project2, err := service.CreateProject(userCtx, console.ProjectInfo{
 			Name:        "Project2",
 			Description: "Test desc",
 		})

@@ -23,7 +23,6 @@ import (
 	segmentverify "storj.io/storj/cmd/tools/segment-verify"
 	"storj.io/storj/private/testplanet"
 	"storj.io/storj/satellite/metabase"
-	"storj.io/storj/satellite/nodeselection"
 	"storj.io/storj/satellite/overlay"
 )
 
@@ -345,10 +344,10 @@ func (db *metabaseMock) Get(ctx context.Context, nodeID storj.NodeID) (*overlay.
 	}, nil
 }
 
-func (db *metabaseMock) SelectAllStorageNodesDownload(ctx context.Context, onlineWindow time.Duration, asOf overlay.AsOfSystemTimeConfig) ([]*nodeselection.SelectedNode, error) {
-	var xs []*nodeselection.SelectedNode
+func (db *metabaseMock) SelectAllStorageNodesDownload(ctx context.Context, onlineWindow time.Duration, asOf overlay.AsOfSystemTimeConfig) ([]*overlay.SelectedNode, error) {
+	var xs []*overlay.SelectedNode
 	for nodeID := range db.nodeIDToAlias {
-		xs = append(xs, &nodeselection.SelectedNode{
+		xs = append(xs, &overlay.SelectedNode{
 			ID: nodeID,
 			Address: &pb.NodeAddress{
 				Address: fmt.Sprintf("nodeid:%v", nodeID),

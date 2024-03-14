@@ -1,4 +1,4 @@
-// Copyright (C) 2022 Storx Labs, Inc.
+// Copyright (C) 2022 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -32,6 +32,7 @@
 import { computed, onMounted, ref } from 'vue';
 
 import { Coupon, CouponDuration } from '@/types/payments';
+import { AnalyticsHttpApi } from '@/api/analytics';
 import { AnalyticsErrorEventSource, AnalyticsEvent } from '@/utils/constants/analyticsEventNames';
 import { MODALS } from '@/utils/constants/appStatePopUps';
 import { SHORT_MONTHS_NAMES } from '@/utils/constants/date';
@@ -39,14 +40,14 @@ import { useNotify } from '@/utils/hooks';
 import { useBillingStore } from '@/store/modules/billingStore';
 import { useAppStore } from '@/store/modules/appStore';
 import { useConfigStore } from '@/store/modules/configStore';
-import { useAnalyticsStore } from '@/store/modules/analyticsStore';
 
 import VLoader from '@/components/common/VLoader.vue';
 
 import CouponIcon from '@/../static/images/billing/coupon.svg';
 import CloudIcon from '@/../static/images/onboardingTour/cloudIcon.svg';
 
-const analyticsStore = useAnalyticsStore();
+const analytics: AnalyticsHttpApi = new AnalyticsHttpApi();
+
 const configStore = useConfigStore();
 const appStore = useAppStore();
 const billingStore = useBillingStore();
@@ -111,7 +112,7 @@ function toggleCreateModal(): void {
     if (!couponCodeBillingUIEnabled.value) {
         return;
     }
-    analyticsStore.eventTriggered(AnalyticsEvent.APPLY_NEW_COUPON_CLICKED);
+    analytics.eventTriggered(AnalyticsEvent.APPLY_NEW_COUPON_CLICKED);
     appStore.updateActiveModal(MODALS.newBillingAddCoupon);
 }
 
@@ -123,7 +124,7 @@ onMounted(async () => {
     try {
         await billingStore.getCoupon();
     } catch (error) {
-        notify.notifyError(error, AnalyticsErrorEventSource.BILLING_COUPONS_TAB);
+        await notify.error(error.message, AnalyticsErrorEventSource.BILLING_COUPONS_TAB);
     }
 
     isCouponFetching.value = false;
@@ -221,12 +222,12 @@ onMounted(async () => {
                 justify-content: center;
                 border: 2px dashed var(--c-grey-5);
                 border-radius: 20px;
-                color: var(--c-orange-3);
+                color: var(--c-blue-3);
                 font-family: 'font_regular', sans-serif;
                 cursor: pointer;
 
                 &:hover {
-                    background-color: var(--c-orange-1);
+                    background-color: var(--c-blue-1);
                 }
 
                 &__plus-icon {

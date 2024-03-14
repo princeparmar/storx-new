@@ -1,4 +1,4 @@
-// Copyright (C) 2019 Storx Labs, Inc.
+// Copyright (C) 2019 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 import { BaseGql } from '@/api/baseGql';
@@ -6,17 +6,14 @@ import {
     DataStamp,
     Project,
     ProjectFields,
-    ProjectInvitation,
     ProjectLimits,
     ProjectsApi,
     ProjectsCursor,
     ProjectsPage,
     ProjectsStorageBandwidthDaily,
-    ProjectInvitationResponse,
 } from '@/types/projects';
 import { HttpClient } from '@/utils/httpClient';
 import { Time } from '@/utils/time';
-import { APIError } from '@/utils/error';
 
 export class ProjectsApiGql extends BaseGql implements ProjectsApi {
     private readonly http: HttpClient = new HttpClient();
@@ -56,26 +53,27 @@ export class ProjectsApiGql extends BaseGql implements ProjectsApi {
      * @throws Error
      */
     public async get(): Promise<Project[]> {
-        const response = await this.http.get(this.ROOT_PATH);
+        const query = `query {
+            myProjects{
+                name
+                publicId
+                description
+                createdAt
+                ownerId
+            }
+        }`;
 
-        if (!response.ok) {
-            throw new APIError({
-                status: response.status,
-                message: 'Can not get projects',
-                requestID: response.headers.get('x-request-id'),
-            });
-        }
+        const response = await this.query(query);
 
-        const projects = await response.json();
-        return projects.map((p: Project) => new Project(
-            p.id,
-            p.name,
-            p.description,
-            p.createdAt,
-            p.ownerId,
-            false,
-            p.memberCount,
-        ));
+        return response.data.myProjects.map((project: Project & {publicId: string}) => {
+            return new Project(
+                project.publicId,
+                project.name,
+                project.description,
+                project.createdAt,
+                project.ownerId,
+            );
+        });
     }
 
     /**
@@ -88,25 +86,30 @@ export class ProjectsApiGql extends BaseGql implements ProjectsApi {
      * @throws Error
      */
     public async update(projectId: string, projectFields: ProjectFields, projectLimits: ProjectLimits): Promise<void> {
-        const data = {
+        const query =
+            `mutation($projectId: String!, $name: String!, $description: String!, $storageLimit: String!, $bandwidthLimit: String!) {
+                updateProject(
+                    publicId: $projectId,
+                    projectFields: {
+                        name: $name,
+                        description: $description,
+                    },
+                    projectLimits: {
+                        storageLimit: $storageLimit,
+                        bandwidthLimit: $bandwidthLimit,
+                    }
+                ) {name}
+            }`;
+
+        const variables = {
+            projectId: projectId,
             name: projectFields.name,
             description: projectFields.description,
             storageLimit: projectLimits.storageLimit.toString(),
             bandwidthLimit: projectLimits.bandwidthLimit.toString(),
         };
 
-        const path = `${this.ROOT_PATH}/${projectId}`;
-        const response = await this.http.patch(path, JSON.stringify(data));
-        if (response.ok) {
-            return;
-        }
-
-        const result = await response.json();
-        throw new APIError({
-            status: response.status,
-            message: result.error || 'Can not update project',
-            requestID: response.headers.get('x-request-id'),
-        });
+        await this.mutate(query, variables);
     }
 
     /**
@@ -134,18 +137,14 @@ export class ProjectsApiGql extends BaseGql implements ProjectsApi {
      * Get project limits.
      *
      * @param projectId- project ID
-     * @throws Error
+     * throws Error
      */
     public async getLimits(projectId: string): Promise<ProjectLimits> {
         const path = `${this.ROOT_PATH}/${projectId}/usage-limits`;
         const response = await this.http.get(path);
 
         if (!response.ok) {
-            throw new APIError({
-                status: response.status,
-                message: 'Can not get usage limits',
-                requestID: response.headers.get('x-request-id'),
-            });
+            throw new Error('can not get usage limits');
         }
 
         const limits = await response.json();
@@ -166,18 +165,15 @@ export class ProjectsApiGql extends BaseGql implements ProjectsApi {
     /**
      * Get total limits for all the projects that user owns.
      *
-     * @throws Error
+     * throws Error
      */
     public async getTotalLimits(): Promise<ProjectLimits> {
         const path = `${this.ROOT_PATH}/usage-limits`;
         const response = await this.http.get(path);
 
         if (!response.ok) {
-            throw new APIError({
-                status: response.status,
-                message: 'Can not get total usage limits',
-                requestID: response.headers.get('x-request-id'),
-            });
+            throw new Error('can not get total usage limits');
+
         }
 
         const limits = await response.json();
@@ -196,7 +192,7 @@ export class ProjectsApiGql extends BaseGql implements ProjectsApi {
      * @param projectId- project ID
      * @param start- since date
      * @param end- before date
-     * @throws Error
+     * throws Error
      */
     public async getDailyUsage(projectId: string, start: Date, end: Date): Promise<ProjectsStorageBandwidthDaily> {
         const since = Time.toUnixTimestamp(start).toString();
@@ -205,11 +201,8 @@ export class ProjectsApiGql extends BaseGql implements ProjectsApi {
         const response = await this.http.get(path);
 
         if (!response.ok) {
-            throw new APIError({
-                status: response.status,
-                message: 'Can not get project daily usage',
-                requestID: response.headers.get('x-request-id'),
-            });
+            throw new Error('Can not get project daily usage');
+
         }
 
         const usage = await response.json();
@@ -240,11 +233,7 @@ export class ProjectsApiGql extends BaseGql implements ProjectsApi {
             return await response.json();
         }
 
-        throw new APIError({
-            status: response.status,
-            message: 'Can not get project salt',
-            requestID: response.headers.get('x-request-id'),
-        });
+        throw new Error('Can not get project salt');
     }
 
     /**
@@ -254,76 +243,56 @@ export class ProjectsApiGql extends BaseGql implements ProjectsApi {
      * @throws Error
      */
     public async getOwnedProjects(cursor: ProjectsCursor): Promise<ProjectsPage> {
-        const response = await this.http.get(`${this.ROOT_PATH}/paged?limit=${cursor.limit}&page=${cursor.page}`);
+        const query =
+            `query($limit: Int!, $page: Int!) {
+                ownedProjects( cursor: { limit: $limit, page: $page } ) {
+                    projects {
+                        publicId,
+                        name,
+                        ownerId,
+                        description,
+                        createdAt,
+                        memberCount
+                    },
+                    limit,
+                    offset,
+                    pageCount,
+                    currentPage,
+                    totalCount
+                 }
+             }`;
 
-        if (!response.ok) {
-            throw new APIError({
-                status: response.status,
-                message: 'Can not get projects',
-                requestID: response.headers.get('x-request-id'),
-            });
+        const variables = {
+            limit: cursor.limit,
+            page: cursor.page,
+        };
+
+        const response = await this.query(query, variables);
+
+        return this.getProjectsPage(response.data.ownedProjects);
+    }
+
+    /**
+     * Method for mapping projects page from json to ProjectsPage type.
+     *
+     * @param page anonymous object from json
+     */
+    private getProjectsPage(page: any): ProjectsPage { // eslint-disable-line @typescript-eslint/no-explicit-any
+        if (!page) {
+            return new ProjectsPage();
         }
 
-        const page = await response.json();
-
-        const projects: Project[] = page.projects.map((p: Project) =>
+        const projects: Project[] = page.projects.map(key =>
             new Project(
-                p.id,
-                p.name,
-                p.description,
-                p.createdAt,
-                p.ownerId,
+                key.publicId,
+                key.name,
+                key.description,
+                key.createdAt,
+                key.ownerId,
                 false,
-                p.memberCount,
-            ));
+                key.memberCount));
 
         return new ProjectsPage(projects, page.limit, page.offset, page.pageCount, page.currentPage, page.totalCount);
     }
 
-    /**
-     * Returns a user's pending project member invitations.
-     *
-     * @throws Error
-     */
-    public async getUserInvitations(): Promise<ProjectInvitation[]> {
-        const path = `${this.ROOT_PATH}/invitations`;
-        const response = await this.http.get(path);
-        const result = await response.json();
-
-        if (response.ok) {
-            return result.map(jsonInvite => new ProjectInvitation(
-                jsonInvite.projectID,
-                jsonInvite.projectName,
-                jsonInvite.projectDescription,
-                jsonInvite.inviterEmail,
-                new Date(jsonInvite.createdAt),
-            ));
-        }
-
-        throw new APIError({
-            status: response.status,
-            message: result.error || 'Failed to get project invitations',
-            requestID: response.headers.get('x-request-id'),
-        });
-    }
-
-    /**
-     * Handles accepting or declining a user's project member invitation.
-     *
-     * @throws Error
-     */
-    public async respondToInvitation(projectID: string, response: ProjectInvitationResponse): Promise<void> {
-        const path = `${this.ROOT_PATH}/invitations/${projectID}/respond`;
-        const body = { projectID, response };
-        const httpResponse = await this.http.post(path, JSON.stringify(body));
-
-        if (httpResponse.ok) return;
-
-        const result = await httpResponse.json();
-        throw new APIError({
-            status: httpResponse.status,
-            message: result.error || 'Failed to respond to project invitation',
-            requestID: httpResponse.headers.get('x-request-id'),
-        });
-    }
 }

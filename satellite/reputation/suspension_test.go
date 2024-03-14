@@ -16,7 +16,6 @@ import (
 	"storj.io/storj/private/testplanet"
 	"storj.io/storj/satellite"
 	"storj.io/storj/satellite/audit"
-	"storj.io/storj/satellite/metabase"
 	"storj.io/storj/satellite/overlay"
 	"storj.io/storj/satellite/reputation"
 )
@@ -183,7 +182,7 @@ func TestAuditSuspendExceedGracePeriod(t *testing.T) {
 		// give one node a successful audit, one a failed audit, one an offline audit, and one an unknown audit
 		report := audit.Report{
 			Successes:       storj.NodeIDList{successNodeID},
-			Fails:           metabase.Pieces{{StorageNode: failNodeID}},
+			Fails:           storj.NodeIDList{failNodeID},
 			Offlines:        storj.NodeIDList{offlineNodeID},
 			Unknown:         storj.NodeIDList{unknownNodeID},
 			NodesReputation: nodesStatus,
@@ -249,7 +248,7 @@ func TestAuditSuspendDQDisabled(t *testing.T) {
 		// give one node a successful audit, one a failed audit, one an offline audit, and one an unknown audit
 		report := audit.Report{
 			Successes:       storj.NodeIDList{successNodeID},
-			Fails:           metabase.Pieces{{StorageNode: failNodeID}},
+			Fails:           storj.NodeIDList{failNodeID},
 			Offlines:        storj.NodeIDList{offlineNodeID},
 			Unknown:         storj.NodeIDList{unknownNodeID},
 			NodesReputation: nodesStatus,

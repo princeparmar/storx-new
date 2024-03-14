@@ -22,26 +22,21 @@ func setTCPFastOpen(fd uintptr, queue int) error {
 }
 
 var tryInitFastOpenOnce sync.Once
-var initFastOpenPossiblyEnabled bool
 
-// tryInitFastOpen returns true if fastopen support is possibly enabled.
-func tryInitFastOpen(log *zap.Logger) bool {
+func tryInitFastOpen(log *zap.Logger) {
 	tryInitFastOpenOnce.Do(func() {
 		data, err := os.ReadFile(tcpFastOpenSysctlPath)
 		if err != nil {
 			log.Sugar().Infof("kernel support for tcp fast open unknown")
-			initFastOpenPossiblyEnabled = true
 			return
 		}
 		fastOpenFlags, err := strconv.Atoi(strings.TrimSpace(string(data)))
 		if err != nil {
 			log.Sugar().Infof("kernel support for tcp fast open unparsable")
-			initFastOpenPossiblyEnabled = true
 			return
 		}
 		if fastOpenFlags&0x2 != 0 {
 			log.Sugar().Infof("existing kernel support for server-side tcp fast open detected")
-			initFastOpenPossiblyEnabled = true
 			return
 		}
 		err = os.WriteFile(tcpFastOpenSysctlPath, []byte(fmt.Sprint(fastOpenFlags|0x2)), 0o644)
@@ -53,11 +48,8 @@ func tryInitFastOpen(log *zap.Logger) bool {
 			// enable standard fast open with standard cookies for both clients and
 			// servers, so it's probably the right advice.
 			log.Sugar().Infof("enable with: sysctl -w net.ipv4.tcp_fastopen=3")
-			initFastOpenPossiblyEnabled = false
 			return
 		}
 		log.Sugar().Infof("kernel support for server-side tcp fast open enabled.")
-		initFastOpenPossiblyEnabled = true
 	})
-	return initFastOpenPossiblyEnabled
 }

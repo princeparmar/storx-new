@@ -19,7 +19,6 @@ import (
 	"storj.io/common/testcontext"
 	"storj.io/common/testrand"
 	"storj.io/storj/satellite/metabase"
-	"storj.io/storj/satellite/nodeselection"
 	"storj.io/storj/satellite/orders"
 	"storj.io/storj/satellite/overlay"
 )
@@ -31,10 +30,10 @@ func TestGetOrderLimits(t *testing.T) {
 	bucket := metabase.BucketLocation{ProjectID: testrand.UUID(), BucketName: "bucket1"}
 
 	pieces := metabase.Pieces{}
-	nodes := map[storj.NodeID]*nodeselection.SelectedNode{}
+	nodes := map[storj.NodeID]*overlay.SelectedNode{}
 	for i := 0; i < 8; i++ {
 		nodeID := testrand.NodeID()
-		nodes[nodeID] = &nodeselection.SelectedNode{
+		nodes[nodeID] = &overlay.SelectedNode{
 			ID: nodeID,
 			Address: &pb.NodeAddress{
 				Address: fmt.Sprintf("host%d.com", i),
@@ -56,16 +55,14 @@ func TestGetOrderLimits(t *testing.T) {
 		CachedGetOnlineNodesForGet(gomock.Any(), gomock.Any()).
 		Return(nodes, nil).AnyTimes()
 
-	service, err := orders.NewService(zaptest.NewLogger(t), k, overlayService, orders.NewNoopDB(),
-		overlay.NewPlacementRules().CreateFilters,
-		orders.Config{
-			EncryptionKeys: orders.EncryptionKeys{
-				Default: orders.EncryptionKey{
-					ID:  orders.EncryptionKeyID{1, 2, 3, 4, 5, 6, 7, 8},
-					Key: testrand.Key(),
-				},
+	service, err := orders.NewService(zaptest.NewLogger(t), k, overlayService, orders.NewNoopDB(), orders.Config{
+		EncryptionKeys: orders.EncryptionKeys{
+			Default: orders.EncryptionKey{
+				ID:  orders.EncryptionKeyID{1, 2, 3, 4, 5, 6, 7, 8},
+				Key: testrand.Key(),
 			},
-		})
+		},
+	})
 	require.NoError(t, err)
 
 	segment := metabase.Segment{

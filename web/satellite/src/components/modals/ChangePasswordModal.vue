@@ -1,4 +1,4 @@
-// Copyright (C) 2019 Storx Labs, Inc.
+// Copyright (C) 2019 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -66,12 +66,12 @@ import { ref } from 'vue';
 import { useRouter } from 'vue-router';
 
 import { AuthHttpApi } from '@/api/auth';
-import { RouteConfig } from '@/types/router';
+import { RouteConfig } from '@/router';
+import { AnalyticsHttpApi } from '@/api/analytics';
 import { AnalyticsErrorEventSource, AnalyticsEvent } from '@/utils/constants/analyticsEventNames';
 import { useNotify } from '@/utils/hooks';
 import { useConfigStore } from '@/store/modules/configStore';
 import { useAppStore } from '@/store/modules/appStore';
-import { useAnalyticsStore } from '@/store/modules/analyticsStore';
 
 import PasswordStrength from '@/components/common/PasswordStrength.vue';
 import VInput from '@/components/common/VInput.vue';
@@ -80,7 +80,6 @@ import VModal from '@/components/common/VModal.vue';
 
 import ChangePasswordIcon from '@/../static/images/account/changePasswordPopup/changePassword.svg';
 
-const analyticsStore = useAnalyticsStore();
 const configStore = useConfigStore();
 const appStore = useAppStore();
 const notify = useNotify();
@@ -88,6 +87,7 @@ const router = useRouter();
 
 const DELAY_BEFORE_REDIRECT = 2000; // 2 sec
 const auth: AuthHttpApi = new AuthHttpApi();
+const analytics: AnalyticsHttpApi = new AnalyticsHttpApi();
 
 const oldPassword = ref<string>('');
 const newPassword = ref<string>('');
@@ -168,14 +168,14 @@ async function onUpdateClick(): Promise<void> {
     }
 
     if (hasError) {
-        analyticsStore.errorEventTriggered(AnalyticsErrorEventSource.CHANGE_PASSWORD_MODAL);
+        analytics.errorEventTriggered(AnalyticsErrorEventSource.CHANGE_PASSWORD_MODAL);
         return;
     }
 
     try {
         await auth.changePassword(oldPassword.value, newPassword.value);
     } catch (error) {
-        notify.notifyError(error, AnalyticsErrorEventSource.CHANGE_PASSWORD_MODAL);
+        await notify.error(error.message, AnalyticsErrorEventSource.CHANGE_PASSWORD_MODAL);
 
         return;
     }
@@ -187,11 +187,11 @@ async function onUpdateClick(): Promise<void> {
             router.push(RouteConfig.Login.path);
         }, DELAY_BEFORE_REDIRECT);
     } catch (error) {
-        notify.notifyError(error, AnalyticsErrorEventSource.CHANGE_PASSWORD_MODAL);
+        await notify.error(error.message, AnalyticsErrorEventSource.CHANGE_PASSWORD_MODAL);
     }
 
-    analyticsStore.eventTriggered(AnalyticsEvent.PASSWORD_CHANGED);
-    notify.success('Password successfully changed!');
+    analytics.eventTriggered(AnalyticsEvent.PASSWORD_CHANGED);
+    await notify.success('Password successfully changed!');
     closeModal();
 }
 

@@ -57,8 +57,6 @@ type TransactionsDB interface {
 	// but rather to provide an atomic commit of one or more _related_
 	// transactions.
 	Insert(ctx context.Context, primaryTx Transaction, supplementalTx ...Transaction) (txIDs []int64, err error)
-	//boris
-	Inserts(ctx context.Context, primaryTx Transactions) (err error)
 	// UpdateStatus updates the status of the transaction.
 	UpdateStatus(ctx context.Context, txID int64, status TransactionStatus) error
 	// UpdateMetadata updates the metadata of the transaction.
@@ -67,10 +65,6 @@ type TransactionsDB interface {
 	LastTransaction(ctx context.Context, txSource string, txType TransactionType) (time.Time, []byte, error)
 	// List returns all transactions for the specified user.
 	List(ctx context.Context, userID uuid.UUID) ([]Transaction, error)
-	//boris
-	Lists(ctx context.Context, userID uuid.UUID) ([]Transactions, error)
-	// ListSource returns all transactions for the specified user and source.
-	ListSource(ctx context.Context, userID uuid.UUID, txSource string) ([]Transaction, error)
 	// GetBalance returns the current usable balance for the specified user.
 	GetBalance(ctx context.Context, userID uuid.UUID) (currency.Amount, error)
 }
@@ -109,26 +103,6 @@ type Transaction struct {
 	CreatedAt   time.Time
 }
 
-// boris
-type Transactions struct {
-	ID          int64
-	UserID      uuid.UUID
-	Amount      float64
-	Description string
-	Source      string
-	Status      TransactionStatus
-	Type        TransactionType
-	Metadata    []byte
-	Timestamp   time.Time
-	CreatedAt   time.Time
-}
-
-// CalculateBonusAmount calculates bonus for given currency amount and bonus rate.
-func CalculateBonusAmount(amount currency.Amount, bonusRate int64) currency.Amount {
-	bonusUnits := amount.BaseUnits() * bonusRate / 100
-	return currency.AmountFromBaseUnits(bonusUnits, amount.Currency())
-}
-
 func prepareBonusTransaction(bonusRate int64, source string, transaction Transaction) (Transaction, bool) {
 	// Bonus transactions only apply when enabled (i.e. positive rate) and
 	// for StorjScan transactions.
@@ -144,7 +118,7 @@ func prepareBonusTransaction(bonusRate int64, source string, transaction Transac
 
 	return Transaction{
 		UserID:      transaction.UserID,
-		Amount:      CalculateBonusAmount(transaction.Amount, bonusRate),
+		Amount:      calculateBonusAmount(transaction.Amount, bonusRate),
 		Description: fmt.Sprintf("STORJ Token Bonus (%d%%)", bonusRate),
 		Source:      StorjScanBonusSource,
 		Status:      TransactionStatusCompleted,
@@ -152,4 +126,9 @@ func prepareBonusTransaction(bonusRate int64, source string, transaction Transac
 		Timestamp:   transaction.Timestamp,
 		Metadata:    append([]byte(nil), transaction.Metadata...),
 	}, true
+}
+
+func calculateBonusAmount(amount currency.Amount, bonusRate int64) currency.Amount {
+	bonusUnits := amount.BaseUnits() * bonusRate / 100
+	return currency.AmountFromBaseUnits(bonusUnits, amount.Currency())
 }

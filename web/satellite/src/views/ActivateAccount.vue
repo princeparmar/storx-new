@@ -1,4 +1,4 @@
-// Copyright (C) 2021 Storx Labs, Inc.
+// Copyright (C) 2021 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 <template>
@@ -42,7 +42,9 @@
                     border-radius="8px"
                     :is-disabled="isLoading"
                     :on-press="onActivateClick"
-                />
+                >
+                    Reset Password
+                </v-button>
                 <div class="activate-area__content-area__container__login-row">
                     <router-link :to="loginPath" class="activate-area__content-area__container__login-row__link">
                         Back to Login
@@ -58,7 +60,7 @@ import { onMounted, ref } from 'vue';
 import { useRoute } from 'vue-router';
 
 import { AuthHttpApi } from '@/api/auth';
-import { RouteConfig } from '@/types/router';
+import { RouteConfig } from '@/router';
 import { Validator } from '@/utils/validation';
 import { useNotify } from '@/utils/hooks';
 import { useConfigStore } from '@/store/modules/configStore';
@@ -105,7 +107,7 @@ async function onActivateClick(): Promise<void> {
         await auth.resendEmail(email.value);
         isResendSuccessShown.value = true;
     } catch (error) {
-        notify.notifyError(error, null);
+        notify.error(error.message, null);
     }
 }
 

@@ -26,7 +26,6 @@ import (
 	"storj.io/common/storj"
 	"storj.io/common/testcontext"
 	"storj.io/common/testrand"
-	"storj.io/storj/private/date"
 	"storj.io/storj/private/testplanet"
 	"storj.io/storj/storagenode"
 	"storj.io/storj/storagenode/bandwidth"
@@ -72,8 +71,6 @@ func TestUploadAndPartialDownload(t *testing.T) {
 			}()
 		}
 
-		require.NoError(t, planet.WaitForStorageNodeEndpoints(ctx))
-
 		var totalBandwidthUsage bandwidth.Usage
 		for _, storagenode := range planet.StorageNodes {
 			usage, err := storagenode.DB.Bandwidth().Summary(ctx, time.Now().Add(-10*time.Hour), time.Now().Add(10*time.Hour))
@@ -118,8 +115,6 @@ func TestUpload(t *testing.T) {
 		client, err := planet.Uplinks[0].DialPiecestore(ctx, planet.StorageNodes[0])
 		require.NoError(t, err)
 		defer ctx.Check(client.Close)
-
-		var expectedIngressAmount int64
 
 		for _, tt := range []struct {
 			pieceID       storj.PieceID
@@ -188,17 +183,8 @@ func TestUpload(t *testing.T) {
 
 				signee := signing.SignerFromFullIdentity(planet.StorageNodes[0].Identity)
 				require.NoError(t, signing.VerifyPieceHashSignature(ctx, signee, pieceHash))
-
-				expectedIngressAmount += int64(len(data)) // assuming all data is uploaded
 			}
 		}
-
-		require.NoError(t, planet.WaitForStorageNodeEndpoints(ctx))
-
-		from, to := date.MonthBoundary(time.Now().UTC())
-		summary, err := planet.StorageNodes[0].DB.Bandwidth().SatelliteIngressSummary(ctx, planet.Satellites[0].ID(), from, to)
-		require.NoError(t, err)
-		require.Equal(t, expectedIngressAmount, summary.Put)
 	})
 }
 
