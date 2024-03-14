@@ -41,7 +41,7 @@ var (
 
 var mainPageURL string = "/project-dashboard"
 var signupPageURL string = "/signup"
-var signupSuccessURL string = "/signup-success"
+var signupSuccessURL string = "/project-dashboard"
 
 // Auth is an api controller that exposes all auth functionality.
 type Auth struct {
@@ -315,6 +315,8 @@ func (a *Auth) Register(w http.ResponseWriter, r *http.Request) {
 				CreateAccountLink: satelliteAddress + "signup",
 			},
 		)
+
+		a.serveJSONError(ctx, w, console.ErrAlreadyMember.Wrap(errs.New("User with this email already exists.")))
 		return
 	}
 
@@ -430,9 +432,10 @@ func (a *Auth) Register(w http.ResponseWriter, r *http.Request) {
 		a.log.Error("Error in Default Project:")
 		a.log.Error(err.Error())
 		a.serveJSONError(ctx, w, err)
+		return
 	}
 
-	a.log.Error("Default Project Name: " + project.Name)
+	a.log.Info("Default Project Name: " + project.Name)
 }
 
 func CreateToken(ttl time.Duration, payload interface{}, privateKey string) (string, error) {
@@ -1880,6 +1883,8 @@ func (a *Auth) getStatusCode(err error) int {
 		return http.StatusNotImplemented
 	case errors.As(err, &maxBytesError):
 		return http.StatusRequestEntityTooLarge
+	case console.ErrAlreadyMember.Has(err):
+		return http.StatusConflict
 	default:
 		return http.StatusInternalServerError
 	}
