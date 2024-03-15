@@ -236,8 +236,8 @@ func (users *users) Insert(ctx context.Context, user *console.User) (_ *console.
 	}
 
 	if user.Status == console.Active {
-		fmt.Println("Marking profile as active")
-		err = users.UpdateVerificationReminders(ctx, user.ID)
+		fmt.Println("updating user status in create request")
+		err := users.Update(ctx, user.ID, console.UpdateUserRequest{Status: &user.Status})
 		if err != nil {
 			return nil, err
 		}
