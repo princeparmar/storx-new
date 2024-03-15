@@ -636,6 +636,7 @@ func (a *Auth) RegisterGoogle(w http.ResponseWriter, r *http.Request) {
 
 	a.log.Error("Default Project Name: " + project.Name)
 
+	a.TokenGoogleWrapper(ctx, googleuser.Email, w, r)
 	http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, signupSuccessURL), http.StatusTemporaryRedirect)
 }
 
@@ -1139,8 +1140,10 @@ func (a *Auth) HandleLinkedInRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	a.log.Error("Default Project Name: " + project.Name)
+	a.log.Info("Default Project Name: " + project.Name)
 
+	// login
+	a.TokenGoogleWrapper(ctx, LinkedinUserDetails.Email, w, r)
 	http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, signupSuccessURL), http.StatusTemporaryRedirect)
 }
 func (a *Auth) HandleLinkedInLogin(w http.ResponseWriter, r *http.Request) {
