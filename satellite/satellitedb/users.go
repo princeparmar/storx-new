@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -235,6 +236,7 @@ func (users *users) Insert(ctx context.Context, user *console.User) (_ *console.
 	}
 
 	if user.Status == console.Active {
+		fmt.Println("Marking profile as active")
 		err = users.UpdateVerificationReminders(ctx, user.ID)
 		if err != nil {
 			return nil, err
