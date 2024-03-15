@@ -234,6 +234,13 @@ func (users *users) Insert(ctx context.Context, user *console.User) (_ *console.
 		return nil, err
 	}
 
+	if user.Status == console.Active {
+		err = users.UpdateVerificationReminders(ctx, user.ID)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	return userFromDBX(ctx, createdUser)
 }
 

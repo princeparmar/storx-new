@@ -851,6 +851,11 @@ func (s *Service) CreateUser(ctx context.Context, user CreateUser, tokenSecret R
 		}
 	}
 
+	status := Inactive
+	if socialsign {
+		status = Active
+	}
+
 	// store data
 	err = s.store.WithTx(ctx, func(ctx context.Context, tx DBTx) error {
 		userID, err := uuid.New()
@@ -864,7 +869,7 @@ func (s *Service) CreateUser(ctx context.Context, user CreateUser, tokenSecret R
 			FullName:         user.FullName,
 			ShortName:        user.ShortName,
 			PasswordHash:     hash,
-			Status:           Active,
+			Status:           status,
 			IsProfessional:   user.IsProfessional,
 			Position:         user.Position,
 			CompanyName:      user.CompanyName,
@@ -889,6 +894,8 @@ func (s *Service) CreateUser(ctx context.Context, user CreateUser, tokenSecret R
 		newUser.ProjectBandwidthLimit = s.config.UsageLimits.Bandwidth.Free.Int64()
 		newUser.ProjectSegmentLimit = s.config.UsageLimits.Segment.Free
 
+		b, _ := json.Marshal(newUser)
+		fmt.Println("creating user ", string(b))
 		u, err = tx.Users().Insert(ctx,
 			newUser,
 		)
