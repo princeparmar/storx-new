@@ -23,6 +23,8 @@ type Config struct {
 
 // Verify verifies whether operator config is valid.
 func (c Config) Verify(log *zap.Logger) error {
+	fmt.Println("c.Email: ", c.Email)
+
 	if err := isOperatorEmailValid(log, c.Email); err != nil {
 		return err
 	}
@@ -50,7 +52,7 @@ func isOperatorWalletValid(log *zap.Logger, wallet string) error {
 	}
 	r := regexp.MustCompile("^0x[a-fA-F0-9]{40}$")
 	if match := r.MatchString(wallet); !match {
-		return fmt.Errorf("operator wallet address isn't valid")
+		return fmt.Errorf("operator wallet address isn't valid", wallet)
 	}
 
 	log.Info("Operator wallet", zap.String("Address", wallet))

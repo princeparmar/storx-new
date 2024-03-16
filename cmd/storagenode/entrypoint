@@ -1,0 +1,32 @@
+#!/bin/bash
+
+# if STORAGE env is not set give error
+if [ -z "${STORAGE:-}" ]; then
+  echo "STORAGE env is not set"
+  exit 1
+fi
+
+# if SERVER_IP env is not set give error
+if [ -z "${SERVER_IP:-}" ]; then
+  echo "SERVER_IP env is not set"
+  exit 1
+fi
+
+# if WALLET env is not set give error
+if [ -z "${WALLET:-}" ]; then
+  echo "WALLET env is not set"
+  exit 1
+fi
+
+# if EMAIL env is not set give error
+if [ -z "${EMAIL:-}" ]; then
+  echo "EMAIL env is not set"
+  exit 1
+fi
+
+
+if [ ! -f "/app/config/config.yaml" ]; then
+	exec storagenode setup setup --console.address 0.0.0.0:14002 --config-dir /app/config --console.static-dir /web --healthcheck.details false --healthcheck.enabled true --metrics.app-suffix sim --operator.email $EMAIL --operator.wallet $WALLET --operator.wallet-features "" --contact.external-address=${SERVER_IP} --identity-dir /app/identity --server.extensions.revocation false --server.private-address 127.0.0.1:14011 --server.use-peer-ca-whitelist false --storage.allocated-bandwidth 0B --storage.allocated-disk-space $STORAGE --storage.path /storage --storage2.monitor.minimum-disk-space 1GB --storage2.trust.sources 1tPG3e2hSVF8qnDb9dbsBNzXq3GP4mA83mR2gzwa21dMW4fr5U@78.129.184.69:10000 --tracing.app storagenode/pradip --version.server-address http://78.129.184.69:12000/
+fi
+
+exec storagenode run --config-dir /app/config
