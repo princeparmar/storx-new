@@ -52,7 +52,7 @@ func (*ProjectInvitationEmail) Template() string { return "Invite" }
 
 // Subject gets email subject.
 func (email *ProjectInvitationEmail) Subject() string {
-	return "You were invited to join a project on Storj"
+	return "You were invited to join a project on StorX"
 }
 
 // ExistingUserProjectInvitationEmail is mailservice template for project invitation email for existing users.
@@ -67,7 +67,7 @@ func (*ExistingUserProjectInvitationEmail) Template() string { return "ExistingU
 
 // Subject gets email subject.
 func (email *ExistingUserProjectInvitationEmail) Subject() string {
-	return "You were invited to join a project on Storj"
+	return "You were invited to join a project on StorX"
 }
 
 // NewUserProjectInvitationEmail is mailservice template for project invitation email for new users.
@@ -82,7 +82,7 @@ func (*NewUserProjectInvitationEmail) Template() string { return "NewUserInvite"
 
 // Subject gets email subject.
 func (email *NewUserProjectInvitationEmail) Subject() string {
-	return "You were invited to join a project on Storj"
+	return "You were invited to join a project on StorX"
 }
 
 // UnknownResetPasswordEmail is mailservice template with unknown password reset data.
