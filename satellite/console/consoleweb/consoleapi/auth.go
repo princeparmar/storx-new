@@ -41,6 +41,7 @@ var (
 
 var mainPageURL string = "/project-dashboard"
 var signupPageURL string = "/signup"
+var loginPageURL string = "/login"
 var signupSuccessURL string = "/project-dashboard"
 
 // Auth is an api controller that exposes all auth functionality.
@@ -497,26 +498,26 @@ func (a *Auth) RegisterGoogle(w http.ResponseWriter, r *http.Request) {
 	code := r.URL.Query().Get("code")
 
 	if code == "" {
-		a.serveJSONError(ctx, w, console.ErrUnauthorized.Wrap(errs.New("Authorization code not provided!")))
+		http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, signupPageURL)+"?error=Authorization code not provided!", http.StatusTemporaryRedirect)
 		return
 	}
 
 	// Use the code to get the id and access tokens
 	tokenRes, err := socialmedia.GetGoogleOauthToken(code, mode)
 	if err != nil {
-		a.serveJSONError(ctx, w, err)
+		http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, signupPageURL)+"?error=Error getting token from Google!", http.StatusTemporaryRedirect)
 		return
 	}
 
 	googleuser, err := socialmedia.GetGoogleUser(tokenRes.Access_token, tokenRes.Id_token)
 	if err != nil {
-		a.serveJSONError(ctx, w, err)
+		http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, signupPageURL)+"?error=Error getting user details from Google!", http.StatusTemporaryRedirect)
 		return
 	}
 
 	verified, unverified, err := a.service.GetUserByEmailWithUnverified_google(ctx, googleuser.Email)
 	if err != nil && !console.ErrEmailNotFound.Has(err) {
-		a.serveJSONError(ctx, w, err)
+		http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, signupPageURL)+"?error=Error getting user details from system!", http.StatusTemporaryRedirect)
 		return
 	}
 
@@ -543,7 +544,7 @@ func (a *Auth) RegisterGoogle(w http.ResponseWriter, r *http.Request) {
 		} else {
 			secret, err := console.RegistrationSecretFromBase64(registerData.SecretInput)
 			if err != nil {
-				a.serveJSONError(ctx, w, err)
+				http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, signupPageURL)+"?error=Error creating secret!", http.StatusTemporaryRedirect)
 				return
 			}
 
@@ -553,7 +554,7 @@ func (a *Auth) RegisterGoogle(w http.ResponseWriter, r *http.Request) {
 
 			ip, err := web.GetRequestIP(r)
 			if err != nil {
-				a.serveJSONError(ctx, w, err)
+				http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, signupPageURL)+"?error=Error getting IP!", http.StatusTemporaryRedirect)
 				return
 			}
 			registerData.Status = 1
@@ -577,7 +578,7 @@ func (a *Auth) RegisterGoogle(w http.ResponseWriter, r *http.Request) {
 			)
 
 			if err != nil {
-				a.serveJSONError(ctx, w, err)
+				http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, signupPageURL)+"?error=Error creating user!", http.StatusTemporaryRedirect)
 				return
 			}
 
@@ -614,12 +615,7 @@ func (a *Auth) RegisterGoogle(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Create Default Project
-	tokenInfo, err := a.service.GenerateSessionToken(ctx, user.ID, user.Email, "", "")
-	//require.NoError(t, err)
-	a.log.Error("Token Info:")
-	a.log.Error(tokenInfo.Token.String())
-
+	a.TokenGoogleWrapper(ctx, googleuser.Email, w, r)
 	// Set up a test project and bucket
 
 	authed := console.WithUser(ctx, user)
@@ -627,16 +623,13 @@ func (a *Auth) RegisterGoogle(w http.ResponseWriter, r *http.Request) {
 	project, err := a.service.CreateProject(authed, console.UpsertProjectInfo{
 		Name: "My Project",
 	})
-	//require.NoError(t, err)
 	if err != nil {
 		a.log.Error("Error in Default Project:")
 		a.log.Error(err.Error())
-		a.serveJSONError(ctx, w, err)
+		http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, signupPageURL)+"?error=Error creating default project!", http.StatusTemporaryRedirect)
 	}
 
-	a.log.Error("Default Project Name: " + project.Name)
-
-	a.TokenGoogleWrapper(ctx, googleuser.Email, w, r)
+	a.log.Info("Default Project Name: " + project.Name)
 	http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, signupSuccessURL), http.StatusTemporaryRedirect)
 }
 
@@ -649,43 +642,41 @@ func (a *Auth) LoginUserConfirm(w http.ResponseWriter, r *http.Request) {
 	code := r.URL.Query().Get("code")
 
 	if code == "" {
-		a.serveJSONError(ctx, w, console.ErrUnauthorized.Wrap(errs.New("Authorization code not provided!")))
+		http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, loginPageURL)+"?error=Error while getting code from google", http.StatusTemporaryRedirect)
 		return
 	}
 
 	// Use the code to get the id and access tokens
 	tokenRes, err := socialmedia.GetGoogleOauthToken(code, mode)
-
 	if err != nil {
-		a.serveJSONError(ctx, w, err)
+		http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, loginPageURL)+"?error=Error getting token from Google", http.StatusTemporaryRedirect)
 		return
 	}
 
 	googleuser, err := socialmedia.GetGoogleUser(tokenRes.Access_token, tokenRes.Id_token)
 
-	verified, unverified, err := a.service.GetUserByEmailWithUnverified_google(ctx, googleuser.Email)
+	verified, _, err := a.service.GetUserByEmailWithUnverified_google(ctx, googleuser.Email)
 	if err != nil && !console.ErrEmailNotFound.Has(err) {
-		a.serveJSONError(ctx, w, err)
+		http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, loginPageURL)+"?error=Error getting user details from system", http.StatusTemporaryRedirect)
 		return
 	}
-	fmt.Println(verified, unverified, err)
 
 	if verified == nil {
-		http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, signupPageURL), http.StatusTemporaryRedirect)
+		http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, signupPageURL)+"?error=Your email id is not registered", http.StatusTemporaryRedirect)
 		return
 	}
-	a.TokenGoogleWrapper(r.Context(), googleuser.Email, w, r)
 
+	a.TokenGoogleWrapper(r.Context(), googleuser.Email, w, r)
 	http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, mainPageURL), http.StatusTemporaryRedirect)
 }
 
-func (a *Auth) TokenGoogleWrapperHandler(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	var err error
-	defer mon.Task()(&ctx)(&err)
+// func (a *Auth) TokenGoogleWrapperHandler(w http.ResponseWriter, r *http.Request) {
+// 	ctx := r.Context()
+// 	var err error
+// 	defer mon.Task()(&ctx)(&err)
 
-	a.TokenGoogleWrapper(ctx, "userGmail", w, r)
-}
+// 	a.TokenGoogleWrapper(ctx, "userGmail", w, r)
+// }
 
 func (a *Auth) TokenGoogleWrapper(ctx context.Context, userGmail string, w http.ResponseWriter, r *http.Request) {
 
@@ -697,7 +688,7 @@ func (a *Auth) TokenGoogleWrapper(ctx context.Context, userGmail string, w http.
 	tokenRequest.UserAgent = r.UserAgent()
 	tokenRequest.IP, err = web.GetRequestIP(r)
 	if err != nil {
-		a.serveJSONError(ctx, w, err)
+		http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, loginPageURL)+"?error=Error getting IP", http.StatusTemporaryRedirect)
 		return
 	}
 
@@ -705,10 +696,10 @@ func (a *Auth) TokenGoogleWrapper(ctx context.Context, userGmail string, w http.
 
 	if err != nil {
 		if console.ErrMFAMissing.Has(err) {
-			web.ServeCustomJSONError(ctx, a.log, w, http.StatusOK, err, a.getUserErrorMessage(err))
+			http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, loginPageURL)+"?error=Error getting token from system", http.StatusTemporaryRedirect)
 		} else {
 			a.log.Info("Error authenticating token request", zap.String("email", tokenRequest.Email), zap.Error(ErrAuthAPI.Wrap(err)))
-			a.serveJSONError(ctx, w, err)
+			http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, loginPageURL)+"?error=Error getting token from system", http.StatusTemporaryRedirect)
 		}
 		return
 	}
@@ -761,19 +752,19 @@ func (a *Auth) HandleFacebookRegister(w http.ResponseWriter, r *http.Request) {
 	token, err := OAuth2Config.Exchange(context.TODO(), code)
 
 	if err != nil || token == nil {
-		a.serveJSONError(ctx, w, err)
+		http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, signupPageURL)+"?error=Error getting token from Facebook", http.StatusTemporaryRedirect)
 		return
 	}
 	fbUserDetails, fbUserDetailsError := socialmedia.GetUserInfoFromFacebook(token.AccessToken)
 
 	if fbUserDetailsError != nil {
-		a.serveJSONError(ctx, w, err)
+		http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, signupPageURL)+"?error=Error getting user details from Facebook", http.StatusTemporaryRedirect)
 		return
 	}
 
 	verified, unverified, err := a.service.GetUserByEmailWithUnverified_google(ctx, fbUserDetails.Email)
 	if err != nil && !console.ErrEmailNotFound.Has(err) {
-		a.serveJSONError(ctx, w, err)
+		http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, signupPageURL)+"?error=Error getting user details from system", http.StatusTemporaryRedirect)
 		return
 	}
 	var user *console.User
@@ -799,7 +790,7 @@ func (a *Auth) HandleFacebookRegister(w http.ResponseWriter, r *http.Request) {
 		} else {
 			secret, err := console.RegistrationSecretFromBase64(registerData.SecretInput)
 			if err != nil {
-				a.serveJSONError(ctx, w, err)
+				http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, signupPageURL)+"?error=Error creating secret", http.StatusTemporaryRedirect)
 				return
 			}
 
@@ -809,7 +800,7 @@ func (a *Auth) HandleFacebookRegister(w http.ResponseWriter, r *http.Request) {
 
 			ip, err := web.GetRequestIP(r)
 			if err != nil {
-				a.serveJSONError(ctx, w, err)
+				http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, signupPageURL)+"?error=Error getting IP", http.StatusTemporaryRedirect)
 				return
 			}
 			registerData.Status = 1
@@ -834,7 +825,7 @@ func (a *Auth) HandleFacebookRegister(w http.ResponseWriter, r *http.Request) {
 			)
 
 			if err != nil {
-				a.serveJSONError(ctx, w, err)
+				http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, signupPageURL)+"?error=Error creating user", http.StatusTemporaryRedirect)
 				return
 			}
 
@@ -871,14 +862,9 @@ func (a *Auth) HandleFacebookRegister(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Create Default Project
-	tokenInfo, err := a.service.GenerateSessionToken(ctx, user.ID, user.Email, "", "")
-	//require.NoError(t, err)
-	a.log.Error("Token Info:")
-	a.log.Error(tokenInfo.Token.String())
+	a.TokenGoogleWrapper(ctx, fbUserDetails.Email, w, r)
 
 	// Set up a test project and bucket
-
 	authed := console.WithUser(ctx, user)
 
 	project, err := a.service.CreateProject(authed, console.UpsertProjectInfo{
@@ -888,11 +874,11 @@ func (a *Auth) HandleFacebookRegister(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		a.log.Error("Error in Default Project:")
 		a.log.Error(err.Error())
-		a.serveJSONError(ctx, w, err)
+		http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, signupPageURL)+"?error=Error creating default project", http.StatusTemporaryRedirect)
 		return
 	}
 
-	a.log.Error("Default Project Name: " + project.Name)
+	a.log.Info("Default Project Name: " + project.Name)
 
 	http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, signupSuccessURL), http.StatusTemporaryRedirect)
 }
@@ -906,7 +892,7 @@ func (a *Auth) HandleFacebookLogin(w http.ResponseWriter, r *http.Request) {
 	var code = r.FormValue("code")
 
 	if state != socialmedia.GetRandomOAuthStateString() {
-		a.serveJSONError(ctx, w, err)
+		http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, loginPageURL)+"?error=state mismatch", http.StatusTemporaryRedirect)
 		return
 	}
 
@@ -915,26 +901,25 @@ func (a *Auth) HandleFacebookLogin(w http.ResponseWriter, r *http.Request) {
 	token, err := OAuth2Config.Exchange(context.TODO(), code)
 
 	if err != nil || token == nil {
-		a.serveJSONError(ctx, w, err)
+		http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, loginPageURL)+"?error=Error getting token from Facebook", http.StatusTemporaryRedirect)
 		return
 	}
 
 	fbUserDetails, fbUserDetailsError := socialmedia.GetUserInfoFromFacebook(token.AccessToken)
 
 	if fbUserDetailsError != nil {
-		a.serveJSONError(ctx, w, err)
+		http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, loginPageURL)+"?error=Error getting user details from Facebook", http.StatusTemporaryRedirect)
 		return
 	}
 
-	verified, unverified, err := a.service.GetUserByEmailWithUnverified_google(ctx, fbUserDetails.Email)
+	verified, _, err := a.service.GetUserByEmailWithUnverified_google(ctx, fbUserDetails.Email)
 	if err != nil && !console.ErrEmailNotFound.Has(err) {
-		a.serveJSONError(ctx, w, err)
+		http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, loginPageURL)+"?error=Error getting user details from system", http.StatusTemporaryRedirect)
 		return
 	}
-	fmt.Println(verified, unverified, err)
 
 	if verified == nil {
-		http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, signupPageURL), http.StatusTemporaryRedirect)
+		http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, signupPageURL)+"?error=Your email id is not registered", http.StatusTemporaryRedirect)
 		return
 	}
 	a.TokenGoogleWrapper(ctx, verified.Email, w, r)
@@ -987,7 +972,7 @@ func (a *Auth) HandleLinkedInRegister(w http.ResponseWriter, r *http.Request) {
 	token, err := OAuth2Config.Exchange(context.TODO(), code)
 
 	if err != nil || token == nil {
-		a.serveJSONError(ctx, w, err)
+		http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, signupPageURL)+"?error=Error getting token from LinkedIn", http.StatusTemporaryRedirect)
 		return
 	}
 
@@ -995,33 +980,33 @@ func (a *Auth) HandleLinkedInRegister(w http.ResponseWriter, r *http.Request) {
 	req, err := http.NewRequest("GET", "https://api.linkedin.com/v2/userinfo", nil)
 
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, signupPageURL)+"?error=Error getting user details from LinkedIn", http.StatusTemporaryRedirect)
 		return
 	}
 	req.Header.Set("Bearer", token.AccessToken)
 	response, err := client.Do(req)
 
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, signupPageURL)+"?error=Error getting user details from LinkedIn", http.StatusTemporaryRedirect)
 		return
 	}
 	defer response.Body.Close()
 	str, err := io.ReadAll(response.Body)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, signupPageURL)+"?error=Error getting user details from LinkedIn", http.StatusTemporaryRedirect)
 		return
 	}
 
 	var LinkedinUserDetails socialmedia.LinkedinUserDetails
 	err = json.Unmarshal(str, &LinkedinUserDetails)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, signupPageURL)+"?error=Error getting user details from LinkedIn", http.StatusTemporaryRedirect)
 		return
 	}
 
 	verified, unverified, err := a.service.GetUserByEmailWithUnverified_google(ctx, LinkedinUserDetails.Email)
 	if err != nil && !console.ErrEmailNotFound.Has(err) {
-		a.serveJSONError(ctx, w, err)
+		http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, signupPageURL)+"?error=Error getting user details from system", http.StatusTemporaryRedirect)
 		return
 	}
 
@@ -1048,7 +1033,7 @@ func (a *Auth) HandleLinkedInRegister(w http.ResponseWriter, r *http.Request) {
 		} else {
 			secret, err := console.RegistrationSecretFromBase64(registerData.SecretInput)
 			if err != nil {
-				a.serveJSONError(ctx, w, err)
+				http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, signupPageURL)+"?error=Error creating secret", http.StatusTemporaryRedirect)
 				return
 			}
 
@@ -1058,7 +1043,7 @@ func (a *Auth) HandleLinkedInRegister(w http.ResponseWriter, r *http.Request) {
 
 			ip, err := web.GetRequestIP(r)
 			if err != nil {
-				a.serveJSONError(ctx, w, err)
+				http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, signupPageURL)+"?error=Error getting IP", http.StatusTemporaryRedirect)
 				return
 			}
 			registerData.Status = 1
@@ -1083,7 +1068,7 @@ func (a *Auth) HandleLinkedInRegister(w http.ResponseWriter, r *http.Request) {
 			)
 
 			if err != nil {
-				a.serveJSONError(ctx, w, err)
+				http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, signupPageURL)+"?error=Error creating user", http.StatusTemporaryRedirect)
 				return
 			}
 			referrer := r.URL.Query().Get("referrer")
@@ -1119,11 +1104,7 @@ func (a *Auth) HandleLinkedInRegister(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Create Default Project
-	tokenInfo, err := a.service.GenerateSessionToken(ctx, user.ID, user.Email, "", "")
-	//require.NoError(t, err)
-	a.log.Error("Token Info:")
-	a.log.Error(tokenInfo.Token.String())
+	a.TokenGoogleWrapper(ctx, LinkedinUserDetails.Email, w, r)
 
 	// Set up a test project and bucket
 
@@ -1136,7 +1117,7 @@ func (a *Auth) HandleLinkedInRegister(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		a.log.Error("Error in Default Project:")
 		a.log.Error(err.Error())
-		a.serveJSONError(ctx, w, err)
+		http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, signupPageURL)+"?error=Error creating default project", http.StatusTemporaryRedirect)
 		return
 	}
 
@@ -1155,7 +1136,7 @@ func (a *Auth) HandleLinkedInLogin(w http.ResponseWriter, r *http.Request) {
 	var code = r.FormValue("code")
 
 	if state != socialmedia.GetRandomOAuthStateString() {
-		a.serveJSONError(ctx, w, err)
+		http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, loginPageURL)+"?error=state mismatch", http.StatusTemporaryRedirect)
 		return
 	}
 
@@ -1163,7 +1144,7 @@ func (a *Auth) HandleLinkedInLogin(w http.ResponseWriter, r *http.Request) {
 	token, err := OAuth2Config.Exchange(context.TODO(), code)
 
 	if err != nil || token == nil {
-		a.serveJSONError(ctx, w, err)
+		http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, loginPageURL)+"?error=Error getting token from LinkedIn", http.StatusTemporaryRedirect)
 		return
 	}
 
@@ -1171,39 +1152,39 @@ func (a *Auth) HandleLinkedInLogin(w http.ResponseWriter, r *http.Request) {
 	req, err := http.NewRequest("GET", "https://api.linkedin.com/v2/userinfo", nil)
 
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, loginPageURL)+"?error=Error getting user details from LinkedIn", http.StatusTemporaryRedirect)
 		return
 	}
 	req.Header.Set("Bearer", token.AccessToken)
 	response, err := client.Do(req)
 
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, loginPageURL)+"?error=Error getting user details from LinkedIn", http.StatusTemporaryRedirect)
 		return
 	}
 	defer response.Body.Close()
 	str, err := io.ReadAll(response.Body)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, loginPageURL)+"?error=Error getting user details from LinkedIn", http.StatusTemporaryRedirect)
 		return
 	}
 
 	var LinkedinUserDetails socialmedia.LinkedinUserDetails
 	err = json.Unmarshal(str, &LinkedinUserDetails)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, loginPageURL)+"?error=Error getting user details from LinkedIn", http.StatusTemporaryRedirect)
 		return
 	}
 
 	verified, unverified, err := a.service.GetUserByEmailWithUnverified_google(ctx, LinkedinUserDetails.Email)
 	if err != nil && !console.ErrEmailNotFound.Has(err) {
-		a.serveJSONError(ctx, w, err)
+		http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, loginPageURL)+"?error=Error getting user details from system", http.StatusTemporaryRedirect)
 		return
 	}
 	fmt.Println(verified, unverified)
 
 	if verified == nil {
-		http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, signupPageURL), http.StatusTemporaryRedirect)
+		http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, signupPageURL)+"?error=Your email id is not registered", http.StatusTemporaryRedirect)
 		return
 	}
 	a.TokenGoogleWrapper(ctx, LinkedinUserDetails.Email, w, r)
