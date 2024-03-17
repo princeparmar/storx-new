@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"github.com/vivint/infectious"
 	"github.com/zeebo/errs"
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
@@ -24,12 +23,12 @@ import (
 	"storj.io/common/errs2"
 	"storj.io/common/pb"
 	"storj.io/common/peertls/tlsopts"
+	"storj.io/common/process"
 	"storj.io/common/rpc"
 	"storj.io/common/rpc/rpcstatus"
 	"storj.io/common/signing"
 	"storj.io/common/storj"
 	"storj.io/common/uuid"
-	"storj.io/private/process"
 	"storj.io/storj/private/revocation"
 	"storj.io/storj/satellite"
 	"storj.io/storj/satellite/metabase"
@@ -94,7 +93,12 @@ func cmdRepairSegment(cmd *cobra.Command, args []string) (err error) {
 
 	dialer := rpc.NewDefaultDialer(tlsOptions)
 
-	overlayService, err := overlay.NewService(log.Named("overlay"), db.OverlayCache(), db.NodeEvents(), config.Placement.CreateFilters, config.Console.ExternalAddress, config.Console.SatelliteName, config.Overlay)
+	placement, err := config.Placement.Parse(config.Overlay.Node.CreateDefaultPlacement)
+	if err != nil {
+		return err
+	}
+
+	overlayService, err := overlay.NewService(log.Named("overlay"), db.OverlayCache(), db.NodeEvents(), placement, config.Console.ExternalAddress, config.Console.SatelliteName, config.Overlay)
 	if err != nil {
 		return err
 	}
@@ -104,7 +108,7 @@ func cmdRepairSegment(cmd *cobra.Command, args []string) (err error) {
 		signing.SignerFromFullIdentity(identity),
 		overlayService,
 		orders.NewNoopDB(),
-		config.Placement.CreateFilters,
+		placement.CreateFilters,
 		config.Orders,
 	)
 	if err != nil {
@@ -117,7 +121,7 @@ func cmdRepairSegment(cmd *cobra.Command, args []string) (err error) {
 		signing.SigneeFromPeerIdentity(identity.PeerIdentity()),
 		config.Repairer.DialTimeout,
 		config.Repairer.DownloadTimeout,
-		true) // force inmemory download of pieces
+		true, true) // force inmemory download and upload of pieces
 
 	segmentRepairer := repairer.NewSegmentRepairer(
 		log.Named("segment-repair"),
@@ -126,7 +130,7 @@ func cmdRepairSegment(cmd *cobra.Command, args []string) (err error) {
 		overlayService,
 		nil, // TODO add noop version
 		ecRepairer,
-		config.Placement.CreateFilters,
+		placement,
 		config.Checker.RepairOverrides,
 		config.Repairer,
 	)
@@ -276,10 +280,8 @@ func reuploadSegment(ctx context.Context, log *zap.Logger, peer *satellite.Repai
 		return errs.New("not enough new nodes were found for repair: min %v got %v", redundancy.RepairThreshold(), len(newNodes))
 	}
 
-	optimalThresholdMultiplier := float64(1) // is this value fine?
-	numHealthyInExcludedCountries := 0
 	putLimits, putPrivateKey, err := peer.Orders.Service.CreatePutRepairOrderLimits(ctx, segment, make([]*pb.AddressedOrderLimit, len(newNodes)),
-		make(map[int32]struct{}), newNodes, optimalThresholdMultiplier, numHealthyInExcludedCountries)
+		make(map[uint16]struct{}), newNodes)
 	if err != nil {
 		return errs.New("could not create PUT_REPAIR order limits: %w", err)
 	}
@@ -378,7 +380,7 @@ func downloadSegment(ctx context.Context, log *zap.Logger, peer *satellite.Repai
 			len(pieceReaders), redundancy.RequiredCount())
 	}
 
-	fec, err := infectious.NewFEC(redundancy.RequiredCount(), redundancy.TotalCount())
+	fec, err := eestream.NewFEC(redundancy.RequiredCount(), redundancy.TotalCount())
 	if err != nil {
 		return nil, failedDownloads, err
 	}

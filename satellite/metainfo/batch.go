@@ -49,6 +49,39 @@ func (endpoint *Endpoint) Batch(ctx context.Context, req *pb.BatchRequest) (resp
 					BucketGet: response,
 				},
 			})
+		case *pb.BatchRequestItem_BucketGetLocation:
+			singleRequest.BucketGetLocation.Header = req.Header
+			response, err := endpoint.GetBucketLocation(ctx, singleRequest.BucketGetLocation)
+			if err != nil {
+				return resp, err
+			}
+			resp.Responses = append(resp.Responses, &pb.BatchResponseItem{
+				Response: &pb.BatchResponseItem_BucketGetLocation{
+					BucketGetLocation: response,
+				},
+			})
+		case *pb.BatchRequestItem_BucketGetVersioning:
+			singleRequest.BucketGetVersioning.Header = req.Header
+			response, err := endpoint.GetBucketVersioning(ctx, singleRequest.BucketGetVersioning)
+			if err != nil {
+				return resp, err
+			}
+			resp.Responses = append(resp.Responses, &pb.BatchResponseItem{
+				Response: &pb.BatchResponseItem_BucketGetVersioning{
+					BucketGetVersioning: response,
+				},
+			})
+		case *pb.BatchRequestItem_BucketSetVersioning:
+			singleRequest.BucketSetVersioning.Header = req.Header
+			response, err := endpoint.SetBucketVersioning(ctx, singleRequest.BucketSetVersioning)
+			if err != nil {
+				return resp, err
+			}
+			resp.Responses = append(resp.Responses, &pb.BatchResponseItem{
+				Response: &pb.BatchResponseItem_BucketSetVersioning{
+					BucketSetVersioning: response,
+				},
+			})
 		case *pb.BatchRequestItem_BucketDelete:
 			singleRequest.BucketDelete.Header = req.Header
 			response, err := endpoint.DeleteBucket(ctx, singleRequest.BucketDelete)
@@ -193,11 +226,13 @@ func (endpoint *Endpoint) Batch(ctx context.Context, req *pb.BatchRequest) (resp
 		case *pb.BatchRequestItem_SegmentBegin:
 			singleRequest.SegmentBegin.Header = req.Header
 
+			justCreatedObject := false
 			if singleRequest.SegmentBegin.StreamId.IsZero() && !lastStreamID.IsZero() {
 				singleRequest.SegmentBegin.StreamId = lastStreamID
+				justCreatedObject = true
 			}
 
-			response, err := endpoint.BeginSegment(ctx, singleRequest.SegmentBegin)
+			response, err := endpoint.beginSegment(ctx, singleRequest.SegmentBegin, justCreatedObject)
 			if err != nil {
 				return resp, err
 			}

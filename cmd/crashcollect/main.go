@@ -12,9 +12,9 @@ import (
 	"github.com/zeebo/errs"
 	"go.uber.org/zap"
 
+	"storj.io/common/cfgstruct"
 	"storj.io/common/fpath"
-	"storj.io/private/cfgstruct"
-	"storj.io/private/process"
+	"storj.io/common/process"
 	"storj.io/storj/crashcollect"
 )
 
@@ -24,6 +24,9 @@ type Config struct {
 }
 
 func main() {
+	logger, _, _ := process.NewLogger("crashcollect")
+	zap.ReplaceGlobals(logger)
+
 	rootCmd := &cobra.Command{
 		Use:   "crashcollect",
 		Short: "Crash collect service",
@@ -61,8 +64,6 @@ func RunCommand(runCfg *Config) *cobra.Command {
 	runCmd.RunE = func(cmd *cobra.Command, args []string) error {
 		ctx, _ := process.Ctx(cmd)
 		log := zap.L()
-
-		runCfg.Debug.Address = *process.DebugAddrFlag
 
 		identity, err := runCfg.Identity.Load()
 		if err != nil {

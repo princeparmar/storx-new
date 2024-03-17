@@ -12,10 +12,10 @@ import (
 
 	"github.com/zeebo/errs"
 
+	"storj.io/common/dbutil/pgutil"
 	"storj.io/common/pb"
 	"storj.io/common/storj"
-	"storj.io/private/dbutil/pgutil"
-	"storj.io/private/version"
+	"storj.io/common/version"
 	"storj.io/storj/satellite/nodeselection"
 	"storj.io/storj/satellite/overlay"
 )
@@ -168,7 +168,6 @@ func nodeSelectionCondition(ctx context.Context, criteria *overlay.NodeCriteria,
 	conds.add(`offline_suspended IS NULL`)
 	conds.add(`exit_initiated_at IS NULL`)
 
-	conds.add(`type = ?`, int(pb.NodeType_STORAGE))
 	conds.add(`free_disk >= ?`, criteria.FreeDisk)
 	conds.add(`last_contact_success > ?`, time.Now().UTC().Add(-criteria.OnlineWindow))
 

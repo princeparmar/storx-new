@@ -19,10 +19,20 @@ func (*AccountActivationEmail) Template() string { return "Welcome" }
 // Subject gets email subject.
 func (*AccountActivationEmail) Subject() string { return "Activate your email" }
 
+// AccountActivationCodeEmail is mailservice template with activation code.
+type AccountActivationCodeEmail struct {
+	ActivationCode string
+}
+
+// Template returns email template name.
+func (*AccountActivationCodeEmail) Template() string { return "WelcomeWithCode" }
+
+// Subject gets email subject.
+func (*AccountActivationCodeEmail) Subject() string { return "Activate your email" }
+
 // ForgotPasswordEmail is mailservice template with reset password data.
 type ForgotPasswordEmail struct {
 	Origin                     string
-	UserName                   string
 	ResetLink                  string
 	CancelPasswordRecoveryLink string
 	LetUsKnowURL               string
@@ -39,7 +49,6 @@ func (*ForgotPasswordEmail) Subject() string { return "Password recovery request
 // ProjectInvitationEmail is mailservice template for project invitation email.
 type ProjectInvitationEmail struct {
 	Origin                string
-	UserName              string
 	InviterEmail          string
 	SignInLink            string
 	LetUsKnowURL          string
@@ -67,6 +76,21 @@ func (*ExistingUserProjectInvitationEmail) Template() string { return "ExistingU
 
 // Subject gets email subject.
 func (email *ExistingUserProjectInvitationEmail) Subject() string {
+	return "You were invited to join a project on Storj"
+}
+
+// UnverifiedUserProjectInvitationEmail is mailservice template for project invitation email for unverified users.
+type UnverifiedUserProjectInvitationEmail struct {
+	InviterEmail   string
+	Region         string
+	ActivationLink string
+}
+
+// Template returns email template name.
+func (*UnverifiedUserProjectInvitationEmail) Template() string { return "UnverifiedUserInvite" }
+
+// Subject gets email subject.
+func (email *UnverifiedUserProjectInvitationEmail) Subject() string {
 	return "You were invited to join a project on Storj"
 }
 
@@ -122,7 +146,6 @@ func (*AccountAlreadyExistsEmail) Subject() string {
 
 // LockAccountEmail is mailservice template with lock account data.
 type LockAccountEmail struct {
-	Name              string
 	LockoutDuration   time.Duration
 	ResetPasswordLink string
 }
@@ -132,45 +155,3 @@ func (*LockAccountEmail) Template() string { return "LockAccount" }
 
 // Subject gets email subject.
 func (*LockAccountEmail) Subject() string { return "Account Lock" }
-
-type UpgradeExpiredEmail struct {
-	UserName  string
-	Signature string
-}
-
-// Template returns email template name.
-func (*UpgradeExpiredEmail) Template() string { return "UpgradeExpired" }
-
-// Subject gets email subject.
-func (*UpgradeExpiredEmail) Subject() string {
-	return "Your StorX Account Expired / Your Account Downgraded Automatically"
-}
-
-type UpgradeExpiringEmail struct {
-	UserName  string
-	Signature string
-	ExpireOn  string
-}
-
-// Template returns email template name.
-func (*UpgradeExpiringEmail) Template() string { return "UpgradeExpiring" }
-
-// Subject gets email subject.
-func (*UpgradeExpiringEmail) Subject() string {
-	return "Your StorX Account Due For Renewal, Kindly Renew Urgently"
-}
-
-type UpgradeSuccessfullEmail struct {
-	UserName  string
-	Signature string
-	GBsize    string
-	Bandwidth string
-}
-
-// Template returns email template name.
-func (*UpgradeSuccessfullEmail) Template() string { return "UpgradeSuccessfull" }
-
-// Subject gets email subject.
-func (*UpgradeSuccessfullEmail) Subject() string {
-	return "Payment Receipt Confirmation for Your StorX Account"
-}

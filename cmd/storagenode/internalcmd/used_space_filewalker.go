@@ -11,7 +11,7 @@ import (
 	"github.com/zeebo/errs"
 	"go.uber.org/zap"
 
-	"storj.io/private/process"
+	"storj.io/common/process"
 	"storj.io/storj/storagenode/iopriority"
 	"storj.io/storj/storagenode/pieces"
 	"storj.io/storj/storagenode/pieces/lazyfilewalker"
@@ -41,10 +41,7 @@ func NewUsedSpaceFilewalkerCmd() *LazyFilewalkerCmd {
 
 	process.Bind(cmd, &cfg)
 
-	return &LazyFilewalkerCmd{
-		Command:    cmd,
-		RunOptions: &runOpts,
-	}
+	return NewLazyFilewalkerCmd(cmd, &runOpts)
 }
 
 // Run runs the UsedSpaceLazyFileWalker.

@@ -47,7 +47,6 @@ func TestDeleteExpiredObjects(t *testing.T) {
 					ObjectStream: obj1,
 					Encryption:   metabasetest.DefaultEncryption,
 				},
-				Version: 1,
 			}.Check(ctx, t, db)
 
 			// pending object with expiration time in the past
@@ -57,7 +56,6 @@ func TestDeleteExpiredObjects(t *testing.T) {
 					ExpiresAt:    &pastTime,
 					Encryption:   metabasetest.DefaultEncryption,
 				},
-				Version: 1,
 			}.Check(ctx, t, db)
 
 			// pending object with expiration time in the future
@@ -67,7 +65,6 @@ func TestDeleteExpiredObjects(t *testing.T) {
 					ExpiresAt:    &futureTime,
 					Encryption:   metabasetest.DefaultEncryption,
 				},
-				Version: 1,
 			}.Check(ctx, t, db)
 
 			metabasetest.DeleteExpiredObjects{
@@ -201,7 +198,6 @@ func TestDeleteZombieObjects(t *testing.T) {
 					ObjectStream: obj1,
 					Encryption:   metabasetest.DefaultEncryption,
 				},
-				Version: 1,
 			}.Check(ctx, t, db)
 
 			// zombie object with deadline time in the past
@@ -211,7 +207,6 @@ func TestDeleteZombieObjects(t *testing.T) {
 					ZombieDeletionDeadline: &pastTime,
 					Encryption:             metabasetest.DefaultEncryption,
 				},
-				Version: 1,
 			}.Check(ctx, t, db)
 
 			// pending object with expiration time in the future
@@ -221,7 +216,6 @@ func TestDeleteZombieObjects(t *testing.T) {
 					ZombieDeletionDeadline: &futureTime,
 					Encryption:             metabasetest.DefaultEncryption,
 				},
-				Version: 1,
 			}.Check(ctx, t, db)
 
 			metabasetest.DeleteZombieObjects{
@@ -262,7 +256,6 @@ func TestDeleteZombieObjects(t *testing.T) {
 					Encryption:             metabasetest.DefaultEncryption,
 					ZombieDeletionDeadline: &now,
 				},
-				Version: 1,
 			}.Check(ctx, t, db)
 			metabasetest.BeginSegment{
 				Opts: metabase.BeginSegment{
@@ -351,7 +344,6 @@ func TestDeleteZombieObjects(t *testing.T) {
 						Encryption:   metabasetest.DefaultEncryption,
 						// use default 24h zombie deletion deadline
 					},
-					Version: obj.Version,
 				}.Check(ctx, t, db)
 
 				for i := byte(0); i < 3; i++ {
@@ -421,6 +413,30 @@ func TestDeleteZombieObjects(t *testing.T) {
 				},
 			}.Run(ctx, t, db, obj3, 1)
 
+			obj3.Version = object3.Version + 1
+			object4 := metabasetest.CreateObjectVersioned(ctx, t, db, obj3, 0)
+
+			deletionResult := metabasetest.DeleteObjectLastCommitted{
+				Opts: metabase.DeleteObjectLastCommitted{
+					ObjectLocation: obj3.Location(),
+					Versioned:      true,
+				},
+				Result: metabase.DeleteObjectResult{
+					Markers: []metabase.Object{
+						{
+							ObjectStream: metabase.ObjectStream{
+								ProjectID:  obj3.ProjectID,
+								BucketName: obj3.BucketName,
+								ObjectKey:  obj3.ObjectKey,
+								Version:    object4.Version + 1,
+							},
+							Status:    metabase.DeleteMarkerVersioned,
+							CreatedAt: time.Now(),
+						},
+					},
+				},
+			}.Check(ctx, t, db)
+
 			expectedObj1Segment := metabase.Segment{
 				StreamID:          obj1.StreamID,
 				RootPieceID:       storj.PieceID{1},
@@ -451,6 +467,8 @@ func TestDeleteZombieObjects(t *testing.T) {
 					metabase.RawObject(object1),
 					metabase.RawObject(object2),
 					metabase.RawObject(object3),
+					metabase.RawObject(object4),
+					metabase.RawObject(deletionResult.Markers[0]),
 				},
 				Segments: []metabase.RawSegment{
 					metabase.RawSegment(expectedObj1Segment),
@@ -465,7 +483,7 @@ func TestDeleteZombieObjects(t *testing.T) {
 		t.Run("migrated objects", func(t *testing.T) {
 			defer metabasetest.DeleteAll{}.Check(ctx, t, db)
 
-			_, err := db.BeginObjectExactVersion(ctx, metabase.BeginObjectExactVersion{
+			_, err := db.TestingBeginObjectExactVersion(ctx, metabase.BeginObjectExactVersion{
 				ObjectStream: obj1,
 			})
 			require.NoError(t, err)

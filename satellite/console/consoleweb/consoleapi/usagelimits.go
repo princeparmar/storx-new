@@ -5,6 +5,7 @@ package consoleapi
 
 import (
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -27,15 +28,17 @@ var (
 
 // UsageLimits is an api controller that exposes all usage and limits related functionality.
 type UsageLimits struct {
-	log     *zap.Logger
-	service *console.Service
+	log                    *zap.Logger
+	service                *console.Service
+	allowedReportDateRange time.Duration
 }
 
 // NewUsageLimits is a constructor for api usage and limits controller.
-func NewUsageLimits(log *zap.Logger, service *console.Service) *UsageLimits {
+func NewUsageLimits(log *zap.Logger, service *console.Service, allowedReportDateRange time.Duration) *UsageLimits {
 	return &UsageLimits{
-		log:     log,
-		service: service,
+		log:                    log,
+		service:                service,
+		allowedReportDateRange: allowedReportDateRange,
 	}
 }
 
@@ -64,7 +67,7 @@ func (ul *UsageLimits) ProjectUsageLimits(w http.ResponseWriter, r *http.Request
 	usageLimits, err := ul.service.GetProjectUsageLimits(ctx, projectID)
 	if err != nil {
 		switch {
-		case console.ErrUnauthorized.Has(err):
+		case console.ErrUnauthorized.Has(err) || console.ErrNoMembership.Has(err):
 			ul.serveJSONError(ctx, w, http.StatusUnauthorized, err)
 			return
 		case accounting.ErrInvalidArgument.Has(err):
@@ -105,6 +108,83 @@ func (ul *UsageLimits) TotalUsageLimits(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
+// UsageReport returns usage report for all the projects that user owns or a single user's project.
+func (ul *UsageLimits) UsageReport(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	var err error
+	defer mon.Task()(&ctx)(&err)
+
+	sinceStamp, err := strconv.ParseInt(r.URL.Query().Get("since"), 10, 64)
+	if err != nil {
+		ul.serveJSONError(ctx, w, http.StatusBadRequest, err)
+		return
+	}
+	beforeStamp, err := strconv.ParseInt(r.URL.Query().Get("before"), 10, 64)
+	if err != nil {
+		ul.serveJSONError(ctx, w, http.StatusBadRequest, err)
+		return
+	}
+
+	since := time.Unix(sinceStamp, 0).UTC()
+	before := time.Unix(beforeStamp, 0).UTC()
+
+	duration := before.Sub(since)
+	if duration > ul.allowedReportDateRange {
+		ul.serveJSONError(ctx, w, http.StatusForbidden, errs.New("date range must be less than %v", ul.allowedReportDateRange))
+		return
+	}
+
+	var projectID uuid.UUID
+
+	idParam := r.URL.Query().Get("projectID")
+	if idParam != "" {
+		projectID, err = uuid.FromString(idParam)
+		if err != nil {
+			ul.serveJSONError(ctx, w, http.StatusBadRequest, errs.New("invalid project id: %v", err))
+			return
+		}
+	}
+
+	usage, err := ul.service.GetUsageReport(ctx, since, before, projectID)
+	if err != nil {
+		if console.ErrUnauthorized.Has(err) {
+			ul.serveJSONError(ctx, w, http.StatusUnauthorized, err)
+			return
+		}
+
+		ul.serveJSONError(ctx, w, http.StatusInternalServerError, err)
+		return
+	}
+
+	dateFormat := "2006-01-02"
+	fileName := "storj-report-" + idParam + "-" + since.Format(dateFormat) + "-to-" + before.Format(dateFormat) + ".csv"
+
+	w.Header().Set("Content-Type", "text/csv")
+	w.Header().Set("Content-Disposition", "attachment;filename="+fileName)
+
+	wr := csv.NewWriter(w)
+
+	csvHeaders := []string{"ProjectName", "ProjectID", "BucketName", "Storage GB-hour", "Egress GB", "ObjectCount objects-hour", "SegmentCount segments-hour", "Since", "Before"}
+
+	err = wr.Write(csvHeaders)
+	if err != nil {
+		ul.serveJSONError(ctx, w, http.StatusInternalServerError, errs.New("Error writing CSV data"))
+		return
+	}
+
+	for _, u := range usage {
+		err = wr.Write(u.ToStringSlice())
+		if err != nil {
+			ul.serveJSONError(ctx, w, http.StatusInternalServerError, errs.New("Error writing CSV data"))
+			return
+		}
+	}
+
+	w.Header().Set("Cache-Control", "public, max-age=3600") // Cache the same request for 1 hour.
+
+	wr.Flush()
+}
+
 // DailyUsage returns daily usage by project ID.
 func (ul *UsageLimits) DailyUsage(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -140,7 +220,7 @@ func (ul *UsageLimits) DailyUsage(w http.ResponseWriter, r *http.Request) {
 
 	dailyUsage, err := ul.service.GetDailyProjectUsage(ctx, projectID, since, before)
 	if err != nil {
-		if console.ErrUnauthorized.Has(err) {
+		if console.ErrUnauthorized.Has(err) || console.ErrNoMembership.Has(err) {
 			ul.serveJSONError(ctx, w, http.StatusUnauthorized, err)
 			return
 		}
@@ -148,6 +228,8 @@ func (ul *UsageLimits) DailyUsage(w http.ResponseWriter, r *http.Request) {
 		ul.serveJSONError(ctx, w, http.StatusInternalServerError, err)
 		return
 	}
+
+	w.Header().Set("Cache-Control", "public, max-age=3600") // Cache the same request for 1 hour.
 
 	err = json.NewEncoder(w).Encode(dailyUsage)
 	if err != nil {

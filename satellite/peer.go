@@ -14,9 +14,9 @@ import (
 	"github.com/zeebo/errs"
 	"go.uber.org/zap"
 
+	"storj.io/common/debug"
 	"storj.io/common/identity"
-	"storj.io/private/debug"
-	"storj.io/private/tagsql"
+	"storj.io/common/tagsql"
 	"storj.io/storj/private/migrate"
 	"storj.io/storj/private/post"
 	"storj.io/storj/private/post/oauth2"
@@ -42,6 +42,8 @@ import (
 	"storj.io/storj/satellite/console/restkeys"
 	"storj.io/storj/satellite/console/userinfo"
 	"storj.io/storj/satellite/contact"
+	"storj.io/storj/satellite/durability"
+	"storj.io/storj/satellite/emission"
 	"storj.io/storj/satellite/gc/bloomfilter"
 	"storj.io/storj/satellite/gc/piecetracker"
 	"storj.io/storj/satellite/gc/sender"
@@ -54,6 +56,7 @@ import (
 	"storj.io/storj/satellite/metainfo/expireddeletion"
 	"storj.io/storj/satellite/nodeapiversion"
 	"storj.io/storj/satellite/nodeevents"
+	"storj.io/storj/satellite/nodeselection"
 	"storj.io/storj/satellite/oidc"
 	"storj.io/storj/satellite/orders"
 	"storj.io/storj/satellite/overlay"
@@ -119,8 +122,6 @@ type DB interface {
 	Containment() audit.Containment
 	// Buckets returns the database to interact with buckets
 	Buckets() buckets.DB
-	// GracefulExit returns database for graceful exit
-	GracefulExit() gracefulexit.DB
 	// StripeCoinPayments returns stripecoinpayments database.
 	StripeCoinPayments() stripe.DB
 	// Billing returns storjscan transactions database.
@@ -162,7 +163,7 @@ type Config struct {
 	Server   server.Config
 	Debug    debug.Config
 
-	Placement overlay.ConfigurablePlacementRule `help:"detailed placement rules in the form 'id:definition;id:definition;...' where id is a 16 bytes integer (use >10 for backward compatibility), definition is a combination of the following functions:country(2 letter country codes,...), tag(nodeId, key, bytes(value)) all(...,...)."`
+	Placement nodeselection.ConfigurablePlacementRule `help:"detailed placement rules in the form 'id:definition;id:definition;...' where id is a 16 bytes integer (use >10 for backward compatibility), definition is a combination of the following functions:country(2 letter country codes,...), tag(nodeId, key, bytes(value)) all(...,...)."`
 
 	Admin admin.Config
 
@@ -186,6 +187,8 @@ type Config struct {
 	GarbageCollection   sender.Config
 	GarbageCollectionBF bloomfilter.Config
 
+	RepairQueueCheck repairer.QueueStatConfig
+
 	RangedLoop rangedloop.Config
 
 	ExpiredDeletion expireddeletion.Config
@@ -207,6 +210,8 @@ type Config struct {
 	EmailReminders   emailreminders.Config
 	ConsoleDBCleanup dbcleanup.Config
 
+	Emission emission.Config
+
 	AccountFreeze accountfreeze.Config
 
 	Version version_checker.Config
@@ -215,30 +220,33 @@ type Config struct {
 
 	Compensation compensation.Config
 
-	ProjectLimit accounting.ProjectLimitConfig
-
 	Analytics analytics.Config
 
 	PieceTracker piecetracker.Config
+
+	DurabilityReport durability.ReportConfig
 
 	TagAuthorities string `help:"comma-separated paths of additional cert files, used to validate signed node tags"`
 }
 
 func setupMailService(log *zap.Logger, config Config) (*mailservice.Service, error) {
+	fromAndHost := func(cfg mailservice.Config) (*mail.Address, string, error) {
+		// validate from mail address
+		from, err := mail.ParseAddress(cfg.From)
+		if err != nil {
+			return nil, "", errs.New("SMTP from address '%s' couldn't be parsed: %v", cfg.From, err)
+		}
+
+		// validate smtp server address
+		host, _, err := net.SplitHostPort(cfg.SMTPServerAddress)
+		if err != nil && cfg.AuthType != "simulate" && cfg.AuthType != "nologin" {
+			return nil, "", errs.New("SMTP server address '%s' couldn't be parsed: %v", cfg.SMTPServerAddress, err)
+		}
+		return from, host, err
+	}
+
 	// TODO(yar): test multiple satellites using same OAUTH credentials
 	mailConfig := config.Mail
-
-	// validate from mail address
-	from, err := mail.ParseAddress(mailConfig.From)
-	if err != nil {
-		return nil, errs.New("SMTP from address '%s' couldn't be parsed: %v", mailConfig.From, err)
-	}
-
-	// validate smtp server address
-	host, _, err := net.SplitHostPort(mailConfig.SMTPServerAddress)
-	if err != nil && mailConfig.AuthType != "simulate" && mailConfig.AuthType != "nologin" {
-		return nil, errs.New("SMTP server address '%s' couldn't be parsed: %v", mailConfig.SMTPServerAddress, err)
-	}
 
 	var sender mailservice.Sender
 	switch mailConfig.AuthType {
@@ -253,6 +261,11 @@ func setupMailService(log *zap.Logger, config Config) (*mailservice.Service, err
 			return nil, err
 		}
 
+		from, _, err := fromAndHost(mailConfig)
+		if err != nil {
+			return nil, err
+		}
+
 		sender = &post.SMTPSender{
 			From: *from,
 			Auth: &oauth2.Auth{
@@ -262,18 +275,37 @@ func setupMailService(log *zap.Logger, config Config) (*mailservice.Service, err
 			ServerAddress: mailConfig.SMTPServerAddress,
 		}
 	case "plain":
+		from, host, err := fromAndHost(mailConfig)
+		if err != nil {
+			return nil, err
+		}
+
 		sender = &post.SMTPSender{
 			From:          *from,
 			Auth:          smtp.PlainAuth("", mailConfig.Login, mailConfig.Password, host),
 			ServerAddress: mailConfig.SMTPServerAddress,
 		}
 	case "login":
+		from, _, err := fromAndHost(mailConfig)
+		if err != nil {
+			return nil, err
+		}
+
 		sender = &post.SMTPSender{
 			From: *from,
 			Auth: post.LoginAuth{
 				Username: mailConfig.Login,
 				Password: mailConfig.Password,
 			},
+			ServerAddress: mailConfig.SMTPServerAddress,
+		}
+	case "insecure":
+		from, _, err := fromAndHost(mailConfig)
+		if err != nil {
+			return nil, err
+		}
+		sender = &post.SMTPSender{
+			From:          *from,
 			ServerAddress: mailConfig.SMTPServerAddress,
 		}
 	case "nomail":

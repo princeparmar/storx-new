@@ -5,11 +5,13 @@ package accounting
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"storj.io/common/memory"
 	"storj.io/common/storj"
 	"storj.io/common/uuid"
+	"storj.io/storj/satellite/buckets"
 	"storj.io/storj/satellite/compensation"
 	"storj.io/storj/satellite/metabase"
 	"storj.io/storj/satellite/orders"
@@ -114,6 +116,11 @@ type BucketUsage struct {
 	ProjectID  uuid.UUID `json:"projectID"`
 	BucketName string    `json:"bucketName"`
 
+	DefaultPlacement storj.PlacementConstraint `json:"defaultPlacement"`
+	Location         string                    `json:"location"`
+
+	Versioning buckets.Versioning `json:"versioning"`
+
 	Storage      float64 `json:"storage"`
 	Egress       float64 `json:"egress"`
 	ObjectCount  int64   `json:"objectCount"`
@@ -162,6 +169,36 @@ type BucketUsageRollup struct {
 
 	Since  time.Time `json:"since"`
 	Before time.Time `json:"before"`
+}
+
+// ProjectReportItem is total bucket usage info with project details for certain period.
+type ProjectReportItem struct {
+	ProjectID   uuid.UUID
+	ProjectName string
+
+	BucketName   string
+	Storage      float64
+	Egress       float64
+	SegmentCount float64
+	ObjectCount  float64
+
+	Since  time.Time `json:"since"`
+	Before time.Time `json:"before"`
+}
+
+// ToStringSlice converts report item values to a slice of strings.
+func (b *ProjectReportItem) ToStringSlice() []string {
+	return []string{
+		b.ProjectName,
+		b.ProjectID.String(),
+		b.BucketName,
+		fmt.Sprintf("%f", b.Storage),
+		fmt.Sprintf("%f", b.Egress),
+		fmt.Sprintf("%f", b.ObjectCount),
+		fmt.Sprintf("%f", b.SegmentCount),
+		b.Since.String(),
+		b.Before.String(),
+	}
 }
 
 // Usage contains project's usage split on segments and storage.
@@ -214,7 +251,7 @@ type ProjectAccounting interface {
 	CreateStorageTally(ctx context.Context, tally BucketStorageTally) error
 	// GetNonEmptyTallyBucketsInRange returns a list of bucket locations within the given range
 	// whose most recent tally does not represent empty usage.
-	GetNonEmptyTallyBucketsInRange(ctx context.Context, from, to metabase.BucketLocation) ([]metabase.BucketLocation, error)
+	GetNonEmptyTallyBucketsInRange(ctx context.Context, from, to metabase.BucketLocation, asOfSystemInterval time.Duration) ([]metabase.BucketLocation, error)
 	// GetProjectSettledBandwidthTotal returns the sum of GET bandwidth usage settled for a projectID in the past time frame.
 	GetProjectSettledBandwidthTotal(ctx context.Context, projectID uuid.UUID, from time.Time) (_ int64, err error)
 	// GetProjectBandwidth returns project allocated bandwidth for the specified year, month and day.

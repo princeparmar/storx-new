@@ -8,7 +8,7 @@ import (
 	"github.com/zeebo/errs"
 	"go.uber.org/zap"
 
-	"storj.io/private/process"
+	"storj.io/common/process"
 	"storj.io/storj/satellite"
 	"storj.io/storj/satellite/metabase"
 	"storj.io/storj/satellite/satellitedb"
@@ -17,8 +17,6 @@ import (
 func cmdRangedLoopRun(cmd *cobra.Command, args []string) (err error) {
 	ctx, _ := process.Ctx(cmd)
 	log := zap.L()
-
-	runCfg.Debug.Address = *process.DebugAddrFlag
 
 	db, err := satellitedb.Open(ctx, log.Named("db"), runCfg.Database, satellitedb.Options{ApplicationName: "satellite-rangedloop"})
 	if err != nil {

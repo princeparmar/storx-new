@@ -8,9 +8,10 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
+	"go.uber.org/zap"
 
+	"storj.io/common/process"
 	"storj.io/common/telemetry"
-	"storj.io/private/process"
 )
 
 var (
@@ -18,6 +19,9 @@ var (
 )
 
 func main() {
+	logger, _, _ := process.NewLogger("metric-receiver")
+	zap.ReplaceGlobals(logger)
+
 	process.Exec(&cobra.Command{
 		Use:   "metric-receiver",
 		Short: "receive metrics",

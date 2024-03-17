@@ -10,14 +10,15 @@ RUN npm run build
 
 
 # Install storagenode helper (for local/dev runs)
-FROM --platform=amd64 golang:1.19.4 AS storx-node-setup
+FROM --platform=amd64 golang:1.22.1 AS storx-node-setup
 WORKDIR /app
 COPY . .
 COPY --from=ui /app/dist /app/web/storagenode/dist
-RUN go build -o /go/bin/storagenode ./cmd/storagenode
+RUN GOOS=linux GOARCH=amd64 go build -a -installsuffix cgo -o /go/bin/storagenode ./cmd/storagenode
 
 
-FROM amd64/debian:buster-slim
+
+FROM amd64/debian
 
 ENV GOARCH amd64
 ENV PATH=$PATH:/app
@@ -33,7 +34,10 @@ COPY --from=storx-node-setup /go/bin/storagenode /app/storagenode
 RUN chmod +x /app/storagenode
 
 RUN mkdir -p /var/log/supervisor /app
-COPY docker/ /
+COPY docker/entrypoint /entrypoint
+COPY docker/app /app
+COPY docker/bin /bin
+COPY docker/etc /etc
 # set permissions to allow non-root access
 RUN chmod -R a+rw /etc/supervisor /var/log/supervisor /app
 # remove the default supervisord.conf

@@ -12,6 +12,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"github.com/zeebo/errs"
+	"go.uber.org/zap"
 
 	"storj.io/common/errs2"
 	"storj.io/common/memory"
@@ -21,7 +22,10 @@ import (
 	"storj.io/common/testcontext"
 	"storj.io/common/testrand"
 	"storj.io/storj/private/testplanet"
+	"storj.io/storj/satellite"
 	"storj.io/storj/satellite/buckets"
+	"storj.io/storj/satellite/console"
+	"storj.io/storj/satellite/nodeselection"
 	"storj.io/uplink"
 	"storj.io/uplink/private/metaclient"
 )
@@ -295,5 +299,286 @@ func TestBucketCreationWithDefaultPlacement(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, storj.EU, placement)
 
+	})
+}
+
+func TestGetBucketLocation(t *testing.T) {
+	testplanet.Run(t, testplanet.Config{
+		SatelliteCount: 1, StorageNodeCount: 0, UplinkCount: 1,
+		Reconfigure: testplanet.Reconfigure{
+			Satellite: func(log *zap.Logger, index int, config *satellite.Config) {
+				config.Placement = nodeselection.ConfigurablePlacementRule{
+					PlacementRules: "endpoint_bucket_test_placement.yaml",
+				}
+			},
+		},
+	}, func(t *testing.T, ctx *testcontext.Context, planet *testplanet.Planet) {
+		apiKey := planet.Uplinks[0].APIKey[planet.Satellites[0].ID()]
+
+		satellite := planet.Satellites[0]
+
+		// not existing bucket
+		_, err := satellite.API.Metainfo.Endpoint.GetBucketLocation(ctx, &pb.GetBucketLocationRequest{
+			Header: &pb.RequestHeader{
+				ApiKey: apiKey.SerializeRaw(),
+			},
+			Name: []byte("test-bucket"),
+		})
+		require.True(t, errs2.IsRPC(err, rpcstatus.NotFound))
+
+		err = planet.Uplinks[0].CreateBucket(ctx, planet.Satellites[0], "test-bucket")
+		require.NoError(t, err)
+
+		// bucket without location
+		response, err := satellite.API.Metainfo.Endpoint.GetBucketLocation(ctx, &pb.GetBucketLocationRequest{
+			Header: &pb.RequestHeader{
+				ApiKey: apiKey.SerializeRaw(),
+			},
+			Name: []byte("test-bucket"),
+		})
+		require.NoError(t, err)
+		require.Empty(t, response.Location)
+
+		_, err = satellite.DB.Buckets().UpdateBucket(ctx, buckets.Bucket{
+			ProjectID: planet.Uplinks[0].Projects[0].ID,
+			Name:      "test-bucket",
+			Placement: storj.PlacementConstraint(40),
+		})
+		require.NoError(t, err)
+
+		// bucket with location
+		response, err = satellite.API.Metainfo.Endpoint.GetBucketLocation(ctx, &pb.GetBucketLocationRequest{
+			Header: &pb.RequestHeader{
+				ApiKey: apiKey.SerializeRaw(),
+			},
+			Name: []byte("test-bucket"),
+		})
+		require.NoError(t, err)
+		require.Equal(t, "Poland", string(response.Location))
+	})
+}
+
+func TestEnableSuspendBucketVersioning(t *testing.T) {
+	testplanet.Run(t, testplanet.Config{
+		SatelliteCount: 1, UplinkCount: 1,
+		Reconfigure: testplanet.Reconfigure{
+			Satellite: func(log *zap.Logger, index int, config *satellite.Config) {
+				config.Metainfo.UseBucketLevelObjectVersioning = true
+			},
+		},
+	}, func(t *testing.T, ctx *testcontext.Context, planet *testplanet.Planet) {
+		bucketName := "testbucket"
+		projectID := planet.Uplinks[0].Projects[0].ID
+		satellite := planet.Satellites[0]
+		enable := true
+		suspend := false
+
+		deleteBucket := func() error {
+			err := satellite.API.DB.Buckets().DeleteBucket(ctx, []byte(bucketName), projectID)
+			return err
+		}
+
+		_, err := satellite.API.Metainfo.Endpoint.GetBucketVersioning(ctx, &pb.GetBucketVersioningRequest{
+			Header: &pb.RequestHeader{
+				ApiKey: planet.Uplinks[0].APIKey[satellite.ID()].SerializeRaw(),
+			},
+			Name: []byte("non-existing-bucket"),
+		})
+		require.True(t, errs2.IsRPC(err, rpcstatus.NotFound))
+
+		_, err = satellite.API.Metainfo.Endpoint.SetBucketVersioning(ctx, &pb.SetBucketVersioningRequest{
+			Header: &pb.RequestHeader{
+				ApiKey: planet.Uplinks[0].APIKey[satellite.ID()].SerializeRaw(),
+			},
+			Name:       []byte("non-existing-bucket"),
+			Versioning: true,
+		})
+		require.True(t, errs2.IsRPC(err, rpcstatus.NotFound))
+
+		_, err = satellite.API.Metainfo.Endpoint.SetBucketVersioning(ctx, &pb.SetBucketVersioningRequest{
+			Header: &pb.RequestHeader{
+				ApiKey: planet.Uplinks[0].APIKey[satellite.ID()].SerializeRaw(),
+			},
+			Name:       []byte("non-existing-bucket"),
+			Versioning: false,
+		})
+		require.True(t, errs2.IsRPC(err, rpcstatus.NotFound))
+
+		for _, tt := range []struct {
+			name                     string
+			initialVersioningState   buckets.Versioning
+			versioning               bool
+			resultantVersioningState buckets.Versioning
+		}{
+			{"Enable unsupported bucket fails", buckets.VersioningUnsupported, enable, buckets.VersioningUnsupported},
+			{"Suspend unsupported bucket fails", buckets.VersioningUnsupported, suspend, buckets.VersioningUnsupported},
+			{"Enable unversioned bucket succeeds", buckets.Unversioned, enable, buckets.VersioningEnabled},
+			{"Suspend unversioned bucket fails", buckets.Unversioned, suspend, buckets.Unversioned},
+			{"Enable enabled bucket succeeds", buckets.VersioningEnabled, enable, buckets.VersioningEnabled},
+			{"Suspend enabled bucket succeeds", buckets.VersioningEnabled, suspend, buckets.VersioningSuspended},
+			{"Enable suspended bucket succeeds", buckets.VersioningSuspended, enable, buckets.VersioningEnabled},
+			{"Suspend suspended bucket succeeds", buckets.VersioningSuspended, suspend, buckets.VersioningSuspended},
+		} {
+			t.Run(tt.name, func(t *testing.T) {
+				defer ctx.Check(deleteBucket)
+				bucket, err := satellite.API.DB.Buckets().CreateBucket(ctx, buckets.Bucket{
+					ProjectID:  projectID,
+					Name:       bucketName,
+					Versioning: tt.initialVersioningState,
+				})
+				require.NoError(t, err)
+				require.NotNil(t, bucket)
+				setResponse, err := satellite.API.Metainfo.Endpoint.SetBucketVersioning(ctx, &pb.SetBucketVersioningRequest{
+					Header: &pb.RequestHeader{
+						ApiKey: planet.Uplinks[0].APIKey[satellite.ID()].SerializeRaw(),
+					},
+					Name:       []byte(bucketName),
+					Versioning: tt.versioning,
+				})
+				// only 3 error state transitions
+				if tt.initialVersioningState == buckets.VersioningUnsupported ||
+					(tt.initialVersioningState == buckets.Unversioned && tt.versioning == suspend) {
+					require.Error(t, err)
+				} else {
+					require.NoError(t, err)
+				}
+				require.Empty(t, setResponse)
+				getResponse, err := satellite.API.Metainfo.Endpoint.GetBucketVersioning(ctx, &pb.GetBucketVersioningRequest{
+					Header: &pb.RequestHeader{
+						ApiKey: planet.Uplinks[0].APIKey[satellite.ID()].SerializeRaw(),
+					},
+					Name: []byte(bucketName),
+				})
+				require.NoError(t, err)
+				require.Equal(t, tt.resultantVersioningState, buckets.Versioning(getResponse.Versioning))
+			})
+		}
+	})
+}
+
+func TestEnableSuspendBucketVersioningFeature(t *testing.T) {
+	testplanet.Run(t, testplanet.Config{
+		SatelliteCount: 1, UplinkCount: 1,
+		Reconfigure: testplanet.Reconfigure{
+			Satellite: func(log *zap.Logger, index int, config *satellite.Config) {
+				config.Metainfo.UseBucketLevelObjectVersioning = true
+			},
+		},
+	}, func(t *testing.T, ctx *testcontext.Context, planet *testplanet.Planet) {
+		satelliteSys := planet.Satellites[0]
+		apiKey := planet.Uplinks[0].APIKey[satelliteSys.ID()]
+		projectID := planet.Uplinks[0].Projects[0].ID
+
+		_, err := satelliteSys.Metainfo.Endpoint.CreateBucket(ctx, &pb.BucketCreateRequest{
+			Header: &pb.RequestHeader{
+				ApiKey: apiKey.SerializeRaw(),
+			},
+			Name: []byte("bucket1"),
+		})
+		require.NoError(t, err)
+
+		// verify suspend unversioned bucket fails
+		err = planet.Satellites[0].API.DB.Buckets().SuspendBucketVersioning(ctx, []byte("bucket1"), projectID)
+		require.Error(t, err)
+
+		// verify enable unversioned bucket succeeds
+		err = planet.Satellites[0].API.DB.Buckets().EnableBucketVersioning(ctx, []byte("bucket1"), projectID)
+		require.NoError(t, err)
+
+		// verify suspend enabled bucket succeeds
+		err = planet.Satellites[0].API.DB.Buckets().SuspendBucketVersioning(ctx, []byte("bucket1"), projectID)
+		require.NoError(t, err)
+
+		// verify re-enable suspended bucket succeeds
+		err = planet.Satellites[0].API.DB.Buckets().EnableBucketVersioning(ctx, []byte("bucket1"), projectID)
+		require.NoError(t, err)
+	})
+}
+
+func TestDefaultBucketVersioning(t *testing.T) {
+	testplanet.Run(t, testplanet.Config{
+		SatelliteCount: 1, UplinkCount: 1,
+		Reconfigure: testplanet.Reconfigure{
+			Satellite: func(log *zap.Logger, index int, config *satellite.Config) {
+				config.Metainfo.UseBucketLevelObjectVersioning = true
+			},
+		},
+	}, func(t *testing.T, ctx *testcontext.Context, planet *testplanet.Planet) {
+		bucketName := "testbucket"
+		satellite := planet.Satellites[0]
+		apiKey := planet.Uplinks[0].APIKey[satellite.ID()]
+		projectID := planet.Uplinks[0].Projects[0].ID
+
+		deleteBucket := func() error {
+			err := satellite.API.DB.Buckets().DeleteBucket(ctx, []byte(bucketName), projectID)
+			return err
+		}
+		// unversioned is tested first here because it should be the default and not require
+		// an update to the test planet project's default versioning state.
+		t.Run("default versioning - unversioned", func(t *testing.T) {
+			defer ctx.Check(deleteBucket)
+			_, err := satellite.Metainfo.Endpoint.CreateBucket(ctx, &pb.BucketCreateRequest{
+				Header: &pb.RequestHeader{
+					ApiKey: apiKey.SerializeRaw(),
+				},
+				Name: []byte(bucketName),
+			})
+			require.NoError(t, err)
+
+			getResponse, err := satellite.API.Metainfo.Endpoint.GetBucketVersioning(ctx, &pb.GetBucketVersioningRequest{
+				Header: &pb.RequestHeader{
+					ApiKey: apiKey.SerializeRaw(),
+				},
+				Name: []byte(bucketName),
+			})
+			require.NoError(t, err)
+			require.Equal(t, buckets.Unversioned, buckets.Versioning(getResponse.Versioning))
+		})
+
+		t.Run("default versioning - unsupported", func(t *testing.T) {
+			defer ctx.Check(deleteBucket)
+			err := satellite.DB.Console().Projects().UpdateDefaultVersioning(ctx, projectID, console.VersioningUnsupported)
+			require.NoError(t, err)
+
+			_, err = satellite.Metainfo.Endpoint.CreateBucket(ctx, &pb.BucketCreateRequest{
+				Header: &pb.RequestHeader{
+					ApiKey: apiKey.SerializeRaw(),
+				},
+				Name: []byte(bucketName),
+			})
+			require.NoError(t, err)
+
+			getResponse, err := satellite.API.Metainfo.Endpoint.GetBucketVersioning(ctx, &pb.GetBucketVersioningRequest{
+				Header: &pb.RequestHeader{
+					ApiKey: apiKey.SerializeRaw(),
+				},
+				Name: []byte(bucketName),
+			})
+			require.NoError(t, err)
+			require.Equal(t, buckets.VersioningUnsupported, buckets.Versioning(getResponse.Versioning))
+		})
+
+		t.Run("default versioning - enabled", func(t *testing.T) {
+			defer ctx.Check(deleteBucket)
+			err := satellite.DB.Console().Projects().UpdateDefaultVersioning(ctx, projectID, console.VersioningEnabled)
+			require.NoError(t, err)
+
+			_, err = satellite.Metainfo.Endpoint.CreateBucket(ctx, &pb.BucketCreateRequest{
+				Header: &pb.RequestHeader{
+					ApiKey: apiKey.SerializeRaw(),
+				},
+				Name: []byte(bucketName),
+			})
+			require.NoError(t, err)
+
+			getResponse, err := satellite.API.Metainfo.Endpoint.GetBucketVersioning(ctx, &pb.GetBucketVersioningRequest{
+				Header: &pb.RequestHeader{
+					ApiKey: apiKey.SerializeRaw(),
+				},
+				Name: []byte(bucketName),
+			})
+			require.NoError(t, err)
+			require.Equal(t, buckets.VersioningEnabled, buckets.Versioning(getResponse.Versioning))
+		})
 	})
 }

@@ -10,11 +10,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/zeebo/errs"
@@ -33,6 +32,12 @@ const (
 	v1PieceFileSuffix      = ".sj1"
 	unknownPieceFileSuffix = "/..error_unknown_format../"
 	verificationFileName   = "storage-dir-verification"
+
+	// TrashUsesDayDirsIndicator is the name of a file whose presence under
+	// trashdir indicates per-day directories can be used. absence of this file
+	// means there is still trash in trash/$namespace/?? directories that needs
+	// to be migrated to per-day directories.
+	TrashUsesDayDirsIndicator = ".trash-uses-day-dirs-indicator"
 )
 
 var pathEncoding = base32.NewEncoding("abcdefghijklmnopqrstuvwxyz234567").WithPadding(base32.NoPadding)
@@ -41,47 +46,69 @@ var pathEncoding = base32.NewEncoding("abcdefghijklmnopqrstuvwxyz234567").WithPa
 type Dir struct {
 	log  *zap.Logger
 	path string
-
-	mu          sync.Mutex
-	deleteQueue []string
-	trashnow    func() time.Time // the function used by trash to determine "now"
 }
 
 // OpenDir opens existing folder for storing blobs.
-func OpenDir(log *zap.Logger, path string) (*Dir, error) {
+func OpenDir(log *zap.Logger, path string, now time.Time) (*Dir, error) {
 	dir := &Dir{
-		log:      log,
-		path:     path,
-		trashnow: time.Now,
+		log:  log,
+		path: path,
 	}
 
 	stat := func(path string) error {
 		_, err := os.Stat(path)
 		return err
 	}
-
-	return dir, errs.Combine(
+	err := errs.Combine(
 		stat(dir.blobsdir()),
 		stat(dir.tempdir()),
-		stat(dir.garbagedir()),
 		stat(dir.trashdir()),
 	)
+	if err != nil {
+		return nil, err
+	}
+
+	indicatorFile := filepath.Join(dir.trashdir(), TrashUsesDayDirsIndicator)
+	if stat(indicatorFile) != nil {
+		err = dir.migrateTrashToPerDayDirs(now)
+		if err != nil {
+			return nil, err
+		}
+		err = os.WriteFile(indicatorFile, []byte("do not delete this file"), 0644)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return dir, nil
 }
 
 // NewDir returns folder for storing blobs.
-func NewDir(log *zap.Logger, path string) (*Dir, error) {
-	dir := &Dir{
-		log:      log,
-		path:     path,
-		trashnow: time.Now,
+func NewDir(log *zap.Logger, path string) (dir *Dir, err error) {
+	dir = &Dir{
+		log:  log,
+		path: path,
 	}
 
-	return dir, errs.Combine(
+	err = errs.Combine(
 		os.MkdirAll(dir.blobsdir(), dirPermission),
 		os.MkdirAll(dir.tempdir(), dirPermission),
-		os.MkdirAll(dir.garbagedir(), dirPermission),
 		os.MkdirAll(dir.trashdir(), dirPermission),
 	)
+	if err != nil {
+		return nil, err
+	}
+
+	// this should fail if the file already exists; thus, O_EXCL, and we can't use os.WriteFile for it
+	f, err := os.OpenFile(filepath.Join(dir.trashdir(), TrashUsesDayDirsIndicator), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		err = errs.Combine(err, f.Close())
+	}()
+	_, err = f.WriteString("do not delete this file")
+	return dir, err
 }
 
 // Path returns the directory path.
@@ -93,11 +120,29 @@ func (dir *Dir) blobsdir() string { return filepath.Join(dir.path, "blobs") }
 // tempdir is used for temp files prior to being moved into blobsdir.
 func (dir *Dir) tempdir() string { return filepath.Join(dir.path, "temp") }
 
-// garbagedir contains files that failed to delete but should be deleted.
-func (dir *Dir) garbagedir() string { return filepath.Join(dir.path, "garbage") }
-
 // trashdir contains files staged for deletion for a period of time.
 func (dir *Dir) trashdir() string { return filepath.Join(dir.path, "trash") }
+
+// trashPath returns the toplevel trash directory for the given namespace and timestamp.
+func (dir *Dir) trashPath(namespace []byte, forTime time.Time) string {
+	namespaceStr := pathEncoding.EncodeToString(namespace)
+	dayDirName := forTime.UTC().Format("2006-01-02")
+	return filepath.Join(dir.trashdir(), namespaceStr, dayDirName)
+}
+
+// refToTrashPath converts a blob reference to a filepath in the trash hierarchy with the given timestamp.
+func (dir *Dir) refToTrashPath(ref blobstore.BlobRef, forTime time.Time) (string, error) {
+	if !ref.IsValid() {
+		return "", blobstore.ErrInvalidBlobRef.New("")
+	}
+
+	key := pathEncoding.EncodeToString(ref.Key)
+	if len(key) < 3 {
+		// ensure we always have enough characters to split [:2] and [2:]
+		key = "11" + key
+	}
+	return filepath.Join(dir.trashPath(ref.Namespace, forTime), key[:2], key[2:]), nil
+}
 
 // CreateVerificationFile creates a file to be used for storage directory verification.
 func (dir *Dir) CreateVerificationFile(ctx context.Context, id storj.NodeID) error {
@@ -181,16 +226,34 @@ func (dir *Dir) refToDirPath(ref blobstore.BlobRef, subDir string) (string, erro
 	return filepath.Join(subDir, namespace, key[:2], key[2:]), nil
 }
 
-// fileConfirmedInTrash returns true if it is able to confirm the file is in
-// the trash. On errors, or if the file is not in the trash, it returns false.
-func (dir *Dir) fileConfirmedInTrash(ctx context.Context, ref blobstore.BlobRef, formatVer blobstore.FormatVersion) bool {
-	trashBasePath, err := dir.refToDirPath(ref, dir.trashdir())
+func (dir *Dir) findBlobInTrash(ctx context.Context, ref blobstore.BlobRef) (dirTime time.Time, formatVer blobstore.FormatVersion, path string, err error) {
+	defer mon.Task()(&ctx)(&err)
+
+	err = dir.forEachTrashDayDir(ctx, ref.Namespace, func(dayDirTime time.Time) error {
+		trashBasePath, err := dir.refToTrashPath(ref, dayDirTime)
+		if err != nil {
+			// something was wrong with our input; don't need to keep looking
+			return err
+		}
+		for ver := MinFormatVersionSupportedInTrash; ver <= MaxFormatVersionSupported; ver++ {
+			trashVerPath := blobPathForFormatVersion(trashBasePath, ver)
+			_, err = os.Stat(trashVerPath)
+			if err == nil {
+				dirTime = dayDirTime
+				path = trashVerPath
+				formatVer = ver
+				break
+			}
+		}
+		return nil
+	})
 	if err != nil {
-		return false
+		return time.Time{}, 0, "", err
 	}
-	trashVerPath := blobPathForFormatVersion(trashBasePath, formatVer)
-	_, err = os.Stat(trashVerPath)
-	return err == nil
+	if path == "" {
+		return time.Time{}, 0, "", os.ErrNotExist
+	}
+	return dirTime, formatVer, path, nil
 }
 
 // blobPathForFormatVersion adjusts a bare blob path (as might have been generated by a call to
@@ -203,16 +266,6 @@ func blobPathForFormatVersion(path string, formatVersion blobstore.FormatVersion
 		return path + v1PieceFileSuffix
 	}
 	return path + unknownPieceFileSuffix
-}
-
-// blobToGarbagePath converts a blob reference to a filepath in transient
-// storage.  The files in garbage are deleted on an interval (in case the
-// initial deletion didn't work for some reason).
-func (dir *Dir) blobToGarbagePath(ref blobstore.BlobRef) string {
-	var name []byte
-	name = append(name, ref.Namespace...)
-	name = append(name, ref.Key...)
-	return filepath.Join(dir.garbagedir(), pathEncoding.EncodeToString(name))
 }
 
 // Commit commits the temporary file to permanent storage.
@@ -276,12 +329,7 @@ func (dir *Dir) Open(ctx context.Context, ref blobstore.BlobRef) (_ *os.File, _ 
 		if err == nil {
 			return file, formatVer, nil
 		}
-		if os.IsNotExist(err) {
-			// Check and monitor if the file is in the trash
-			if dir.fileConfirmedInTrash(ctx, ref, formatVer) {
-				monFileInTrash(ref.Namespace).Mark(1)
-			}
-		} else {
+		if !os.IsNotExist(err) {
 			return nil, FormatV0, Error.New("unable to open %q: %v", vPath, err)
 		}
 	}
@@ -302,13 +350,11 @@ func (dir *Dir) OpenWithStorageFormat(ctx context.Context, ref blobstore.BlobRef
 		return file, nil
 	}
 	if os.IsNotExist(err) {
-		// Check and monitor if the file is in the trash
-		if dir.fileConfirmedInTrash(ctx, ref, formatVer) {
-			monFileInTrash(ref.Namespace).Mark(1)
-		}
+		// we don't want to wrap something matching os.IsNotExist, because IsNotExist
+		// does _not_ unwrap.
 		return nil, err
 	}
-	return nil, Error.New("unable to open %q: %v", vPath, err)
+	return nil, Error.Wrap(err)
 }
 
 // Stat looks up disk metadata on the blob file. It may need to check in more than one location
@@ -354,21 +400,16 @@ func (dir *Dir) StatWithStorageFormat(ctx context.Context, ref blobstore.BlobRef
 	return nil, Error.New("unable to stat %q: %v", vPath, err)
 }
 
-// Trash moves the piece specified by ref to the trashdir for every format version.
-func (dir *Dir) Trash(ctx context.Context, ref blobstore.BlobRef) (err error) {
+// Trash moves the blob specified by ref to the trash for every format version.
+func (dir *Dir) Trash(ctx context.Context, ref blobstore.BlobRef, timestamp time.Time) (err error) {
 	defer mon.Task()(&ctx)(&err)
-	return dir.iterateStorageFormatVersions(ctx, ref, dir.TrashWithStorageFormat)
+	return dir.iterateStorageFormatVersions(ctx, ref, func(ctx context.Context, ref blobstore.BlobRef, formatVersion blobstore.FormatVersion) error {
+		return dir.TrashWithStorageFormat(ctx, ref, formatVersion, timestamp)
+	})
 }
 
-// TrashWithStorageFormat moves the piece specified by ref to the trashdir for the specified format version.
-func (dir *Dir) TrashWithStorageFormat(ctx context.Context, ref blobstore.BlobRef, formatVer blobstore.FormatVersion) (err error) {
-	// Ensure trashdir exists so that we know any os.IsNotExist errors below
-	// are not from a missing trash dir
-	_, err = os.Stat(dir.trashdir())
-	if err != nil {
-		return err
-	}
-
+// TrashWithStorageFormat moves the blob specified by ref to the trash for the specified format version.
+func (dir *Dir) TrashWithStorageFormat(ctx context.Context, ref blobstore.BlobRef, formatVer blobstore.FormatVersion, timestamp time.Time) (err error) {
 	blobsBasePath, err := dir.blobToBasePath(ref)
 	if err != nil {
 		return err
@@ -376,7 +417,7 @@ func (dir *Dir) TrashWithStorageFormat(ctx context.Context, ref blobstore.BlobRe
 
 	blobsVerPath := blobPathForFormatVersion(blobsBasePath, formatVer)
 
-	trashBasePath, err := dir.refToDirPath(ref, dir.trashdir())
+	trashBasePath, err := dir.refToTrashPath(ref, timestamp)
 	if err != nil {
 		return err
 	}
@@ -389,27 +430,10 @@ func (dir *Dir) TrashWithStorageFormat(ctx context.Context, ref blobstore.BlobRe
 		return err
 	}
 
-	// Change mtime to now. This allows us to check the mtime to know how long
-	// the file has been in the trash. If the file is restored this may make it
-	// take longer to be trashed again, but the simplicity is worth the
-	// trade-off.
-	//
-	// We change the mtime prior to moving the file so that if this call fails
-	// the file will not be in the trash with an unmodified mtime, which could
-	// result in its permanent deletion too soon.
-	now := dir.trashnow()
-	err = os.Chtimes(blobsVerPath, now, now)
-	if os.IsNotExist(err) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-
 	// move to trash
 	err = rename(blobsVerPath, trashVerPath)
 	if os.IsNotExist(err) {
-		// no piece at that path; either it has a different storage format
+		// no blob at that path; either it has a different storage format
 		// version or there was a concurrent call. (This function is expected
 		// by callers to return a nil error in the case of concurrent calls.)
 		return nil
@@ -417,16 +441,10 @@ func (dir *Dir) TrashWithStorageFormat(ctx context.Context, ref blobstore.BlobRe
 	return err
 }
 
-// ReplaceTrashnow is a helper for tests to replace the trashnow function used
-// when moving files to the trash.
-func (dir *Dir) ReplaceTrashnow(trashnow func() time.Time) {
-	dir.trashnow = trashnow
-}
-
-// RestoreTrash moves every piece in the trash folder back into blobsdir.
+// RestoreTrash moves every blob in the trash folder back into blobsdir.
 func (dir *Dir) RestoreTrash(ctx context.Context, namespace []byte) (keysRestored [][]byte, err error) {
 	var errorsEncountered errs.Group
-	err = dir.walkNamespaceInPath(ctx, namespace, dir.trashdir(), func(info blobstore.BlobInfo) error {
+	err = dir.walkNamespaceInTrash(ctx, namespace, func(info blobstore.BlobInfo, dirTime time.Time) error {
 		blobsBasePath, err := dir.blobToBasePath(info.BlobRef())
 		if err != nil {
 			errorsEncountered.Add(err)
@@ -435,7 +453,7 @@ func (dir *Dir) RestoreTrash(ctx context.Context, namespace []byte) (keysRestore
 
 		blobsVerPath := blobPathForFormatVersion(blobsBasePath, info.StorageFormatVersion())
 
-		trashBasePath, err := dir.refToDirPath(info.BlobRef(), dir.trashdir())
+		trashBasePath, err := dir.refToTrashPath(info.BlobRef(), dirTime)
 		if err != nil {
 			errorsEncountered.Add(err)
 			return nil
@@ -453,7 +471,7 @@ func (dir *Dir) RestoreTrash(ctx context.Context, namespace []byte) (keysRestore
 		// move back to blobsdir
 		err = rename(trashVerPath, blobsVerPath)
 		if os.IsNotExist(err) {
-			// no piece at that path; either it has a different storage format
+			// no blob at that path; either it has a different storage format
 			// version or there was a concurrent call. (This function is expected
 			// by callers to return a nil error in the case of concurrent calls.)
 			return nil
@@ -470,13 +488,164 @@ func (dir *Dir) RestoreTrash(ctx context.Context, namespace []byte) (keysRestore
 	return keysRestored, errorsEncountered.Err()
 }
 
-// EmptyTrash walks the trash files for the given namespace and deletes any
-// file whose mtime is older than trashedBefore. The mtime is modified when
-// Trash is called.
+// TryRestoreTrashBlob attempts to restore a blob from the trash if it exists.
+// It returns nil if the blob was restored, or an error if the blob was not
+// in the trash or could not be restored.
+func (dir *Dir) TryRestoreTrashBlob(ctx context.Context, ref blobstore.BlobRef) (err error) {
+	defer mon.Task()(&ctx)(&err)
+
+	_, formatVer, blobPathInTrash, err := dir.findBlobInTrash(ctx, ref)
+	if err != nil {
+		return err
+	}
+
+	blobsBasePath, err := dir.blobToBasePath(ref)
+	if err != nil {
+		return err
+	}
+
+	// ensure the dirs exist for blobs path in main storage
+	blobsVerPath := blobPathForFormatVersion(blobsBasePath, formatVer)
+	err = os.MkdirAll(filepath.Dir(blobsVerPath), dirPermission)
+	if err != nil && !errors.Is(err, fs.ErrExist) {
+		return err
+	}
+
+	// move back to main storage
+	return rename(blobPathInTrash, blobsVerPath)
+}
+
+// EmptyTrash iterates through the toplevel trash directories for the given
+// namespace and recursively deletes any of them more than 24h older than
+// trashedBefore.
 func (dir *Dir) EmptyTrash(ctx context.Context, namespace []byte, trashedBefore time.Time) (bytesEmptied int64, deletedKeys [][]byte, err error) {
 	defer mon.Task()(&ctx)(&err)
 	var errorsEncountered errs.Group
-	err = dir.walkNamespaceInPath(ctx, namespace, dir.trashdir(), func(info blobstore.BlobInfo) error {
+	err = dir.forEachTrashDayDir(ctx, namespace, func(dirTime time.Time) error {
+		// add 24h since blobs in there might have been moved in as late as 23:59:59.999
+		if !dirTime.Add(24 * time.Hour).After(trashedBefore) {
+			emptied, keys, err := dir.deleteTrashDayDir(ctx, namespace, dirTime)
+			bytesEmptied += emptied
+			deletedKeys = append(deletedKeys, keys...)
+			errorsEncountered.Add(err)
+		}
+		return nil
+	})
+	errorsEncountered.Add(err)
+	return bytesEmptied, deletedKeys, errorsEncountered.Err()
+}
+
+// DeleteTrashNamespace deletes an entire namespace under the trash dir.
+func (dir *Dir) DeleteTrashNamespace(ctx context.Context, namespace []byte) (err error) {
+	mon.Task()(&ctx)(&err)
+	var errorsEncountered errs.Group
+	err = dir.forEachTrashDayDir(ctx, namespace, func(dirTime time.Time) error {
+		_, _, err := dir.deleteTrashDayDir(ctx, namespace, dirTime)
+		errorsEncountered.Add(err)
+		return nil
+	})
+	errorsEncountered.Add(err)
+	namespaceEncoded := pathEncoding.EncodeToString(namespace)
+	namespaceTrashDir := filepath.Join(dir.trashdir(), namespaceEncoded)
+	err = removeButIgnoreIfNotExist(namespaceTrashDir)
+	errorsEncountered.Add(err)
+	return errorsEncountered.Err()
+}
+
+// walkNamespaceInTrash executes walkFunc for each blob stored in the trash under the given
+// namespace. If walkFunc returns a non-nil error, walkNamespaceInTrash will stop iterating and
+// return the error immediately. The ctx parameter is intended specifically to allow canceling
+// iteration early.
+func (dir *Dir) walkNamespaceInTrash(ctx context.Context, namespace []byte, f func(info blobstore.BlobInfo, dirTime time.Time) error) error {
+	return dir.forEachTrashDayDir(ctx, namespace, func(dirTime time.Time) error {
+		return dir.walkTrashDayDir(ctx, namespace, dirTime, func(info blobstore.BlobInfo) error {
+			return f(info, dirTime)
+		})
+	})
+}
+
+func (dir *Dir) forEachTrashDayDir(ctx context.Context, namespace []byte, f func(dirTime time.Time) error) error {
+	dirTimes, err := dir.listTrashDayDirs(ctx, namespace)
+	if err != nil {
+		return err
+	}
+	for _, dirTime := range dirTimes {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		err = f(dirTime)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (dir *Dir) walkTrashDayDir(ctx context.Context, namespace []byte, dirTime time.Time, f func(info blobstore.BlobInfo) error) (err error) {
+	trashPath := dir.trashPath(namespace, dirTime)
+	return dir.walkNamespaceUnderPath(ctx, namespace, trashPath, f)
+}
+
+func (dir *Dir) listTrashDayDirs(ctx context.Context, namespace []byte) (dirTimes []time.Time, err error) {
+	namespaceEncoded := pathEncoding.EncodeToString(namespace)
+	namespaceTrashDir := filepath.Join(dir.trashdir(), namespaceEncoded)
+	openDir, err := os.Open(namespaceTrashDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			dir.log.Debug("directory not found", zap.String("dir", namespaceTrashDir))
+			// job accomplished: there are no day dirs in this namespace!
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer func() { err = errs.Combine(err, openDir.Close()) }()
+	for {
+		// check for context done both before and after our readdir() call
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		subdirNames, err := openDir.Readdirnames(nameBatchSize)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return dirTimes, nil
+			}
+			return nil, err
+		}
+		if len(subdirNames) == 0 {
+			return dirTimes, nil
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		for _, subdirName := range subdirNames {
+			subdirTime, err := time.Parse("2006-01-02", subdirName)
+			if err != nil {
+				// just an invalid subdir; could be garbage of many kinds. probably
+				// don't need to pass on this error
+				continue
+			}
+			dirTimes = append(dirTimes, subdirTime)
+		}
+	}
+}
+
+func removeButIgnoreIfNotExist(pathToRemove string) error {
+	err := os.Remove(pathToRemove)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+func (dir *Dir) deleteTrashDayDir(ctx context.Context, namespace []byte, dirTime time.Time) (bytesEmptied int64, deletedKeys [][]byte, err error) {
+	var errorsEncountered errs.Group
+	err = dir.walkTrashDayDir(ctx, namespace, dirTime, func(info blobstore.BlobInfo) error {
+		thisBlobInfo, ok := info.(*blobInfo)
+		if !ok {
+			// if this happens, it's time to extend the code to handle the other type
+			errorsEncountered.Add(Error.New("%+v [unexpected type %T]: %w", info, info, err))
+			return nil
+		}
 		fileInfo, err := info.Stat(ctx)
 		if err != nil {
 			if os.IsNotExist(err) {
@@ -485,43 +654,53 @@ func (dir *Dir) EmptyTrash(ctx context.Context, namespace []byte, trashedBefore 
 			if errors.Is(err, ErrIsDir) {
 				return nil
 			}
-			// it would be best if we could report the actual problematic path
-			if thisBlobInfo, ok := info.(*blobInfo); ok {
-				errorsEncountered.Add(Error.New("%s: %s", thisBlobInfo.path, err))
-			} else {
-				// this is probably a v0PieceAccess; do what we can
-				errorsEncountered.Add(Error.New("blobRef %+v: %s", info.BlobRef(), err))
-			}
+			errorsEncountered.Add(Error.New("%s: %w", thisBlobInfo.path, err))
 			return nil
 		}
-
-		mtime := fileInfo.ModTime()
-		if mtime.Before(trashedBefore) {
-			err = dir.deleteWithStorageFormatInPath(ctx, dir.trashdir(), info.BlobRef(), info.StorageFormatVersion())
-			if err != nil {
-				errorsEncountered.Add(err)
-				return nil
-			}
-			deletedKeys = append(deletedKeys, info.BlobRef().Key)
-			bytesEmptied += fileInfo.Size()
+		err = removeButIgnoreIfNotExist(thisBlobInfo.path)
+		if err != nil {
+			errorsEncountered.Add(err)
+			return nil
 		}
+		bytesEmptied += fileInfo.Size()
+		deletedKeys = append(deletedKeys, info.BlobRef().Key)
 		return nil
 	})
+	if err != nil {
+		errorsEncountered.Add(err)
+		return bytesEmptied, deletedKeys, errorsEncountered.Err()
+	}
+	// Finish by attempting to remove the directory structure for this timestamp
+	// (this will fail if any files are left undeleted inside). This works like
+	// `rmdir "trash/$namespace/$timestamp"/??; rmdir "trash/$namespace/$timestamp"`.
+	trashDayDir := dir.trashPath(namespace, dirTime)
+	dirEntries, err := os.ReadDir(trashDayDir)
+	if err != nil {
+		errorsEncountered.Add(Error.New("list %s: %w", trashDayDir, err))
+		return bytesEmptied, deletedKeys, errorsEncountered.Err()
+	}
+	for _, entry := range dirEntries {
+		if entry.IsDir() && len(entry.Name()) == 2 {
+			err = removeButIgnoreIfNotExist(filepath.Join(trashDayDir, entry.Name()))
+			errorsEncountered.Add(err)
+		}
+	}
+	err = removeButIgnoreIfNotExist(trashDayDir)
 	errorsEncountered.Add(err)
 	return bytesEmptied, deletedKeys, errorsEncountered.Err()
 }
 
 // iterateStorageFormatVersions executes f for all storage format versions,
 // starting with the oldest format version. It is more likely, in the general
-// case, that we will find the piece with the newest format version instead,
+// case, that we will find the blob with the newest format version instead,
 // but if we iterate backward here then we run the risk of a race condition:
-// the piece might have existed with _SomeOldVer before the call, and could
+// the blob might have existed with _SomeOldVer before the call, and could
 // then have been updated atomically with _MaxVer concurrently while we were
 // iterating. If we iterate _forwards_, this race should not occur because it
-// is assumed that pieces are never rewritten with an _older_ storage format
+// is assumed that blobs are never rewritten with an _older_ storage format
 // version.
 //
-// f will be executed for every storage formate version regardless of the
+// f will be executed for every storage format version regardless of the
 // result, and will aggregate errors into a single returned error.
 func (dir *Dir) iterateStorageFormatVersions(ctx context.Context, ref blobstore.BlobRef, f func(ctx context.Context, ref blobstore.BlobRef, i blobstore.FormatVersion) error) (err error) {
 	defer mon.Task()(&ctx)(&err)
@@ -534,22 +713,16 @@ func (dir *Dir) iterateStorageFormatVersions(ctx context.Context, ref blobstore.
 
 // Delete deletes blobs with the specified ref (in all supported storage formats).
 //
-// It doesn't return an error if the blob is not found for any reason or it
-// cannot be deleted at this moment and it's delayed.
+// It doesn't return an error if the blob is not found for any reason.
 func (dir *Dir) Delete(ctx context.Context, ref blobstore.BlobRef) (err error) {
 	defer mon.Task()(&ctx)(&err)
 	return dir.iterateStorageFormatVersions(ctx, ref, dir.DeleteWithStorageFormat)
 }
 
 // DeleteWithStorageFormat deletes the blob with the specified ref for one
-// specific format version. The method tries the following strategies, in order
-// of preference until one succeeds:
+// specific format version.
 //
-// * moves the blob to garbage dir.
-// * directly deletes the blob.
-// * push the blobs to queue for retrying later.
-//
-// It doesn't return an error if the piece isn't found for any reason.
+// It doesn't return an error if the blob isn't found for any reason.
 func (dir *Dir) DeleteWithStorageFormat(ctx context.Context, ref blobstore.BlobRef, formatVer blobstore.FormatVersion) (err error) {
 	defer mon.Task()(&ctx)(&err)
 	return dir.deleteWithStorageFormatInPath(ctx, dir.blobsdir(), ref, formatVer)
@@ -564,59 +737,15 @@ func (dir *Dir) DeleteNamespace(ctx context.Context, ref []byte) (err error) {
 func (dir *Dir) deleteWithStorageFormatInPath(ctx context.Context, path string, ref blobstore.BlobRef, formatVer blobstore.FormatVersion) (err error) {
 	defer mon.Task()(&ctx)(&err)
 
-	// Ensure garbage dir exists so that we know any os.IsNotExist errors below
-	// are not from a missing garbage dir
-	_, err = os.Stat(dir.garbagedir())
-	if err != nil {
-		return err
-	}
-
 	pathBase, err := dir.refToDirPath(ref, path)
 	if err != nil {
 		return err
 	}
 
-	garbagePath := dir.blobToGarbagePath(ref)
 	verPath := blobPathForFormatVersion(pathBase, formatVer)
 
-	// move to garbage folder, this is allowed for some OS-es
-	moveErr := rename(verPath, garbagePath)
-	if os.IsNotExist(moveErr) {
-		// no piece at that path; either it has a different storage format
-		// version or there was a concurrent delete. (this function is expected
-		// by callers to return a nil error in the case of concurrent deletes.)
-		return nil
-	}
-	if moveErr != nil {
-		// piece could not be moved into the garbage dir; we'll try removing it
-		// directly
-		garbagePath = verPath
-	}
-
 	// try removing the file
-	err = os.Remove(garbagePath)
-
-	// ignore concurrent deletes
-	if os.IsNotExist(err) {
-		// something is happening at the same time as this; possibly a
-		// concurrent delete, or possibly a rewrite of the blob.
-		return nil
-	}
-
-	// the remove may have failed because of an open file handle. put it in a
-	// queue to be retried later.
-	if err != nil {
-		dir.mu.Lock()
-		dir.deleteQueue = append(dir.deleteQueue, garbagePath)
-		dir.mu.Unlock()
-		mon.Event("delete_deferred_to_queue")
-	}
-
-	// ignore is-busy errors, they are still in the queue but no need to notify
-	if isBusy(err) {
-		err = nil
-	}
-	return err
+	return removeButIgnoreIfNotExist(verPath)
 }
 
 // deleteNamespace deletes folder with everything inside.
@@ -630,38 +759,6 @@ func (dir *Dir) deleteNamespace(ctx context.Context, path string, ref []byte) (e
 	return err
 }
 
-// GarbageCollect collects files that are pending deletion.
-func (dir *Dir) GarbageCollect(ctx context.Context) (err error) {
-	defer mon.Task()(&ctx)(&err)
-	offset := int(math.MaxInt32)
-	// limited deletion loop to avoid blocking `Delete` for too long
-	for offset >= 0 {
-		dir.mu.Lock()
-		limit := 100
-		if offset >= len(dir.deleteQueue) {
-			offset = len(dir.deleteQueue) - 1
-		}
-		for offset >= 0 && limit > 0 {
-			path := dir.deleteQueue[offset]
-			err := os.Remove(path)
-			if os.IsNotExist(err) {
-				err = nil
-			}
-			if err == nil {
-				dir.deleteQueue = append(dir.deleteQueue[:offset], dir.deleteQueue[offset+1:]...)
-			}
-
-			offset--
-			limit--
-		}
-		dir.mu.Unlock()
-	}
-
-	// remove anything left in the garbagedir
-	_ = removeAllContent(ctx, dir.garbagedir())
-	return nil
-}
-
 const nameBatchSize = 1024
 
 // ListNamespaces finds all known namespace IDs in use in local storage. They are not
@@ -669,6 +766,13 @@ const nameBatchSize = 1024
 func (dir *Dir) ListNamespaces(ctx context.Context) (ids [][]byte, err error) {
 	defer mon.Task()(&ctx)(&err)
 	return dir.listNamespacesInPath(ctx, dir.blobsdir())
+}
+
+// listNamespacesInTrash lists all known the namespace IDs in use in the trash. They are
+// not guaranteed to contain any blobs, or to correspond to namespaces in main storage.
+func (dir *Dir) listNamespacesInTrash(ctx context.Context) (ids [][]byte, err error) {
+	defer mon.Task()(&ctx)(&err)
+	return dir.listNamespacesInPath(ctx, dir.trashdir())
 }
 
 func (dir *Dir) listNamespacesInPath(ctx context.Context, path string) (ids [][]byte, err error) {
@@ -714,6 +818,10 @@ func (dir *Dir) walkNamespaceInPath(ctx context.Context, namespace []byte, path 
 	defer mon.Task()(&ctx)(&err)
 	namespaceDir := pathEncoding.EncodeToString(namespace)
 	nsDir := filepath.Join(path, namespaceDir)
+	return dir.walkNamespaceUnderPath(ctx, namespace, nsDir, walkFunc)
+}
+
+func (dir *Dir) walkNamespaceUnderPath(ctx context.Context, namespace []byte, nsDir string, walkFunc func(blobstore.BlobInfo) error) (err error) {
 	openDir, err := os.Open(nsDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -756,6 +864,51 @@ func (dir *Dir) walkNamespaceInPath(ctx context.Context, namespace []byte, path 
 	}
 }
 
+// migrateTrashToPerDayDirs migrates a trash directory that is _not_ using per-day directories
+// to a trash directory that _does_ use per-day directories. This is accomplished by shunting
+// everything in the trash into the directory for the current day.
+//
+// This will result in some things staying in the trash for longer than they otherwise would
+// have, but it is likely that operators will welcome the improvement in performance anyway.
+//
+// In short, this moves:
+//
+//	trash/$namespace/?? -> trash/$namespace/$day/??
+//
+// Or, in shell syntax, we are doing:
+//
+//	mv trash/$namespace trash/$namespace-$day && \
+//	mkdir trash/$namespace && \
+//	mv trash/$namespace-$day trash/$namespace/$day
+//
+// This approach does the minimum number of filesystem changes to perform the migration.
+func (dir *Dir) migrateTrashToPerDayDirs(now time.Time) (err error) {
+	defer mon.Task()(nil)(&err)
+
+	namespaces, err := dir.listNamespacesInTrash(context.Background())
+	for _, ns := range namespaces {
+		nsEncoded := pathEncoding.EncodeToString(ns)
+		todayDirName := now.Format("2006-01-02")
+		nsPath := filepath.Join(dir.trashdir(), nsEncoded)
+		tempTodayDirPath := filepath.Join(dir.trashdir(), nsEncoded+"-"+todayDirName)
+		dir.log.Info("migrating trash namespace to use per-day directories", zap.String("namespace", nsEncoded))
+		err = os.Rename(nsPath, tempTodayDirPath)
+		if err != nil {
+			return err
+		}
+		err = os.Mkdir(nsPath, dirPermission)
+		if err != nil {
+			return err
+		}
+		err = os.Rename(tempTodayDirPath, filepath.Join(nsPath, todayDirName))
+		if err != nil {
+			return err
+		}
+		dir.log.Info("trash namespace migration complete", zap.String("namespace", nsEncoded))
+	}
+	return nil
+}
+
 func decodeBlobInfo(namespace []byte, keyPrefix, keyDir, name string) (info blobstore.BlobInfo, ok bool) {
 	blobFileName := name
 	encodedKey := keyPrefix + blobFileName
@@ -764,6 +917,8 @@ func decodeBlobInfo(namespace []byte, keyPrefix, keyDir, name string) (info blob
 		formatVer = FormatV1
 		encodedKey = encodedKey[0 : len(encodedKey)-len(v1PieceFileSuffix)]
 	}
+	// in case we prepended '1' chars because the key was too short (1 is an invalid char in base32)
+	encodedKey = strings.TrimLeft(encodedKey, "1")
 	key, err := pathEncoding.DecodeString(encodedKey)
 	if err != nil {
 		return nil, false
@@ -814,40 +969,11 @@ func walkNamespaceWithPrefix(ctx context.Context, log *zap.Logger, namespace []b
 	}
 }
 
-// removeAllContent deletes everything in the folder.
-func removeAllContent(ctx context.Context, path string) (err error) {
-	defer mon.Task()(&ctx)(&err)
-	dir, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-
-	for {
-		files, err := dir.Readdirnames(100)
-		for _, file := range files {
-			// the file might be still in use, so ignore the error
-			_ = os.RemoveAll(filepath.Join(path, file))
-		}
-		if errors.Is(err, io.EOF) || len(files) == 0 {
-			return dir.Close()
-		}
-		if err != nil {
-			return err
-		}
-	}
-}
-
-// DiskInfo contains statistics about this dir.
-type DiskInfo struct {
-	ID             string
-	AvailableSpace int64
-}
-
 // Info returns information about the current state of the dir.
-func (dir *Dir) Info(ctx context.Context) (DiskInfo, error) {
+func (dir *Dir) Info(ctx context.Context) (blobstore.DiskInfo, error) {
 	path, err := filepath.Abs(dir.path)
 	if err != nil {
-		return DiskInfo{}, err
+		return blobstore.DiskInfo{}, err
 	}
 	return diskInfoFromPath(path)
 }

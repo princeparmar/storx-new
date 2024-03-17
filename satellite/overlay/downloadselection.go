@@ -37,11 +37,11 @@ type DownloadSelectionCache struct {
 	config DownloadSelectionCacheConfig
 
 	cache          sync2.ReadCacheOf[*DownloadSelectionCacheState]
-	placementRules PlacementRules
+	placementRules nodeselection.PlacementRules
 }
 
 // NewDownloadSelectionCache creates a new cache that keeps a list of all the storage nodes that are qualified to download data from.
-func NewDownloadSelectionCache(log *zap.Logger, db DownloadSelectionDB, placementRules PlacementRules, config DownloadSelectionCacheConfig) (*DownloadSelectionCache, error) {
+func NewDownloadSelectionCache(log *zap.Logger, db DownloadSelectionDB, placementRules nodeselection.PlacementRules, config DownloadSelectionCacheConfig) (*DownloadSelectionCache, error) {
 	cache := &DownloadSelectionCache{
 		log:            log,
 		db:             db,
@@ -147,7 +147,7 @@ func (state *DownloadSelectionCacheState) IPs(nodes []storj.NodeID) map[storj.No
 func (state *DownloadSelectionCacheState) FilteredIPs(nodes []storj.NodeID, filter nodeselection.NodeFilter) map[storj.NodeID]string {
 	xs := make(map[storj.NodeID]string, len(nodes))
 	for _, nodeID := range nodes {
-		if n, exists := state.byID[nodeID]; exists && filter.MatchInclude(n) {
+		if n, exists := state.byID[nodeID]; exists && filter.Match(n) {
 			xs[nodeID] = n.LastIPPort
 		}
 	}

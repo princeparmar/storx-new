@@ -8,9 +8,13 @@ import (
 	"github.com/zeebo/errs"
 	"go.uber.org/zap"
 
-	"storj.io/private/process"
-	"storj.io/private/version"
+	"storj.io/common/process"
+	"storj.io/common/version"
 	"storj.io/storj/satellite"
+	"storj.io/storj/satellite/accounting"
+	"storj.io/storj/satellite/accounting/live"
+	_ "storj.io/storj/satellite/admin/back-office/ui" // embed ui
+	_ "storj.io/storj/satellite/admin/ui"             // embed ui
 	"storj.io/storj/satellite/metabase"
 	"storj.io/storj/satellite/satellitedb"
 )
@@ -18,8 +22,6 @@ import (
 func cmdAdminRun(cmd *cobra.Command, args []string) (err error) {
 	ctx, _ := process.Ctx(cmd)
 	log := zap.L()
-
-	runCfg.Debug.Address = *process.DebugAddrFlag
 
 	identity, err := runCfg.Identity.Load()
 	if err != nil {
@@ -47,7 +49,21 @@ func cmdAdminRun(cmd *cobra.Command, args []string) (err error) {
 		err = errs.Combine(err, metabaseDB.Close())
 	}()
 
-	peer, err := satellite.NewAdmin(log, identity, db, metabaseDB, version.Build, &runCfg.Config, process.AtomicLevel(cmd))
+	accountingCache, err := live.OpenCache(ctx, log.Named("live-accounting"), runCfg.LiveAccounting)
+	if err != nil {
+		if !accounting.ErrSystemOrNetError.Has(err) || accountingCache == nil {
+			return errs.New("Error instantiating live accounting cache: %w", err)
+		}
+
+		log.Warn("Unable to connect to live accounting cache. Verify connection",
+			zap.Error(err),
+		)
+	}
+	defer func() {
+		err = errs.Combine(err, accountingCache.Close())
+	}()
+
+	peer, err := satellite.NewAdmin(log, identity, db, metabaseDB, accountingCache, version.Build, &runCfg.Config, process.AtomicLevel(cmd))
 	if err != nil {
 		return err
 	}

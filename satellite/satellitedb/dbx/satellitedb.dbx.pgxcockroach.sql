@@ -4,6 +4,7 @@ CREATE TABLE account_freeze_events (
 	user_id bytea NOT NULL,
 	event integer NOT NULL,
 	limits jsonb,
+	days_till_escalation integer,
 	created_at timestamp with time zone NOT NULL DEFAULT current_timestamp,
 	PRIMARY KEY ( user_id, event )
 );
@@ -123,7 +124,6 @@ CREATE TABLE nodes (
 	last_ip_port text,
 	country_code text,
 	protocol integer NOT NULL DEFAULT 0,
-	type integer NOT NULL DEFAULT 0,
 	email text NOT NULL,
 	wallet text NOT NULL,
 	wallet_features text NOT NULL DEFAULT '',
@@ -169,6 +169,7 @@ CREATE TABLE node_api_versions (
 CREATE TABLE node_events (
 	id bytea NOT NULL,
 	email text NOT NULL,
+	last_ip_port text,
 	node_id bytea NOT NULL,
 	event integer NOT NULL,
 	created_at timestamp with time zone NOT NULL DEFAULT current_timestamp,
@@ -241,7 +242,7 @@ CREATE TABLE projects (
 	salt bytea,
 	created_at timestamp with time zone NOT NULL,
 	default_placement integer,
-	prevDays_UntilExpiration integer,
+	default_versioning integer NOT NULL DEFAULT 1,
 	PRIMARY KEY ( id )
 );
 CREATE TABLE project_bandwidth_daily_rollups (
@@ -267,6 +268,7 @@ CREATE TABLE repair_queue (
 	updated_at timestamp with time zone NOT NULL DEFAULT current_timestamp,
 	inserted_at timestamp with time zone NOT NULL DEFAULT current_timestamp,
 	segment_health double precision NOT NULL DEFAULT 1,
+	placement integer,
 	PRIMARY KEY ( stream_id, position )
 );
 CREATE TABLE reputations (
@@ -391,6 +393,7 @@ CREATE TABLE storagenode_storage_tallies (
 	PRIMARY KEY ( interval_end_time, node_id )
 );
 CREATE TABLE storjscan_payments (
+	chain_id bigint NOT NULL DEFAULT 0,
 	block_hash bytea NOT NULL,
 	block_number bigint NOT NULL,
 	transaction bytea NOT NULL,
@@ -402,7 +405,7 @@ CREATE TABLE storjscan_payments (
 	status text NOT NULL,
 	timestamp timestamp with time zone NOT NULL,
 	created_at timestamp with time zone NOT NULL,
-	PRIMARY KEY ( block_hash, log_index )
+	PRIMARY KEY ( chain_id, block_hash, log_index )
 );
 CREATE TABLE storjscan_wallets (
 	user_id bytea NOT NULL,
@@ -466,10 +469,15 @@ CREATE TABLE users (
 	mfa_recovery_codes text,
 	signup_promo_code text,
 	verification_reminders integer NOT NULL DEFAULT 0,
+	trial_notifications integer NOT NULL DEFAULT 0,
 	failed_login_count integer,
 	login_lockout_expiration timestamp with time zone,
 	signup_captcha double precision,
 	default_placement integer,
+	activation_code text,
+	signup_id text,
+	trial_expiration timestamp with time zone,
+	upgrade_time timestamp with time zone,
 	PRIMARY KEY ( id )
 );
 CREATE TABLE user_settings (
@@ -479,13 +487,13 @@ CREATE TABLE user_settings (
 	onboarding_start boolean NOT NULL DEFAULT true,
 	onboarding_end boolean NOT NULL DEFAULT true,
 	onboarding_step text,
+	notice_dismissal jsonb NOT NULL DEFAULT '{}',
 	PRIMARY KEY ( user_id )
 );
 CREATE TABLE value_attributions (
 	project_id bytea NOT NULL,
 	bucket_name bytea NOT NULL,
 	user_agent bytea,
-	partner_id bytea DEFAULT null,
 	last_updated timestamp with time zone NOT NULL,
 	PRIMARY KEY ( project_id, bucket_name )
 );
@@ -523,6 +531,7 @@ CREATE TABLE bucket_metainfos (
 	project_id bytea NOT NULL REFERENCES projects( id ),
 	name bytea NOT NULL,
 	user_agent bytea,
+	versioning integer NOT NULL DEFAULT 0,
 	path_cipher integer NOT NULL,
 	created_at timestamp with time zone NOT NULL,
 	default_segment_size integer NOT NULL,
@@ -535,8 +544,7 @@ CREATE TABLE bucket_metainfos (
 	default_redundancy_optimal_shares integer NOT NULL,
 	default_redundancy_total_shares integer NOT NULL,
 	placement integer,
-	PRIMARY KEY ( id ),
-	UNIQUE ( project_id, name )
+	PRIMARY KEY ( project_id, name )
 );
 CREATE TABLE project_invitations (
 	project_id bytea NOT NULL REFERENCES projects( id ) ON DELETE CASCADE,
@@ -564,11 +572,12 @@ CREATE INDEX bucket_bandwidth_rollups_action_interval_project_id_index ON bucket
 CREATE INDEX bucket_bandwidth_rollups_archive_project_id_action_interval_index ON bucket_bandwidth_rollup_archives ( project_id, action, interval_start ) ;
 CREATE INDEX bucket_bandwidth_rollups_archive_action_interval_project_id_index ON bucket_bandwidth_rollup_archives ( action, interval_start, project_id ) ;
 CREATE INDEX bucket_storage_tallies_project_id_interval_start_index ON bucket_storage_tallies ( project_id, interval_start ) ;
+CREATE INDEX bucket_storage_tallies_interval_start_index ON bucket_storage_tallies ( interval_start ) ;
 CREATE INDEX graceful_exit_segment_transfer_nid_dr_qa_fa_lfa_index ON graceful_exit_segment_transfer_queue ( node_id, durability_ratio, queued_at, finished_at, last_failed_at ) ;
 CREATE INDEX node_last_ip ON nodes ( last_net ) ;
 CREATE INDEX nodes_dis_unk_off_exit_fin_last_success_index ON nodes ( disqualified, unknown_audit_suspended, offline_suspended, exit_finished_at, last_contact_success ) ;
-CREATE INDEX nodes_type_last_cont_success_free_disk_ma_mi_patch_vetted_partial_index ON nodes ( type, last_contact_success, free_disk, major, minor, patch, vetted_at ) WHERE nodes.disqualified is NULL AND nodes.unknown_audit_suspended is NULL AND nodes.exit_initiated_at is NULL AND nodes.release = true AND nodes.last_net != '' ;
-CREATE INDEX nodes_dis_unk_aud_exit_init_rel_type_last_cont_success_stored_index ON nodes ( disqualified, unknown_audit_suspended, exit_initiated_at, release, type, last_contact_success ) WHERE nodes.disqualified is NULL AND nodes.unknown_audit_suspended is NULL AND nodes.exit_initiated_at is NULL AND nodes.release = true ;
+CREATE INDEX nodes_last_cont_success_free_disk_ma_mi_patch_vetted_partial_index ON nodes ( last_contact_success, free_disk, major, minor, patch, vetted_at ) WHERE nodes.disqualified is NULL AND nodes.unknown_audit_suspended is NULL AND nodes.exit_initiated_at is NULL AND nodes.release = true AND nodes.last_net != '' ;
+CREATE INDEX nodes_dis_unk_aud_exit_init_rel_last_cont_success_stored_index ON nodes ( disqualified, unknown_audit_suspended, exit_initiated_at, release, last_contact_success ) WHERE nodes.disqualified is NULL AND nodes.unknown_audit_suspended is NULL AND nodes.exit_initiated_at is NULL AND nodes.release = true ;
 CREATE INDEX node_events_email_event_created_at_index ON node_events ( email, event, created_at ) WHERE node_events.email_sent is NULL ;
 CREATE INDEX oauth_clients_user_id_index ON oauth_clients ( user_id ) ;
 CREATE INDEX oauth_codes_user_id_index ON oauth_codes ( user_id ) ;
@@ -580,13 +589,14 @@ CREATE INDEX projects_owner_id_index ON projects ( owner_id ) ;
 CREATE INDEX project_bandwidth_daily_rollup_interval_day_index ON project_bandwidth_daily_rollups ( interval_day ) ;
 CREATE INDEX repair_queue_updated_at_index ON repair_queue ( updated_at ) ;
 CREATE INDEX repair_queue_num_healthy_pieces_attempted_at_index ON repair_queue ( segment_health, attempted_at ) ;
+CREATE INDEX repair_queue_placement_index ON repair_queue ( placement ) ;
 CREATE INDEX reverification_audits_inserted_at_index ON reverification_audits ( inserted_at ) ;
 CREATE INDEX storagenode_bandwidth_rollups_interval_start_index ON storagenode_bandwidth_rollups ( interval_start ) ;
 CREATE INDEX storagenode_bandwidth_rollup_archives_interval_start_index ON storagenode_bandwidth_rollup_archives ( interval_start ) ;
 CREATE INDEX storagenode_payments_node_id_period_index ON storagenode_payments ( node_id, period ) ;
 CREATE INDEX storagenode_paystubs_node_id_index ON storagenode_paystubs ( node_id ) ;
 CREATE INDEX storagenode_storage_tallies_node_id_index ON storagenode_storage_tallies ( node_id ) ;
-CREATE INDEX storjscan_payments_block_number_log_index_index ON storjscan_payments ( block_number, log_index ) ;
+CREATE INDEX storjscan_payments_chain_id_block_number_log_index_index ON storjscan_payments ( chain_id, block_number, log_index ) ;
 CREATE INDEX storjscan_wallets_wallet_address_index ON storjscan_wallets ( wallet_address ) ;
 CREATE INDEX users_email_status_index ON users ( normalized_email, status ) ;
 CREATE INDEX webapp_sessions_user_id_index ON webapp_sessions ( user_id ) ;

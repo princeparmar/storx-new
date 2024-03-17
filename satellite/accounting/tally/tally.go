@@ -305,69 +305,53 @@ func (observer *BucketTallyCollector) Run(ctx context.Context) (err error) {
 func (observer *BucketTallyCollector) fillBucketTallies(ctx context.Context, startingTime time.Time) (err error) {
 	defer mon.Task()(&ctx)(&err)
 
-	var lastBucketLocation metabase.BucketLocation
-	for {
-		more, err := observer.bucketsDB.IterateBucketLocations(ctx, lastBucketLocation.ProjectID, lastBucketLocation.BucketName, observer.config.ListLimit, func(bucketLocations []metabase.BucketLocation) (err error) {
-			fromBucket := bucketLocations[0]
-			toBucket := bucketLocations[len(bucketLocations)-1]
+	return observer.bucketsDB.IterateBucketLocations(ctx, observer.config.ListLimit, func(bucketLocations []metabase.BucketLocation) (err error) {
+		fromBucket := bucketLocations[0]
+		toBucket := bucketLocations[len(bucketLocations)-1]
 
-			// Prepopulate the results with empty tallies. Otherwise, empty buckets will be unaccounted for
-			// since they're not reached when iterating over objects in the metainfo DB.
-			// We only do this for buckets whose last tally is non-empty because only one empty tally is
-			// required for us to know that a bucket was empty the last time we checked.
-			locs, err := observer.projectAccountingDB.GetNonEmptyTallyBucketsInRange(ctx, fromBucket, toBucket)
-			if err != nil {
-				return err
-			}
-			for _, loc := range locs {
-				observer.Bucket[loc] = &accounting.BucketTally{BucketLocation: loc}
-			}
+		// Prepopulate the results with empty tallies. Otherwise, empty buckets will be unaccounted for
+		// since they're not reached when iterating over objects in the metainfo DB.
+		// We only do this for buckets whose last tally is non-empty because only one empty tally is
+		// required for us to know that a bucket was empty the last time we checked.
+		locs, err := observer.projectAccountingDB.GetNonEmptyTallyBucketsInRange(ctx, fromBucket, toBucket, observer.config.AsOfSystemInterval)
+		if err != nil {
+			return err
+		}
+		for _, loc := range locs {
+			observer.Bucket[loc] = &accounting.BucketTally{BucketLocation: loc}
+		}
 
-			tallies, err := observer.metabase.CollectBucketTallies(ctx, metabase.CollectBucketTallies{
-				From:               fromBucket,
-				To:                 toBucket,
-				AsOfSystemTime:     startingTime,
-				AsOfSystemInterval: observer.config.AsOfSystemInterval,
-				Now:                observer.Now,
-			})
-			if err != nil {
-				return err
-			}
-
-			for _, tally := range tallies {
-				bucket := observer.ensureBucket(metabase.ObjectLocation{
-					ProjectID:  tally.ProjectID,
-					BucketName: tally.BucketName,
-				})
-				bucket.TotalSegments = tally.TotalSegments
-				bucket.TotalBytes = tally.TotalBytes
-				bucket.MetadataSize = tally.MetadataSize
-				bucket.ObjectCount = tally.ObjectCount
-				bucket.PendingObjectCount = tally.PendingObjectCount
-			}
-
-			lastBucketLocation = bucketLocations[len(bucketLocations)-1]
-			return nil
+		tallies, err := observer.metabase.CollectBucketTallies(ctx, metabase.CollectBucketTallies{
+			From:               fromBucket,
+			To:                 toBucket,
+			AsOfSystemTime:     startingTime,
+			AsOfSystemInterval: observer.config.AsOfSystemInterval,
+			Now:                observer.Now,
 		})
 		if err != nil {
 			return err
 		}
-		if !more {
-			break
-		}
-	}
 
-	return nil
+		for _, tally := range tallies {
+			bucket := observer.ensureBucket(tally.BucketLocation)
+			bucket.TotalSegments = tally.TotalSegments
+			bucket.TotalBytes = tally.TotalBytes
+			bucket.MetadataSize = tally.MetadataSize
+			bucket.ObjectCount = tally.ObjectCount
+			bucket.PendingObjectCount = tally.PendingObjectCount
+		}
+
+		return nil
+	})
 }
 
 // ensureBucket returns bucket corresponding to the passed in path.
-func (observer *BucketTallyCollector) ensureBucket(location metabase.ObjectLocation) *accounting.BucketTally {
-	bucketLocation := location.Bucket()
-	bucket, exists := observer.Bucket[bucketLocation]
+func (observer *BucketTallyCollector) ensureBucket(location metabase.BucketLocation) *accounting.BucketTally {
+	bucket, exists := observer.Bucket[location]
 	if !exists {
 		bucket = &accounting.BucketTally{}
-		bucket.BucketLocation = bucketLocation
-		observer.Bucket[bucketLocation] = bucket
+		bucket.BucketLocation = location
+		observer.Bucket[location] = bucket
 	}
 
 	return bucket

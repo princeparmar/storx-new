@@ -4,12 +4,14 @@
 package main
 
 import (
+	"github.com/spacemonkeygo/monkit/v3"
 	"github.com/spf13/cobra"
 	"github.com/zeebo/errs"
 	"go.uber.org/zap"
 
-	"storj.io/private/process"
-	"storj.io/private/version"
+	"storj.io/common/process"
+	"storj.io/common/process/eventkitbq"
+	"storj.io/common/version"
 	"storj.io/storj/private/revocation"
 	"storj.io/storj/satellite"
 	"storj.io/storj/satellite/metabase"
@@ -19,8 +21,6 @@ import (
 func cmdGCRun(cmd *cobra.Command, args []string) (err error) {
 	ctx, _ := process.Ctx(cmd)
 	log := zap.L()
-
-	runCfg.Debug.Address = *process.DebugAddrFlag
 
 	identity, err := runCfg.Identity.Load()
 	if err != nil {
@@ -63,7 +63,7 @@ func cmdGCRun(cmd *cobra.Command, args []string) (err error) {
 		return err
 	}
 
-	if err := process.InitMetricsWithHostname(ctx, log, nil); err != nil {
+	if err := process.InitMetrics(ctx, log, monkit.Default, process.MetricsIDFromHostname(log), eventkitbq.BQDestination); err != nil {
 		log.Warn("Failed to initialize telemetry batcher on satellite GC", zap.Error(err))
 	}
 

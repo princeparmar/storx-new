@@ -46,7 +46,7 @@ type UserManagementService interface {
 	GenGetUser(ctx context.Context) (*console.ResponseUser, api.HTTPError)
 }
 
-// ProjectManagementHandler is an api handler that exposes all projects related functionality.
+// ProjectManagementHandler is an api handler that implements all ProjectManagement API endpoints functionality.
 type ProjectManagementHandler struct {
 	log     *zap.Logger
 	mon     *monkit.Scope
@@ -54,7 +54,7 @@ type ProjectManagementHandler struct {
 	auth    api.Auth
 }
 
-// APIKeyManagementHandler is an api handler that exposes all apikeys related functionality.
+// APIKeyManagementHandler is an api handler that implements all APIKeyManagement API endpoints functionality.
 type APIKeyManagementHandler struct {
 	log     *zap.Logger
 	mon     *monkit.Scope
@@ -62,7 +62,7 @@ type APIKeyManagementHandler struct {
 	auth    api.Auth
 }
 
-// UserManagementHandler is an api handler that exposes all users related functionality.
+// UserManagementHandler is an api handler that implements all UserManagement API endpoints functionality.
 type UserManagementHandler struct {
 	log     *zap.Logger
 	mon     *monkit.Scope
@@ -78,7 +78,7 @@ func NewProjectManagement(log *zap.Logger, mon *monkit.Scope, service ProjectMan
 		auth:    auth,
 	}
 
-	projectsRouter := router.PathPrefix("/api/v0/projects").Subrouter()
+	projectsRouter := router.PathPrefix("/public/v1/projects").Subrouter()
 	projectsRouter.HandleFunc("/create", handler.handleGenCreateProject).Methods("POST")
 	projectsRouter.HandleFunc("/update/{id}", handler.handleGenUpdateProject).Methods("PATCH")
 	projectsRouter.HandleFunc("/delete/{id}", handler.handleGenDeleteProject).Methods("DELETE")
@@ -98,7 +98,7 @@ func NewAPIKeyManagement(log *zap.Logger, mon *monkit.Scope, service APIKeyManag
 		auth:    auth,
 	}
 
-	apikeysRouter := router.PathPrefix("/api/v0/apikeys").Subrouter()
+	apikeysRouter := router.PathPrefix("/public/v1/apikeys").Subrouter()
 	apikeysRouter.HandleFunc("/create", handler.handleGenCreateAPIKey).Methods("POST")
 	apikeysRouter.HandleFunc("/delete/{id}", handler.handleGenDeleteAPIKey).Methods("DELETE")
 
@@ -113,7 +113,7 @@ func NewUserManagement(log *zap.Logger, mon *monkit.Scope, service UserManagemen
 		auth:    auth,
 	}
 
-	usersRouter := router.PathPrefix("/api/v0/users").Subrouter()
+	usersRouter := router.PathPrefix("/public/v1/users").Subrouter()
 	usersRouter.HandleFunc("/", handler.handleGenGetUser).Methods("GET")
 
 	return handler

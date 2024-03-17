@@ -1,9 +1,9 @@
-// Copyright (C) 2019 Storx Labs, Inc.
+// Copyright (C) 2019 Storj Labs, Inc.
 // See LICENSE for copying information.
 
-import { BaseGql } from '@/api/baseGql';
 import {
     DataStamp,
+    LimitRequestInfo,
     Project,
     ProjectFields,
     ProjectInvitation,
@@ -13,12 +13,14 @@ import {
     ProjectsPage,
     ProjectsStorageBandwidthDaily,
     ProjectInvitationResponse,
+    Emission,
 } from '@/types/projects';
 import { HttpClient } from '@/utils/httpClient';
 import { Time } from '@/utils/time';
 import { APIError } from '@/utils/error';
+import { getVersioning } from '@/types/versioning';
 
-export class ProjectsApiGql extends BaseGql implements ProjectsApi {
+export class ProjectsHttpApi implements ProjectsApi {
     private readonly http: HttpClient = new HttpClient();
     private readonly ROOT_PATH: string = '/api/v0/projects';
 
@@ -29,24 +31,32 @@ export class ProjectsApiGql extends BaseGql implements ProjectsApi {
      * @throws Error
      */
     public async create(projectFields: ProjectFields): Promise<Project> {
-        const query =
-            `mutation($name: String!, $description: String!) {
-                createProject(
-                    input: {
-                        name: $name,
-                        description: $description,
-                    }
-                ) {publicId}
-            }`;
-
-        const variables = {
+        const data = {
             name: projectFields.name,
             description: projectFields.description,
         };
 
-        const response = await this.mutate(query, variables);
+        const response = await this.http.post(this.ROOT_PATH, JSON.stringify(data));
+        const result = await response.json();
+        if (response.ok) {
+            return new Project(
+                result.id,
+                result.name,
+                result.description,
+                result.createdAt,
+                result.ownerId,
+                false,
+                result.memberCount,
+                result.edgeURLOverrides,
+                getVersioning(result.versioning),
+            );
+        }
 
-        return new Project(response.data.createProject.publicId, variables.name, variables.description, '', projectFields.ownerId);
+        throw new APIError({
+            status: response.status,
+            message: result.error || 'Could not create project',
+            requestID: response.headers.get('x-request-id'),
+        });
     }
 
     /**
@@ -67,7 +77,7 @@ export class ProjectsApiGql extends BaseGql implements ProjectsApi {
         }
 
         const projects = await response.json();
-        return projects.map((p: Project) => new Project(
+        return projects.map(p => new Project(
             p.id,
             p.name,
             p.description,
@@ -75,6 +85,10 @@ export class ProjectsApiGql extends BaseGql implements ProjectsApi {
             p.ownerId,
             false,
             p.memberCount,
+            p.edgeURLOverrides,
+            getVersioning(p.versioning),
+            p.storageUsed,
+            p.bandwidthUsed,
         ));
     }
 
@@ -110,30 +124,9 @@ export class ProjectsApiGql extends BaseGql implements ProjectsApi {
     }
 
     /**
-     * Delete project.
-     *
-     * @param projectId - project ID
-     * @throws Error
-     */
-    public async delete(projectId: string): Promise<void> {
-        const query =
-            `mutation($projectId: String!) {
-                deleteProject(
-                    publicId: $projectId
-                ) {name}
-            }`;
-
-        const variables = {
-            projectId: projectId,
-        };
-
-        await this.mutate(query, variables);
-    }
-
-    /**
      * Get project limits.
      *
-     * @param projectId- project ID
+     * @param projectId - project ID
      * @throws Error
      */
     public async getLimits(projectId: string): Promise<ProjectLimits> {
@@ -159,8 +152,32 @@ export class ProjectsApiGql extends BaseGql implements ProjectsApi {
             limits.segmentCount,
             limits.segmentLimit,
             limits.segmentUsed,
+            limits.bucketsLimit,
+            limits.bucketsUsed,
         );
 
+    }
+
+    /**
+     * Request limit increase.
+     *
+     * @param projectId - project ID
+     * @param info - request information
+     * @throws Error
+     */
+    public async requestLimitIncrease(projectId: string, info: LimitRequestInfo): Promise<void> {
+        const path = `${this.ROOT_PATH}/${projectId}/limit-increase`;
+        const response = await this.http.post(path, JSON.stringify(info));
+        if (response.ok) {
+            return;
+        }
+
+        const result = await response.json();
+        throw new APIError({
+            status: response.status,
+            message: result.error || 'Can not request increase',
+            requestID: response.headers.get('x-request-id'),
+        });
     }
 
     /**
@@ -191,11 +208,20 @@ export class ProjectsApiGql extends BaseGql implements ProjectsApi {
     }
 
     /**
+     * Get link to download total usage report for all the projects that user owns.
+     *
+     * @throws Error
+     */
+    public getTotalUsageReportLink(start: number, end: number, projectID: string): string {
+        return `${this.ROOT_PATH}/usage-report?since=${start.toString()}&before=${end.toString()}&projectID=${projectID}`;
+    }
+
+    /**
      * Get project daily usage for specific date range.
      *
-     * @param projectId- project ID
-     * @param start- since date
-     * @param end- before date
+     * @param projectId - project ID
+     * @param start - since date
+     * @param end - before date
      * @throws Error
      */
     public async getDailyUsage(projectId: string, start: Date, end: Date): Promise<ProjectsStorageBandwidthDaily> {
@@ -225,11 +251,6 @@ export class ProjectsApiGql extends BaseGql implements ProjectsApi {
                 date.setHours(0, 0, 0, 0);
                 return new DataStamp(el.value, date);
             }),
-            usage.settledBandwidthUsage.map(el => {
-                const date = new Date(el.date);
-                date.setHours(0, 0, 0, 0);
-                return new DataStamp(el.value, date);
-            }),
         );
     }
 
@@ -245,6 +266,21 @@ export class ProjectsApiGql extends BaseGql implements ProjectsApi {
             message: 'Can not get project salt',
             requestID: response.headers.get('x-request-id'),
         });
+    }
+
+    public async getEmissionImpact(projectID: string): Promise<Emission> {
+        const path = `${this.ROOT_PATH}/${projectID}/emission`;
+        const response = await this.http.get(path);
+        if (!response.ok) {
+            throw new APIError({
+                status: response.status,
+                message: 'Can not get project emission impact',
+                requestID: response.headers.get('x-request-id'),
+            });
+        }
+
+        const json = await response.json();
+        return json ? new Emission(json.storjImpact, json.hyperscalerImpact, json.savedTrees) : new Emission();
     }
 
     /**
@@ -266,7 +302,7 @@ export class ProjectsApiGql extends BaseGql implements ProjectsApi {
 
         const page = await response.json();
 
-        const projects: Project[] = page.projects.map((p: Project) =>
+        const projects: Project[] = page.projects.map(p =>
             new Project(
                 p.id,
                 p.name,
@@ -275,6 +311,8 @@ export class ProjectsApiGql extends BaseGql implements ProjectsApi {
                 p.ownerId,
                 false,
                 p.memberCount,
+                p.edgeURLOverrides,
+                getVersioning(p.versioning),
             ));
 
         return new ProjectsPage(projects, page.limit, page.offset, page.pageCount, page.currentPage, page.totalCount);

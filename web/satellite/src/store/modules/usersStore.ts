@@ -1,11 +1,13 @@
-// Copyright (C) 2022 Storx Labs, Inc.
+// Copyright (C) 2022 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 import { defineStore } from 'pinia';
-import { computed, reactive, readonly } from 'vue';
+import { computed, DeepReadonly, reactive, readonly } from 'vue';
 
 import {
+    ACCOUNT_SETUP_STEPS,
     DisableMFARequest,
+    OnboardingStep,
     SetUserSettingsData,
     UpdatedUser,
     User,
@@ -19,7 +21,7 @@ export const DEFAULT_USER_SETTINGS = readonly(new UserSettings());
 
 export class UsersState {
     public user: User = new User();
-    public settings: Readonly<UserSettings> = DEFAULT_USER_SETTINGS;
+    public settings: DeepReadonly<UserSettings> = DEFAULT_USER_SETTINGS;
     public userMFASecret = '';
     public userMFARecoveryCodes: string[] = [];
 }
@@ -34,6 +36,8 @@ export const useUsersStore = defineStore('users', () => {
     const shouldOnboard = computed(() => {
         return !state.settings.onboardingStart || (state.settings.onboardingStart && !state.settings.onboardingEnd);
     });
+
+    const noticeDismissal = computed(() => state.settings.noticeDismissal);
 
     const api: UsersApi = new AuthHttpApi();
 
@@ -52,6 +56,18 @@ export const useUsersStore = defineStore('users', () => {
         user.projectLimit ||= configStore.state.config.defaultProjectLimit;
 
         setUser(user);
+    }
+
+    function getShouldPromptPassphrase(isOwner: boolean): boolean {
+        const settings = state.settings;
+        const step = settings.onboardingStep as OnboardingStep || OnboardingStep.AccountTypeSelection;
+        if (settings.onboardingEnd || !settings.passphrasePrompt) {
+            return settings.passphrasePrompt;
+        }
+        if (!isOwner) {
+            return !ACCOUNT_SETUP_STEPS.includes(step);
+        }
+        return step !== OnboardingStep.EncryptionPassphrase && !ACCOUNT_SETUP_STEPS.includes(step);
     }
 
     async function disableUserMFA(request: DisableMFARequest): Promise<void> {
@@ -73,6 +89,13 @@ export const useUsersStore = defineStore('users', () => {
         state.user.mfaRecoveryCodeCount = codes.length;
     }
 
+    async function regenerateUserMFARecoveryCodes(code: { recoveryCode?: string, passcode?: string }): Promise<void> {
+        const codes = await api.regenerateUserMFARecoveryCodes(code.passcode, code.recoveryCode);
+
+        state.userMFARecoveryCodes = codes;
+        state.user.mfaRecoveryCodeCount = codes.length;
+    }
+
     async function getSettings(): Promise<UserSettings> {
         const settings = await api.getUserSettings();
 
@@ -89,8 +112,12 @@ export const useUsersStore = defineStore('users', () => {
         state.user = user;
     }
 
+    async function requestProjectLimitIncrease(limit: string): Promise<void> {
+        await api.requestProjectLimitIncrease(limit);
+    }
+
     // Does nothing. It is called on login screen, and we just subscribe to this action in dashboard wrappers.
-    function login(): void {}
+    function login(): void { }
 
     function clear() {
         state.user = new User();
@@ -103,16 +130,20 @@ export const useUsersStore = defineStore('users', () => {
         state,
         userName,
         shouldOnboard,
+        noticeDismissal,
         updateUser,
         getUser,
         disableUserMFA,
         enableUserMFA,
         generateUserMFASecret,
         generateUserMFARecoveryCodes,
+        regenerateUserMFARecoveryCodes,
+        getShouldPromptPassphrase,
         clear,
         login,
         setUser,
         updateSettings,
         getSettings,
+        requestProjectLimitIncrease,
     };
 });

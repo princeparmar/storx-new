@@ -15,7 +15,10 @@ import (
 )
 
 const (
+	eventInviteLinkClicked            = "Invite Link Clicked"
+	eventInviteLinkSignup             = "Invite Link Signup"
 	eventAccountCreated               = "Account Created"
+	eventAccountSetUp                 = "Account Set Up"
 	eventSignedIn                     = "Signed In"
 	eventProjectCreated               = "Project Created"
 	eventAccessGrantCreated           = "Access Grant Created"
@@ -85,6 +88,8 @@ const (
 	eventAccountFreezeWarning         = "Account Freeze Warning"
 	eventUnpaidLargeInvoice           = "Large Invoice Unpaid"
 	eventUnpaidStorjscanInvoice       = "Storjscan Invoice Unpaid"
+	eventPendingDeletionUnpaidInvoice = "Pending Deletion Invoice Open"
+	eventLegalHoldUnpaidInvoice       = "Legal Hold Invoice Open"
 	eventExpiredCreditNeedsRemoval    = "Expired Credit Needs Removal"
 	eventExpiredCreditRemoved         = "Expired Credit Removed"
 	eventProjectInvitationAccepted    = "Project Invitation Accepted"
@@ -93,6 +98,15 @@ const (
 	eventResendInviteClicked          = "Resend Invite Clicked"
 	eventCopyInviteLinkClicked        = "Copy Invite Link Clicked"
 	eventRemoveProjectMemberCLicked   = "Remove Member Clicked"
+	eventLimitIncreaseRequested       = "Limit Increase Requested"
+	eventUserSignUp                   = "User Sign Up"
+	eventPersonalInfoSubmitted        = "Personal Info Submitted"
+	eventBusinessInfoSubmitted        = "Business Info Submitted"
+	eventUseCaseSelected              = "Use Case Selected"
+	eventOnboardingCompleted          = "Onboarding Completed"
+	eventOnboardingAbandoned          = "Onboarding Abandoned"
+	eventPersonalSelected             = "Personal Selected"
+	eventBusinessSelected             = "Business Selected"
 )
 
 var (
@@ -100,11 +114,18 @@ var (
 	Error = errs.Class("analytics service")
 )
 
+// PlausibleConfig is a configuration struct for plausible analytics.
+type PlausibleConfig struct {
+	Domain    string `help:"the domain set up on plausible for the satellite" default:""`
+	ScriptUrl string `help:"the url of the plausible script" releaseDefault:"https://plausible.io/js/script.manual.js" devDefault:"https://plausible.io/js/script.local.manual.js"`
+}
+
 // Config is a configuration struct for analytics Service.
 type Config struct {
 	SegmentWriteKey string `help:"segment write key" default:""`
 	Enabled         bool   `help:"enable analytics reporting" default:"false"`
 	HubSpot         HubSpotConfig
+	Plausible       PlausibleConfig
 }
 
 // FreezeTracker is an interface for account freeze event tracking methods.
@@ -124,8 +145,20 @@ type FreezeTracker interface {
 	// TrackLargeUnpaidInvoice sends an event to Segment indicating that a user has not paid a large invoice.
 	TrackLargeUnpaidInvoice(invID string, userID uuid.UUID, email string)
 
+	// TrackViolationFrozenUnpaidInvoice sends an event to Segment indicating that a user has not paid an invoice
+	// and has been frozen due to violating ToS.
+	TrackViolationFrozenUnpaidInvoice(invID string, userID uuid.UUID, email string)
+
 	// TrackStorjscanUnpaidInvoice sends an event to Segment indicating that a user has not paid an invoice, but has storjscan transaction history.
 	TrackStorjscanUnpaidInvoice(invID string, userID uuid.UUID, email string)
+}
+
+// LimitRequestInfo holds data needed to request limit increase.
+type LimitRequestInfo struct {
+	ProjectName  string
+	LimitType    string
+	CurrentLimit string
+	DesiredLimit string
 }
 
 // Service for sending analytics.
@@ -165,7 +198,9 @@ func NewService(log *zap.Logger, config Config, satelliteName string) *Service {
 		eventApplyNewCouponClicked, eventCreditCardRemoved, eventCouponCodeApplied, eventInvoiceDownloaded, eventCreditCardAddedFromBilling,
 		eventStorjTokenAddedFromBilling, eventAddFundsClicked, eventProjectMembersInviteSent, eventError, eventProjectNameUpdated, eventProjectDescriptionUpdated,
 		eventProjectStorageLimitUpdated, eventProjectBandwidthLimitUpdated, eventProjectInvitationAccepted, eventProjectInvitationDeclined,
-		eventGalleryViewClicked, eventResendInviteClicked, eventRemoveProjectMemberCLicked, eventCopyInviteLinkClicked} {
+		eventGalleryViewClicked, eventResendInviteClicked, eventRemoveProjectMemberCLicked, eventCopyInviteLinkClicked, eventUserSignUp,
+		eventPersonalInfoSubmitted, eventBusinessInfoSubmitted, eventUseCaseSelected, eventOnboardingCompleted, eventOnboardingAbandoned,
+		eventPersonalSelected, eventBusinessSelected} {
 		service.clientEvents[name] = true
 	}
 
@@ -214,6 +249,22 @@ type TrackCreateUserFields struct {
 	Referrer         string
 	HubspotUTK       string
 	UserAgent        string
+	SignupCaptcha    *float64
+}
+
+// TrackOnboardingInfoFields contains input data entered after first login.
+type TrackOnboardingInfoFields struct {
+	ID               uuid.UUID
+	FullName         string
+	Email            string
+	Type             UserType
+	EmployeeCount    string
+	CompanyName      string
+	StorageNeeds     string
+	JobTitle         string
+	StorageUseCase   string
+	FunctionalArea   string
+	HaveSalesContact bool
 }
 
 func (service *Service) enqueueMessage(message segment.Message) {
@@ -246,7 +297,6 @@ func (service *Service) TrackCreateUser(fields TrackCreateUserFields) {
 	traits.SetFirstName(firstName)
 	traits.SetLastName(lastName)
 	traits.SetEmail(fields.Email)
-	traits.Set("lifecyclestage", "other")
 	traits.Set("origin_header", fields.OriginHeader)
 	traits.Set("signup_referrer", fields.Referrer)
 	traits.Set("account_created", true)
@@ -271,6 +321,9 @@ func (service *Service) TrackCreateUser(fields TrackCreateUserFields) {
 	props.Set("origin_header", fields.OriginHeader)
 	props.Set("signup_referrer", fields.Referrer)
 	props.Set("account_created", true)
+	if fields.SignupCaptcha != nil {
+		props.Set("signup_captcha", &fields.SignupCaptcha)
+	}
 
 	if fields.Type == Professional {
 		props.Set("company_size", fields.EmployeeCount)
@@ -286,7 +339,67 @@ func (service *Service) TrackCreateUser(fields TrackCreateUserFields) {
 		Properties:  props,
 	})
 
+	if fields.FullName == "" {
+		// the new minimal signup flow does not require a name.
+		service.hubspot.EnqueueCreateUserMinimal(fields)
+		return
+	}
 	service.hubspot.EnqueueCreateUser(fields)
+}
+
+// TrackUserOnboardingInfo sends onboarding info to Hubspot.
+func (service *Service) TrackUserOnboardingInfo(fields TrackOnboardingInfoFields) {
+	if !service.config.Enabled {
+		return
+	}
+
+	fullName := fields.FullName
+	names := strings.SplitN(fullName, " ", 2)
+
+	var firstName string
+	var lastName string
+
+	if len(names) > 1 {
+		firstName = names[0]
+		lastName = names[1]
+	} else {
+		firstName = fullName
+	}
+
+	traits := segment.NewTraits()
+	traits.SetFirstName(firstName)
+	traits.SetLastName(lastName)
+	traits.SetEmail(fields.Email)
+	if fields.Type == Professional {
+		traits.Set("have_sales_contact", fields.HaveSalesContact)
+	}
+
+	service.enqueueMessage(segment.Identify{
+		UserId: fields.ID.String(),
+		Traits: traits,
+	})
+
+	props := segment.NewProperties()
+	props.Set("email", fields.Email)
+	props.Set("name", fields.FullName)
+	props.Set("account_type", fields.Type)
+	props.Set("storage_use", fields.StorageUseCase)
+
+	if fields.Type == Professional {
+		props.Set("company_size", fields.EmployeeCount)
+		props.Set("company_name", fields.CompanyName)
+		props.Set("job_title", fields.JobTitle)
+		props.Set("storage_needs", fields.StorageNeeds)
+		props.Set("functional_area", fields.FunctionalArea)
+	}
+
+	service.enqueueMessage(segment.Track{
+		UserId:     fields.ID.String(),
+		Event:      service.satelliteName + " " + eventAccountSetUp,
+		Properties: props,
+	})
+
+	service.hubspot.EnqueueUserOnboardingInfo(fields)
 }
 
 // TrackSignedIn sends an "Signed In" event to Segment.
@@ -311,10 +424,6 @@ func (service *Service) TrackSignedIn(userID uuid.UUID, email string) {
 		Event:      service.satelliteName + " " + eventSignedIn,
 		Properties: props,
 	})
-
-	service.hubspot.EnqueueEvent(email, service.satelliteName+"_"+eventSignedIn, map[string]interface{}{
-		"userid": userID.String(),
-	})
 }
 
 // TrackProjectCreated sends an "Project Created" event to Segment.
@@ -333,12 +442,6 @@ func (service *Service) TrackProjectCreated(userID uuid.UUID, email string, proj
 		Event:      service.satelliteName + " " + eventProjectCreated,
 		Properties: props,
 	})
-
-	service.hubspot.EnqueueEvent(email, service.satelliteName+"_"+eventProjectCreated, map[string]interface{}{
-		"userid":        userID.String(),
-		"project_count": currentProjectCount,
-		"project_id":    projectID.String(),
-	})
 }
 
 // TrackAccountFrozen sends an account frozen event to Segment.
@@ -353,6 +456,29 @@ func (service *Service) TrackAccountFrozen(userID uuid.UUID, email string) {
 	service.enqueueMessage(segment.Track{
 		UserId:     userID.String(),
 		Event:      service.satelliteName + " " + eventAccountFrozen,
+		Properties: props,
+	})
+}
+
+// TrackRequestLimitIncrease sends a limit increase request to Segment.
+func (service *Service) TrackRequestLimitIncrease(userID uuid.UUID, email string, info LimitRequestInfo) {
+	if !service.config.Enabled {
+		return
+	}
+
+	props := segment.NewProperties()
+	props.Set("email", email)
+	props.Set("satellite", service.satelliteName)
+	if info.ProjectName != "" {
+		props.Set("project", info.ProjectName)
+	}
+	props.Set("type", info.LimitType)
+	props.Set("currentLimit", info.CurrentLimit)
+	props.Set("desiredLimit", info.DesiredLimit)
+
+	service.enqueueMessage(segment.Track{
+		UserId:     userID.String(),
+		Event:      service.satelliteName + " " + eventLimitIncreaseRequested,
 		Properties: props,
 	})
 }
@@ -422,6 +548,41 @@ func (service *Service) TrackLargeUnpaidInvoice(invID string, userID uuid.UUID, 
 	})
 }
 
+// TrackViolationFrozenUnpaidInvoice sends an event to Segment indicating that a violation frozen user has not paid an invoice.
+func (service *Service) TrackViolationFrozenUnpaidInvoice(invID string, userID uuid.UUID, email string) {
+	if !service.config.Enabled {
+		return
+	}
+
+	props := segment.NewProperties()
+	props.Set("email", email)
+	props.Set("invoice", invID)
+
+	service.enqueueMessage(segment.Track{
+		UserId:     userID.String(),
+		Event:      service.satelliteName + " " + eventPendingDeletionUnpaidInvoice,
+		Properties: props,
+	})
+}
+
+// TrackLegalHoldUnpaidInvoice sends an event to Segment indicating that a user has not paid an invoice
+// but is in legal hold.
+func (service *Service) TrackLegalHoldUnpaidInvoice(invID string, userID uuid.UUID, email string) {
+	if !service.config.Enabled {
+		return
+	}
+
+	props := segment.NewProperties()
+	props.Set("email", email)
+	props.Set("invoice", invID)
+
+	service.enqueueMessage(segment.Track{
+		UserId:     userID.String(),
+		Event:      service.satelliteName + " " + eventLegalHoldUnpaidInvoice,
+		Properties: props,
+	})
+}
+
 // TrackStorjscanUnpaidInvoice sends an event to Segment indicating that a user has not paid an invoice, but has storjscan transaction history.
 func (service *Service) TrackStorjscanUnpaidInvoice(invID string, userID uuid.UUID, email string) {
 	if !service.config.Enabled {
@@ -453,10 +614,6 @@ func (service *Service) TrackAccessGrantCreated(userID uuid.UUID, email string) 
 		Event:      service.satelliteName + " " + eventAccessGrantCreated,
 		Properties: props,
 	})
-
-	service.hubspot.EnqueueEvent(email, service.satelliteName+"_"+eventAccessGrantCreated, map[string]interface{}{
-		"userid": userID.String(),
-	})
 }
 
 // TrackAccountVerified sends an "Account Verified" event to Segment.
@@ -480,10 +637,6 @@ func (service *Service) TrackAccountVerified(userID uuid.UUID, email string) {
 		UserId:     userID.String(),
 		Event:      service.satelliteName + " " + eventAccountVerified,
 		Properties: props,
-	})
-
-	service.hubspot.EnqueueEvent(email, service.satelliteName+"_"+eventAccountVerified, map[string]interface{}{
-		"userid": userID.String(),
 	})
 }
 
@@ -512,15 +665,11 @@ func (service *Service) TrackEvent(eventName string, userID uuid.UUID, email str
 		Event:      service.satelliteName + " " + eventName,
 		Properties: props,
 	})
-
-	service.hubspot.EnqueueEvent(email, service.satelliteName+"_"+eventName, map[string]interface{}{
-		"userid": userID.String(),
-	})
 }
 
 // TrackErrorEvent sends an arbitrary error event associated with user ID to Segment.
 // It is used for tracking occurrences of client-side errors.
-func (service *Service) TrackErrorEvent(userID uuid.UUID, email string, source string) {
+func (service *Service) TrackErrorEvent(userID uuid.UUID, email, source string) {
 	if !service.config.Enabled {
 		return
 	}
@@ -558,11 +707,6 @@ func (service *Service) TrackLinkEvent(eventName string, userID uuid.UUID, email
 		Event:      service.satelliteName + " " + eventName,
 		Properties: props,
 	})
-
-	service.hubspot.EnqueueEvent(email, service.satelliteName+"_"+eventName, map[string]interface{}{
-		"userid": userID.String(),
-		"link":   link,
-	})
 }
 
 // TrackCreditCardAdded sends an "Credit Card Added" event to Segment.
@@ -579,7 +723,6 @@ func (service *Service) TrackCreditCardAdded(userID uuid.UUID, email string) {
 		Event:      service.satelliteName + " " + eventCreditCardAdded,
 		Properties: props,
 	})
-
 }
 
 // PageVisitEvent sends a page visit event associated with user ID to Segment.
@@ -600,7 +743,6 @@ func (service *Service) PageVisitEvent(pageName string, userID uuid.UUID, email 
 		Name:       "Page Requested",
 		Properties: props,
 	})
-
 }
 
 // TrackProjectLimitError sends an "Project Limit Error" event to Segment.
@@ -617,7 +759,6 @@ func (service *Service) TrackProjectLimitError(userID uuid.UUID, email string) {
 		Event:      service.satelliteName + " " + eventProjectLimitError,
 		Properties: props,
 	})
-
 }
 
 // TrackStorjTokenAdded sends an "Storj Token Added" event to Segment.
@@ -634,7 +775,6 @@ func (service *Service) TrackStorjTokenAdded(userID uuid.UUID, email string) {
 		Event:      service.satelliteName + " " + eventStorjTokenAdded,
 		Properties: props,
 	})
-
 }
 
 // TrackProjectMemberAddition sends an "Project Member Added" event to Segment.
@@ -651,7 +791,6 @@ func (service *Service) TrackProjectMemberAddition(userID uuid.UUID, email strin
 		Event:      service.satelliteName + " " + eventProjectMemberAdded,
 		Properties: props,
 	})
-
 }
 
 // TrackProjectMemberDeletion sends an "Project Member Deleted" event to Segment.
@@ -668,7 +807,6 @@ func (service *Service) TrackProjectMemberDeletion(userID uuid.UUID, email strin
 		Event:      service.satelliteName + " " + eventProjectMemberDeleted,
 		Properties: props,
 	})
-
 }
 
 // TrackExpiredCreditNeedsRemoval sends an "Expired Credit Needs Removal" event to Segment.
@@ -701,6 +839,38 @@ func (service *Service) TrackExpiredCreditRemoved(userID uuid.UUID, customerID, 
 	service.enqueueMessage(segment.Track{
 		UserId:     userID.String(),
 		Event:      service.satelliteName + " " + eventExpiredCreditRemoved,
+		Properties: props,
+	})
+}
+
+// TrackInviteLinkSignup sends an "Invite Link Signup" event to Segment.
+func (service *Service) TrackInviteLinkSignup(inviter, invitee string) {
+	if !service.config.Enabled {
+		return
+	}
+
+	props := segment.NewProperties()
+	props.Set("inviter", inviter)
+	props.Set("invitee", invitee)
+
+	service.enqueueMessage(segment.Track{
+		Event:      service.satelliteName + " " + eventInviteLinkSignup,
+		Properties: props,
+	})
+}
+
+// TrackInviteLinkClicked sends an "Invite Link Clicked" event to Segment.
+func (service *Service) TrackInviteLinkClicked(inviter, invitee string) {
+	if !service.config.Enabled {
+		return
+	}
+
+	props := segment.NewProperties()
+	props.Set("inviter", inviter)
+	props.Set("invitee", invitee)
+
+	service.enqueueMessage(segment.Track{
+		Event:      service.satelliteName + " " + eventInviteLinkClicked,
 		Properties: props,
 	})
 }

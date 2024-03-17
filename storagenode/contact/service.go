@@ -210,7 +210,7 @@ func (service *Service) pingSatelliteOnce(ctx context.Context, id storj.NodeID) 
 		}
 	}
 	if resp.PingErrorMessage != "" {
-		service.log.Warn("Your node is still considered to be online but encountered an error.", zap.String("address", self.Address), zap.Stringer("Satellite ID", id), zap.String("Error", resp.GetPingErrorMessage()))
+		service.log.Warn("Your node is still considered to be online but encountered an error.", zap.Stringer("Satellite ID", id), zap.String("Error", resp.GetPingErrorMessage()))
 	}
 	return nil
 }
@@ -227,7 +227,7 @@ func (service *Service) RequestPingMeQUIC(ctx context.Context) (stats *QUICStats
 	}
 
 	// Shuffle the satellites
-	// All the Storagenodes get a default list of trusted satellites (The Storj DCS ones) and
+	// All the Storagenodes get a default list of trusted satellites (The Storj ones) and
 	// most of the SN operators don't change the list, hence if it always starts with
 	// the same satellite we are going to put always more pressure on the first trusted
 	// satellite on the list. So we iterate over the list of trusted satellites in a

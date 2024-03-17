@@ -36,6 +36,37 @@ type ObjectEntry struct {
 	Encryption storj.EncryptionParameters
 }
 
+// StreamVersionID returns byte representation of object stream version id.
+func (entry ObjectEntry) StreamVersionID() StreamVersionID {
+	return newStreamVersionID(entry.Version, entry.StreamID)
+}
+
+// Less implements sorting on object entries.
+func (entry ObjectEntry) Less(other ObjectEntry) bool {
+	return ObjectStream{
+		ObjectKey: entry.ObjectKey,
+		Version:   entry.Version,
+		StreamID:  entry.StreamID,
+	}.Less(ObjectStream{
+		ObjectKey: other.ObjectKey,
+		Version:   other.Version,
+		StreamID:  other.StreamID,
+	})
+}
+
+// LessVersionAsc implements sorting on object entries.
+func (entry ObjectEntry) LessVersionAsc(other ObjectEntry) bool {
+	return ObjectStream{
+		ObjectKey: entry.ObjectKey,
+		Version:   entry.Version,
+		StreamID:  entry.StreamID,
+	}.LessVersionAsc(ObjectStream{
+		ObjectKey: other.ObjectKey,
+		Version:   other.Version,
+		StreamID:  other.StreamID,
+	})
+}
+
 // ObjectsIterator iterates over a sequence of ObjectEntry items.
 type ObjectsIterator interface {
 	Next(ctx context.Context, item *ObjectEntry) bool
@@ -54,13 +85,6 @@ type StreamIDCursor struct {
 	StreamID uuid.UUID
 }
 
-// IteratePendingObjectsByKey contains arguments necessary for listing pending objects by ObjectKey.
-type IteratePendingObjectsByKey struct {
-	ObjectLocation
-	BatchSize int
-	Cursor    StreamIDCursor
-}
-
 // IterateObjectsWithStatus contains arguments necessary for listing objects in a bucket.
 type IterateObjectsWithStatus struct {
 	ProjectID             uuid.UUID
@@ -69,7 +93,7 @@ type IterateObjectsWithStatus struct {
 	BatchSize             int
 	Prefix                ObjectKey
 	Cursor                IterateCursor
-	Status                ObjectStatus
+	Pending               bool
 	IncludeCustomMetadata bool
 	IncludeSystemMetadata bool
 }
@@ -80,7 +104,18 @@ func (db *DB) IterateObjectsAllVersionsWithStatus(ctx context.Context, opts Iter
 	if err = opts.Verify(); err != nil {
 		return err
 	}
-	return iterateAllVersionsWithStatus(ctx, db, opts, fn)
+	return iterateAllVersionsWithStatusDescending(ctx, db, opts, fn)
+}
+
+// IterateObjectsAllVersionsWithStatusAscending iterates through all versions of all objects with specified status. Ordered from oldest to latest.
+// TODO this method was copied (and renamed) from v1.95.1 as a workaround for issues with metabase.ListObject performance. It should be removed
+// when problem with metabase.ListObject will be fixed.
+func (db *DB) IterateObjectsAllVersionsWithStatusAscending(ctx context.Context, opts IterateObjectsWithStatus, fn func(context.Context, ObjectsIterator) error) (err error) {
+	defer mon.Task()(&ctx)(&err)
+	if err = opts.Verify(); err != nil {
+		return err
+	}
+	return iterateAllVersionsWithStatusAscending(ctx, db, opts, fn)
 }
 
 // Verify verifies get object request fields.
@@ -91,29 +126,6 @@ func (opts *IterateObjectsWithStatus) Verify() error {
 	case opts.BucketName == "":
 		return ErrInvalidRequest.New("BucketName missing")
 	case opts.BatchSize < 0:
-		return ErrInvalidRequest.New("BatchSize is negative")
-	case !(opts.Status == Pending || opts.Status == Committed):
-		return ErrInvalidRequest.New("Status %v is not supported", opts.Status)
-	}
-	return nil
-}
-
-// IteratePendingObjectsByKey iterates through all streams of pending objects with the same ObjectKey.
-func (db *DB) IteratePendingObjectsByKey(ctx context.Context, opts IteratePendingObjectsByKey, fn func(context.Context, ObjectsIterator) error) (err error) {
-	defer mon.Task()(&ctx)(&err)
-
-	if err := opts.Verify(); err != nil {
-		return err
-	}
-	return iteratePendingObjectsByKey(ctx, db, opts, fn)
-}
-
-// Verify verifies get object request fields.
-func (opts *IteratePendingObjectsByKey) Verify() error {
-	if err := opts.ObjectLocation.Verify(); err != nil {
-		return err
-	}
-	if opts.BatchSize < 0 {
 		return ErrInvalidRequest.New("BatchSize is negative")
 	}
 	return nil

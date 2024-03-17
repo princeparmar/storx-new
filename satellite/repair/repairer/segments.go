@@ -105,7 +105,7 @@ type SegmentRepairer struct {
 	nowFn                            func() time.Time
 	OnTestingCheckSegmentAlteredHook func()
 	OnTestingPiecesReportHook        func(pieces FetchResultReport)
-	placementRules                   overlay.PlacementRules
+	placements                       nodeselection.PlacementDefinitions
 }
 
 // NewSegmentRepairer creates a new instance of SegmentRepairer.
@@ -120,7 +120,7 @@ func NewSegmentRepairer(
 	overlay *overlay.Service,
 	reporter audit.Reporter,
 	ecRepairer *ECRepairer,
-	placementRules overlay.PlacementRules,
+	placements nodeselection.PlacementDefinitions,
 	repairOverrides checker.RepairOverrides,
 	config Config,
 ) *SegmentRepairer {
@@ -152,7 +152,7 @@ func NewSegmentRepairer(
 		reputationUpdateEnabled:    config.ReputationUpdateEnabled,
 		doDeclumping:               config.DoDeclumping,
 		doPlacementCheck:           config.DoPlacementCheck,
-		placementRules:             placementRules,
+		placements:                 placements,
 
 		nowFn: time.Now,
 	}
@@ -164,6 +164,7 @@ func NewSegmentRepairer(
 func (repairer *SegmentRepairer) Repair(ctx context.Context, queueSegment *queue.InjuredSegment) (shouldDelete bool, err error) {
 	defer mon.Task()(&ctx, queueSegment.StreamID.String(), queueSegment.Position.Encode())(&err)
 
+	log := repairer.log.With(zap.Stringer("Stream ID", queueSegment.StreamID), zap.Uint64("Position", queueSegment.Position.Encode()))
 	segment, err := repairer.metabase.GetSegmentByPosition(ctx, metabase.GetSegmentByPosition{
 		StreamID: queueSegment.StreamID,
 		Position: queueSegment.Position,
@@ -172,7 +173,7 @@ func (repairer *SegmentRepairer) Repair(ctx context.Context, queueSegment *queue
 		if metabase.ErrSegmentNotFound.Has(err) {
 			mon.Meter("repair_unnecessary").Mark(1)            //mon:locked
 			mon.Meter("segment_deleted_before_repair").Mark(1) //mon:locked
-			repairer.log.Debug("segment was deleted")
+			log.Info("segment was deleted")
 			return true, nil
 		}
 		return false, metainfoGetError.Wrap(err)
@@ -186,7 +187,7 @@ func (repairer *SegmentRepairer) Repair(ctx context.Context, queueSegment *queue
 	if segment.Expired(repairer.nowFn()) {
 		mon.Meter("repair_unnecessary").Mark(1)
 		mon.Meter("segment_expired_before_repair").Mark(1)
-		repairer.log.Debug("segment has expired", zap.Stringer("Stream ID", segment.StreamID), zap.Uint64("Position", queueSegment.Position.Encode()))
+		log.Info("segment has expired")
 		return true, nil
 	}
 
@@ -209,26 +210,31 @@ func (repairer *SegmentRepairer) Repair(ctx context.Context, queueSegment *queue
 	mon.IntVal("repair_segment_size").Observe(int64(segment.EncryptedSize)) //mon:locked
 	stats.repairSegmentSize.Observe(int64(segment.EncryptedSize))
 
-	piecesCheck, err := repairer.classifySegmentPieces(ctx, segment)
-	if err != nil {
-		return false, err
+	allNodeIDs := make([]storj.NodeID, len(segment.Pieces))
+	for i, p := range segment.Pieces {
+		allNodeIDs[i] = p.StorageNode
 	}
 
+	selectedNodes, err := repairer.overlay.GetNodes(ctx, allNodeIDs)
+	if err != nil {
+		return false, overlayQueryError.New("error identifying missing pieces: %w", err)
+	}
+	if len(selectedNodes) != len(segment.Pieces) {
+		log.Error("GetNodes returned an invalid result", zap.Any("pieces", segment.Pieces), zap.Any("selectedNodes", selectedNodes))
+		return false, overlayQueryError.New("GetNodes returned an invalid result")
+	}
 	pieces := segment.Pieces
+	piecesCheck := repair.ClassifySegmentPieces(pieces, selectedNodes, repairer.excludedCountryCodes, repairer.doPlacementCheck, repairer.doDeclumping, repairer.placements[segment.Placement])
 
-	numRetrievable := len(pieces) - len(piecesCheck.MissingPiecesSet)
-	numHealthy := len(pieces) - len(piecesCheck.MissingPiecesSet) - piecesCheck.NumUnhealthyRetrievable
 	// irreparable segment
-	if numRetrievable < int(segment.Redundancy.RequiredShares) {
+	if piecesCheck.Retrievable.Count() < int(segment.Redundancy.RequiredShares) {
 		mon.Counter("repairer_segments_below_min_req").Inc(1) //mon:locked
 		stats.repairerSegmentsBelowMinReq.Inc(1)
 		mon.Meter("repair_nodes_unavailable").Mark(1) //mon:locked
 		stats.repairerNodesUnavailable.Mark(1)
 
-		repairer.log.Warn("irreparable segment",
-			zap.String("StreamID", queueSegment.StreamID.String()),
-			zap.Uint64("Position", queueSegment.Position.Encode()),
-			zap.Int("piecesAvailable", numRetrievable),
+		log.Warn("irreparable segment",
+			zap.Int("piecesAvailable", piecesCheck.Retrievable.Count()),
 			zap.Int16("piecesRequired", segment.Redundancy.RequiredShares),
 		)
 		return false, nil
@@ -251,75 +257,64 @@ func (repairer *SegmentRepairer) Repair(ctx context.Context, queueSegment *queue
 		repairThreshold = overrideValue
 	}
 
-	// repair not needed
-	if numHealthy-piecesCheck.NumHealthyInExcludedCountries > int(repairThreshold) {
-		// remove pieces out of placement without repairing as we are above repair threshold
-		if len(piecesCheck.OutOfPlacementPiecesSet) > 0 {
+	if piecesCheck.Healthy.Count() > int(repairThreshold) {
+		// No repair is needed (note Healthy does not include pieces in ForcingRepair).
 
-			var outOfPlacementPieces metabase.Pieces
+		var dropPieces metabase.Pieces
+		if piecesCheck.ForcingRepair.Count() > 0 {
+			// No repair is needed, but remove forcing-repair pieces without a repair operation,
+			// as we will still be above the repair threshold.
 			for _, piece := range pieces {
-				if _, ok := piecesCheck.OutOfPlacementPiecesSet[piece.Number]; ok {
-					outOfPlacementPieces = append(outOfPlacementPieces, piece)
+				if piecesCheck.ForcingRepair.Contains(int(piece.Number)) {
+					dropPieces = append(dropPieces, piece)
 				}
 			}
+			if len(dropPieces) > 0 {
+				newPieces, err := segment.Pieces.Update(nil, dropPieces)
+				if err != nil {
+					return false, metainfoPutError.Wrap(err)
+				}
 
-			newPieces, err := segment.Pieces.Update(nil, outOfPlacementPieces)
-			if err != nil {
-				return false, metainfoPutError.Wrap(err)
+				err = repairer.metabase.UpdateSegmentPieces(ctx, metabase.UpdateSegmentPieces{
+					StreamID: segment.StreamID,
+					Position: segment.Position,
+
+					OldPieces:     segment.Pieces,
+					NewRedundancy: segment.Redundancy,
+					NewPieces:     newPieces,
+
+					NewRepairedAt: time.Now(),
+				})
+				if err != nil {
+					return false, metainfoPutError.Wrap(err)
+				}
+
+				mon.Meter("dropped_undesirable_pieces_without_repair").Mark(len(dropPieces))
 			}
-
-			err = repairer.metabase.UpdateSegmentPieces(ctx, metabase.UpdateSegmentPieces{
-				StreamID: segment.StreamID,
-				Position: segment.Position,
-
-				OldPieces:     segment.Pieces,
-				NewRedundancy: segment.Redundancy,
-				NewPieces:     newPieces,
-
-				NewRepairedAt: time.Now(),
-			})
-			if err != nil {
-				return false, metainfoPutError.Wrap(err)
-			}
-
-			mon.Meter("dropped_out_of_placement_pieces").Mark(len(piecesCheck.OutOfPlacementPiecesSet))
 		}
 
 		mon.Meter("repair_unnecessary").Mark(1) //mon:locked
 		stats.repairUnnecessary.Mark(1)
-		repairer.log.Debug("segment above repair threshold", zap.Int("numHealthy", numHealthy), zap.Int32("repairThreshold", repairThreshold),
-			zap.Int("numClumped", len(piecesCheck.ClumpedPiecesSet)), zap.Int("numOffPieces", len(piecesCheck.OutOfPlacementPiecesSet)))
+		log.Info("segment above repair threshold", zap.Int("numHealthy", piecesCheck.Healthy.Count()), zap.Int32("repairThreshold", repairThreshold),
+			zap.Int("numClumped", piecesCheck.Clumped.Count()), zap.Int("numExiting", piecesCheck.Exiting.Count()), zap.Int("numOffPieces", piecesCheck.OutOfPlacement.Count()),
+			zap.Int("numExcluded", piecesCheck.InExcludedCountry.Count()), zap.Int("droppedPieces", len(dropPieces)))
 		return true, nil
 	}
 
 	healthyRatioBeforeRepair := 0.0
 	if segment.Redundancy.TotalShares != 0 {
-		healthyRatioBeforeRepair = float64(numHealthy) / float64(segment.Redundancy.TotalShares)
+		healthyRatioBeforeRepair = float64(piecesCheck.Healthy.Count()) / float64(segment.Redundancy.TotalShares)
 	}
 	mon.FloatVal("healthy_ratio_before_repair").Observe(healthyRatioBeforeRepair) //mon:locked
 	stats.healthyRatioBeforeRepair.Observe(healthyRatioBeforeRepair)
 
-	lostPiecesSet := piecesCheck.MissingPiecesSet
-
-	var retrievablePieces metabase.Pieces
-	unhealthyPieces := make(map[metabase.Piece]struct{})
-	healthySet := make(map[int32]struct{})
-	// Populate retrievablePieces with all pieces from the segment except those correlating to indices in lostPieces.
-	// Populate unhealthyPieces with all pieces in lostPieces, clumpedPieces or outOfPlacementPieces.
+	// Create the order limits for the GET_REPAIR action
+	retrievablePieces := make(metabase.Pieces, 0, piecesCheck.Retrievable.Count())
 	for _, piece := range pieces {
-		if lostPiecesSet[piece.Number] {
-			unhealthyPieces[piece] = struct{}{}
-		} else {
+		if piecesCheck.Retrievable.Contains(int(piece.Number)) {
 			retrievablePieces = append(retrievablePieces, piece)
-			if piecesCheck.ClumpedPiecesSet[piece.Number] || piecesCheck.OutOfPlacementPiecesSet[piece.Number] {
-				unhealthyPieces[piece] = struct{}{}
-			} else {
-				healthySet[int32(piece.Number)] = struct{}{}
-			}
 		}
 	}
-
-	// Create the order limits for the GET_REPAIR action
 	getOrderLimits, getPrivateKey, cachedNodesInfo, err := repairer.orders.CreateGetRepairOrderLimits(ctx, segment, retrievablePieces)
 	if err != nil {
 		if orders.ErrDownloadFailedNotEnoughPieces.Has(err) {
@@ -328,9 +323,7 @@ func (repairer *SegmentRepairer) Repair(ctx context.Context, queueSegment *queue
 			mon.Meter("repair_nodes_unavailable").Mark(1) //mon:locked
 			stats.repairerNodesUnavailable.Mark(1)
 
-			repairer.log.Warn("irreparable segment: too many nodes offline",
-				zap.String("StreamID", queueSegment.StreamID.String()),
-				zap.Uint64("Position", queueSegment.Position.Encode()),
+			log.Warn("irreparable segment: too many nodes offline",
 				zap.Int("piecesAvailable", len(retrievablePieces)),
 				zap.Int16("piecesRequired", segment.Redundancy.RequiredShares),
 				zap.Error(err),
@@ -339,40 +332,68 @@ func (repairer *SegmentRepairer) Repair(ctx context.Context, queueSegment *queue
 		return false, orderLimitFailureError.New("could not create GET_REPAIR order limits: %w", err)
 	}
 
-	// Double check for retrievable pieces which became irretrievable inside CreateGetRepairOrderLimits
-	// Add them to unhealthyPieces.
+	// Double check for retrievable pieces which were recognized as irretrievable during the
+	// call to CreateGetRepairOrderLimits. Add or remove them from the appropriate sets.
 	for _, piece := range retrievablePieces {
 		if getOrderLimits[piece.Number] == nil {
-			unhealthyPieces[piece] = struct{}{}
+			piecesCheck.Missing.Include(int(piece.Number))
+			piecesCheck.Unhealthy.Include(int(piece.Number))
+
+			piecesCheck.Healthy.Exclude(int(piece.Number))
+			piecesCheck.Retrievable.Exclude(int(piece.Number))
+			piecesCheck.UnhealthyRetrievable.Exclude(int(piece.Number))
 		}
 	}
-	numHealthy = len(healthySet)
 
 	var requestCount int
-	var minSuccessfulNeeded int
 	{
-		totalNeeded := math.Ceil(float64(redundancy.OptimalThreshold()) * repairer.multiplierOptimalThreshold)
-		requestCount = int(totalNeeded) + piecesCheck.NumHealthyInExcludedCountries
-		if requestCount > redundancy.TotalCount() {
-			requestCount = redundancy.TotalCount()
+		totalNeeded := int(math.Ceil(float64(redundancy.OptimalThreshold()) * repairer.multiplierOptimalThreshold))
+		if totalNeeded > redundancy.TotalCount() {
+			totalNeeded = redundancy.TotalCount()
 		}
-		requestCount -= numHealthy
-		minSuccessfulNeeded = redundancy.OptimalThreshold() - numHealthy + piecesCheck.NumHealthyInExcludedCountries
+		requestCount = totalNeeded - piecesCheck.Healthy.Count()
+	}
+	minSuccessfulNeeded := redundancy.OptimalThreshold() - piecesCheck.Healthy.Count()
+
+	var alreadySelected []*nodeselection.SelectedNode
+	for i := range selectedNodes {
+		alreadySelected = append(alreadySelected, &selectedNodes[i])
 	}
 
 	// Request Overlay for n-h new storage nodes
 	request := overlay.FindStorageNodesRequest{
-		RequestedCount: requestCount,
-		ExcludedIDs:    piecesCheck.ExcludeNodeIDs,
-		Placement:      segment.Placement,
+		RequestedCount:  requestCount,
+		AlreadySelected: alreadySelected,
+		Placement:       segment.Placement,
 	}
+
 	newNodes, err := repairer.overlay.FindStorageNodesForUpload(ctx, request)
 	if err != nil {
 		return false, overlayQueryError.Wrap(err)
 	}
 
-	// Create the order limits for the PUT_REPAIR action
-	putLimits, putPrivateKey, err := repairer.orders.CreatePutRepairOrderLimits(ctx, segment, getOrderLimits, healthySet, newNodes, repairer.multiplierOptimalThreshold, piecesCheck.NumHealthyInExcludedCountries)
+	// Create the order limits for the PUT_REPAIR action. We want to keep pieces in Healthy
+	// as well as pieces in InExcludedCountry (our policy is to let those nodes keep the
+	// pieces they have, as long as they are kept intact and retrievable).
+	maxToKeep := int(segment.Redundancy.TotalShares) - len(newNodes)
+	toKeep := map[uint16]struct{}{}
+
+	// TODO how to avoid this two loops
+	for _, piece := range pieces {
+		if piecesCheck.Healthy.Contains(int(piece.Number)) {
+			toKeep[piece.Number] = struct{}{}
+		}
+	}
+	for _, piece := range pieces {
+		if piecesCheck.InExcludedCountry.Contains(int(piece.Number)) {
+			if len(toKeep) >= maxToKeep {
+				break
+			}
+			toKeep[piece.Number] = struct{}{}
+		}
+	}
+
+	putLimits, putPrivateKey, err := repairer.orders.CreatePutRepairOrderLimits(ctx, segment, getOrderLimits, toKeep, newNodes)
 	if err != nil {
 		return false, orderLimitFailureError.New("could not create PUT_REPAIR order limits: %w", err)
 	}
@@ -394,19 +415,19 @@ func (repairer *SegmentRepairer) Repair(ctx context.Context, queueSegment *queue
 	if checkSegmentError != nil {
 		if segmentDeletedError.Has(checkSegmentError) {
 			// mon.Meter("segment_deleted_during_repair").Mark(1) //mon:locked
-			repairer.log.Debug("segment deleted during Repair")
+			log.Info("segment deleted during Repair")
 			return true, nil
 		}
 		if segmentModifiedError.Has(checkSegmentError) {
 			// mon.Meter("segment_modified_during_repair").Mark(1) //mon:locked
-			repairer.log.Debug("segment modified during Repair")
+			log.Info("segment modified during Repair")
 			return true, nil
 		}
 		return false, segmentVerificationError.Wrap(checkSegmentError)
 	}
 
 	if len(piecesReport.Contained) > 0 {
-		repairer.log.Debug("unexpected contained pieces during repair", zap.Int("count", len(piecesReport.Contained)))
+		log.Debug("unexpected contained pieces during repair", zap.Int("count", len(piecesReport.Contained)))
 	}
 
 	if err != nil {
@@ -466,9 +487,7 @@ func (repairer *SegmentRepairer) Repair(ctx context.Context, queueSegment *queue
 				unknownErrs = append(unknownErrs, fmt.Sprintf("node ID [%s] err: %v", outcome.Piece.StorageNode, outcome.Err))
 			}
 
-			repairer.log.Warn("irreparable segment: could not acquire enough shares",
-				zap.String("StreamID", queueSegment.StreamID.String()),
-				zap.Uint64("Position", queueSegment.Position.Encode()),
+			log.Warn("irreparable segment: could not acquire enough shares",
 				zap.Int32("piecesAvailable", irreparableErr.piecesAvailable),
 				zap.Int32("piecesRequired", irreparableErr.piecesRequired),
 				zap.Int("numFailedNodes", len(failedNodeIDs)),
@@ -544,8 +563,11 @@ func (repairer *SegmentRepairer) Repair(ctx context.Context, queueSegment *queue
 
 	mon.Meter("repair_bytes_uploaded").Mark64(bytesRepaired) //mon:locked
 
-	healthyAfterRepair := numHealthy + len(repairedPieces)
+	healthyAfterRepair := piecesCheck.Healthy.Count() + len(repairedPieces)
 	switch {
+	case healthyAfterRepair >= int(segment.Redundancy.OptimalShares):
+		mon.Meter("repair_success").Mark(1) //mon:locked
+		stats.repairSuccess.Mark(1)
 	case healthyAfterRepair <= int(segment.Redundancy.RepairShares):
 		// Important: this indicates a failure to PUT enough pieces to the network to pass
 		// the repair threshold, and _not_ a failure to reconstruct the segment. But we
@@ -554,12 +576,9 @@ func (repairer *SegmentRepairer) Repair(ctx context.Context, queueSegment *queue
 		// not as healthy as we want it to be.
 		mon.Meter("repair_failed").Mark(1) //mon:locked
 		stats.repairFailed.Mark(1)
-	case healthyAfterRepair < int(segment.Redundancy.OptimalShares):
+	default:
 		mon.Meter("repair_partial").Mark(1) //mon:locked
 		stats.repairPartial.Mark(1)
-	default:
-		mon.Meter("repair_success").Mark(1) //mon:locked
-		stats.repairSuccess.Mark(1)
 	}
 
 	healthyRatioAfterRepair := 0.0
@@ -570,29 +589,50 @@ func (repairer *SegmentRepairer) Repair(ctx context.Context, queueSegment *queue
 	mon.FloatVal("healthy_ratio_after_repair").Observe(healthyRatioAfterRepair) //mon:locked
 	stats.healthyRatioAfterRepair.Observe(healthyRatioAfterRepair)
 
-	var toRemove metabase.Pieces
-	if healthyAfterRepair >= int(segment.Redundancy.OptimalShares) {
-		// if full repair, remove all unhealthy pieces
-		for unhealthyPiece := range unhealthyPieces {
-			toRemove = append(toRemove, unhealthyPiece)
-		}
-	} else {
-		// if partial repair, leave unrepaired unhealthy pieces in the pointer
-		for unhealthyPiece := range unhealthyPieces {
-			if repairedMap[unhealthyPiece.Number] {
-				// add only repaired pieces in the slice, unrepaired
-				// unhealthy pieces are not removed from the pointer
-				toRemove = append(toRemove, unhealthyPiece)
+	toRemove := make(map[uint16]metabase.Piece, piecesCheck.Unhealthy.Count())
+	switch {
+	case healthyAfterRepair >= int(segment.Redundancy.OptimalShares):
+		// Repair was fully successful; remove all unhealthy pieces except those in
+		// (Retrievable AND InExcludedCountry). Those, we allow to remain on the nodes as
+		// long as the nodes are keeping the pieces intact and available.
+		for _, piece := range pieces {
+			if piecesCheck.Unhealthy.Contains(int(piece.Number)) {
+				retrievable := piecesCheck.Retrievable.Contains(int(piece.Number))
+				inExcludedCountry := piecesCheck.InExcludedCountry.Contains(int(piece.Number))
+				if retrievable && inExcludedCountry {
+					continue
+				}
+				toRemove[piece.Number] = piece
 			}
 		}
+	case healthyAfterRepair > int(segment.Redundancy.RepairShares):
+		// Repair was successful enough that we still want to drop all out-of-placement
+		// pieces. We want to do that wherever possible, except where doing so puts data in
+		// jeopardy.
+		for _, piece := range pieces {
+			if piecesCheck.OutOfPlacement.Contains(int(piece.Number)) {
+				toRemove[piece.Number] = piece
+			}
+		}
+	default:
+		// Repair improved the health of the piece, but it is still at or below the
+		// repair threshold (not counting unhealthy-but-retrievable pieces). To be safe,
+		// we will keep unhealthy-but-retrievable pieces in the segment for now.
 	}
 
-	// add pieces that failed piece hashes verification to the removal list
+	// in any case, we want to remove pieces for which we have replacements now.
+	for _, piece := range pieces {
+		if repairedMap[piece.Number] {
+			toRemove[piece.Number] = piece
+		}
+	}
+
+	// add pieces that failed piece hash verification to the removal list
 	for _, outcome := range piecesReport.Failed {
-		toRemove = append(toRemove, outcome.Piece)
+		toRemove[outcome.Piece.Number] = outcome.Piece
 	}
 
-	newPieces, err := segment.Pieces.Update(repairedPieces, toRemove)
+	newPieces, err := segment.Pieces.Update(repairedPieces, maps.Values(toRemove))
 	if err != nil {
 		return false, repairPutError.Wrap(err)
 	}
@@ -623,139 +663,23 @@ func (repairer *SegmentRepairer) Repair(ctx context.Context, queueSegment *queue
 		segmentAge = time.Since(segment.CreatedAt)
 	}
 
-	// TODO what to do with RepairCount
-	var repairCount int64
-	// pointer.RepairCount++
-
 	mon.IntVal("segment_time_until_repair").Observe(int64(segmentAge.Seconds())) //mon:locked
 	stats.segmentTimeUntilRepair.Observe(int64(segmentAge.Seconds()))
-	mon.IntVal("segment_repair_count").Observe(repairCount) //mon:locked
-	stats.segmentRepairCount.Observe(repairCount)
 
-	repairer.log.Debug("repaired segment",
-		zap.Stringer("Stream ID", segment.StreamID),
-		zap.Uint64("Position", segment.Position.Encode()),
-		zap.Int("clumped pieces", len(piecesCheck.ClumpedPiecesSet)),
-		zap.Int("out of placement pieces", len(piecesCheck.OutOfPlacementPiecesSet)),
-		zap.Int("in excluded countries", piecesCheck.NumHealthyInExcludedCountries),
+	log.Info("repaired segment",
+		zap.Int("clumped pieces", piecesCheck.Clumped.Count()),
+		zap.Int("exiting-node pieces", piecesCheck.Exiting.Count()),
+		zap.Int("out of placement pieces", piecesCheck.OutOfPlacement.Count()),
+		zap.Int("in excluded countries", piecesCheck.InExcludedCountry.Count()),
+		zap.Int("missing pieces", piecesCheck.Missing.Count()),
 		zap.Int("removed pieces", len(toRemove)),
 		zap.Int("repaired pieces", len(repairedPieces)),
-		zap.Int("healthy before repair", numHealthy),
-		zap.Int("healthy after repair", healthyAfterRepair))
+		zap.Int("retrievable pieces", piecesCheck.Retrievable.Count()),
+		zap.Int("healthy before repair", piecesCheck.Healthy.Count()),
+		zap.Int("healthy after repair", healthyAfterRepair),
+		zap.Int("total before repair", len(selectedNodes)),
+		zap.Int("total after repair", len(newPieces)))
 	return true, nil
-}
-
-type piecesCheckResult struct {
-	ExcludeNodeIDs []storj.NodeID
-
-	MissingPiecesSet map[uint16]bool
-	ClumpedPiecesSet map[uint16]bool
-
-	// piece which are out of placement (both offline and online)
-	OutOfPlacementPiecesSet map[uint16]bool
-
-	NumUnhealthyRetrievable       int
-	NumHealthyInExcludedCountries int
-}
-
-func (repairer *SegmentRepairer) classifySegmentPieces(ctx context.Context, segment metabase.Segment) (result piecesCheckResult, err error) {
-	defer mon.Task()(&ctx)(&err)
-
-	pieces := segment.Pieces
-
-	allNodeIDs := make([]storj.NodeID, len(pieces))
-	for i, piece := range pieces {
-		allNodeIDs[i] = piece.StorageNode
-	}
-
-	online, offline, err := repairer.overlay.KnownReliable(ctx, allNodeIDs)
-	if err != nil {
-		return piecesCheckResult{}, overlayQueryError.New("error identifying missing pieces: %w", err)
-	}
-	return repairer.classifySegmentPiecesWithNodes(ctx, segment, allNodeIDs, online, offline)
-}
-
-func (repairer *SegmentRepairer) classifySegmentPiecesWithNodes(ctx context.Context, segment metabase.Segment, allNodeIDs []storj.NodeID, online []nodeselection.SelectedNode, offline []nodeselection.SelectedNode) (result piecesCheckResult, err error) {
-	pieces := segment.Pieces
-
-	nodeIDPieceMap := map[storj.NodeID]uint16{}
-	result.MissingPiecesSet = map[uint16]bool{}
-	for i, p := range pieces {
-		allNodeIDs[i] = p.StorageNode
-		nodeIDPieceMap[p.StorageNode] = p.Number
-		result.MissingPiecesSet[p.Number] = true
-	}
-
-	result.ExcludeNodeIDs = allNodeIDs
-
-	nodeFilters := repairer.placementRules(segment.Placement)
-
-	// remove online nodes from missing pieces
-	for _, onlineNode := range online {
-		// count online nodes in excluded countries only if country is not excluded by segment
-		// placement, those nodes will be counted with out of placement check
-		if _, excluded := repairer.excludedCountryCodes[onlineNode.CountryCode]; excluded && nodeFilters.MatchInclude(&onlineNode) {
-			result.NumHealthyInExcludedCountries++
-		}
-
-		pieceNum := nodeIDPieceMap[onlineNode.ID]
-		delete(result.MissingPiecesSet, pieceNum)
-	}
-
-	if repairer.doDeclumping {
-		// if multiple pieces are on the same last_net, keep only the first one. The rest are
-		// to be considered retrievable but unhealthy.
-		lastNets := make([]string, 0, len(allNodeIDs))
-
-		reliablePieces := metabase.Pieces{}
-
-		collectLastNets := func(reliable []nodeselection.SelectedNode) {
-			for _, node := range reliable {
-				pieceNum := nodeIDPieceMap[node.ID]
-				reliablePieces = append(reliablePieces, metabase.Piece{
-					Number:      pieceNum,
-					StorageNode: node.ID,
-				})
-				lastNets = append(lastNets, node.LastNet)
-			}
-		}
-		collectLastNets(online)
-		collectLastNets(offline)
-
-		clumpedPieces := repair.FindClumpedPieces(reliablePieces, lastNets)
-		result.ClumpedPiecesSet = map[uint16]bool{}
-		for _, clumpedPiece := range clumpedPieces {
-			result.ClumpedPiecesSet[clumpedPiece.Number] = true
-		}
-	}
-
-	result.OutOfPlacementPiecesSet = map[uint16]bool{}
-
-	nodeFilters = repairer.placementRules(segment.Placement)
-	checkPlacement := func(reliable []nodeselection.SelectedNode) {
-		for _, node := range reliable {
-			if nodeFilters.MatchInclude(&node) {
-				continue
-			}
-
-			result.OutOfPlacementPiecesSet[nodeIDPieceMap[node.ID]] = true
-		}
-	}
-	checkPlacement(online)
-	checkPlacement(offline)
-
-	// verify that some of clumped pieces and out of placement pieces are not the same
-	unhealthyRetrievableSet := map[uint16]bool{}
-	maps.Copy(unhealthyRetrievableSet, result.ClumpedPiecesSet)
-	maps.Copy(unhealthyRetrievableSet, result.OutOfPlacementPiecesSet)
-
-	// offline nodes are not retrievable
-	for _, node := range offline {
-		delete(unhealthyRetrievableSet, nodeIDPieceMap[node.ID])
-	}
-	result.NumUnhealthyRetrievable = len(unhealthyRetrievableSet)
-
-	return result, nil
 }
 
 // checkIfSegmentAltered checks if oldSegment has been altered since it was selected for audit.

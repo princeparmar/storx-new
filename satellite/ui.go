@@ -14,9 +14,9 @@ import (
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 
+	"storj.io/common/debug"
 	"storj.io/common/identity"
 	"storj.io/common/storj"
-	"storj.io/private/debug"
 	"storj.io/storj/private/lifecycle"
 	"storj.io/storj/satellite/console/consoleweb"
 )
@@ -53,8 +53,8 @@ func NewUI(log *zap.Logger, full *identity.FullIdentity, config *Config, atomicL
 
 	{ // setup debug
 		var err error
-		if config.Debug.Address != "" {
-			peer.Debug.Listener, err = net.Listen("tcp", config.Debug.Address)
+		if config.Debug.Addr != "" {
+			peer.Debug.Listener, err = net.Listen("tcp", config.Debug.Addr)
 			if err != nil {
 				withoutStack := errors.New(err.Error())
 				peer.Log.Debug("failed to start debug endpoints", zap.Error(withoutStack))

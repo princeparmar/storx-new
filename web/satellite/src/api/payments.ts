@@ -1,4 +1,4 @@
-// Copyright (C) 2019 Storx Labs, Inc.
+// Copyright (C) 2019 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 import { ErrorConflict } from './errors/ErrorConflict';
@@ -15,7 +15,7 @@ import {
     TokenAmount,
     NativePaymentHistoryItem,
     Wallet,
-    PaymentWithConfirmations,
+    PaymentWithConfirmations, PaymentHistoryParam, PaymentHistoryPage,
 } from '@/types/payments';
 import { HttpClient } from '@/utils/httpClient';
 import { Time } from '@/utils/time';
@@ -120,6 +120,27 @@ export class PaymentsHttpApi implements PaymentsApi {
     }
 
     /**
+     * Add payment method.
+     * @param pmID - stripe payment method id of the credit card
+     * @throws Error
+     */
+    public async addCardByPaymentMethodID(pmID: string): Promise<void> {
+        const path = `${this.ROOT_PATH}/payment-methods`;
+        const response = await this.client.post(path, pmID);
+
+        if (response.ok) {
+            return;
+        }
+
+        const result = await response.json();
+        throw new APIError({
+            status: response.status,
+            message: result.error || 'Can not add payment method',
+            requestID: response.headers.get('x-request-id'),
+        });
+    }
+
+    /**
      * Add credit card.
      *
      * @param token - stripe token used to add a credit card as a payment method
@@ -133,9 +154,11 @@ export class PaymentsHttpApi implements PaymentsApi {
             return;
         }
 
+        const result = await response.json();
+
         throw new APIError({
             status: response.status,
-            message: 'Can not add credit card',
+            message: result.error || 'Can not add credit card',
             requestID: response.headers.get('x-request-id'),
         });
     }
@@ -215,8 +238,13 @@ export class PaymentsHttpApi implements PaymentsApi {
      * @returns list of payments history items
      * @throws Error
      */
-    public async paymentsHistory(): Promise<PaymentsHistoryItem[]> {
-        const path = `${this.ROOT_PATH}/billing-history`;
+    public async paymentsHistory(param: PaymentHistoryParam): Promise<PaymentHistoryPage> {
+        let path = `${this.ROOT_PATH}/invoice-history?limit=${param.limit}`;
+        if (param.startingAfter) {
+            path = `${path}&starting_after=${param.startingAfter}`;
+        } else if (param.endingBefore) {
+            path = `${path}&ending_before=${param.endingBefore}`;
+        }
         const response = await this.client.get(path);
 
         if (!response.ok) {
@@ -227,9 +255,10 @@ export class PaymentsHttpApi implements PaymentsApi {
             });
         }
 
-        const paymentsHistoryItems = await response.json();
-        if (paymentsHistoryItems) {
-            return paymentsHistoryItems.map(item =>
+        const pageJson = await response.json();
+        let items: PaymentsHistoryItem[] = [];
+        if (pageJson.items) {
+            items = pageJson.items.map(item =>
                 new PaymentsHistoryItem(
                     item.id,
                     item.description,
@@ -245,7 +274,11 @@ export class PaymentsHttpApi implements PaymentsApi {
             );
         }
 
-        return [];
+        return new PaymentHistoryPage(
+            items,
+            pageJson.next,
+            pageJson.previous,
+        );
     }
 
     /**
@@ -267,7 +300,7 @@ export class PaymentsHttpApi implements PaymentsApi {
         }
 
         const json = await response.json();
-        if (!json) return  [];
+        if (!json) return [];
         if (json.payments) {
             return json.payments.map(item =>
                 new NativePaymentHistoryItem(
@@ -459,12 +492,13 @@ export class PaymentsHttpApi implements PaymentsApi {
     /**
      * Purchases the pricing package associated with the user's partner.
      *
-     * @param token - the Stripe token used to add a credit card as a payment method
+     * @param dataStr - the Stripe payment method id or token of the credit card
+     * @param isPMID - whether the dataStr is a payment method id or token
      * @throws Error
      */
-    public async purchasePricingPackage(token: string): Promise<void> {
-        const path = `${this.ROOT_PATH}/purchase-package`;
-        const response = await this.client.post(path, token);
+    public async purchasePricingPackage(dataStr: string, isPMID: boolean): Promise<void> {
+        const path = `${this.ROOT_PATH}/purchase-package?pmID=${isPMID}`;
+        const response = await this.client.post(path, dataStr);
 
         if (response.ok) {
             return;

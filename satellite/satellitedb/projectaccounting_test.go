@@ -24,7 +24,7 @@ import (
 	"storj.io/storj/satellite/satellitedb/satellitedbtest"
 )
 
-func Test_DailyUsage(t *testing.T) {
+func TestDailyUsage(t *testing.T) {
 	testplanet.Run(t, testplanet.Config{SatelliteCount: 1, StorageNodeCount: 1, UplinkCount: 1},
 		func(t *testing.T, ctx *testcontext.Context, planet *testplanet.Planet) {
 			const (
@@ -32,8 +32,12 @@ func Test_DailyUsage(t *testing.T) {
 				secondBucketName = "testbucket1"
 			)
 
-			now := time.Now()
-			inFiveMinutes := time.Now().Add(5 * time.Minute)
+			now := time.Now().UTC()
+			// set time to middle of day to make sure we don't cross the day boundary during tally creation
+			twelveToday := time.Date(now.Year(), now.Month(), now.Day(), 12, 0, 0, 0, time.UTC)
+			fivePastTwelve := twelveToday.Add(5 * time.Minute)
+			yesterday := twelveToday.Add(-24 * time.Hour)
+			twoDaysAgo := yesterday.Add(-24 * time.Hour)
 
 			var (
 				satelliteSys = planet.Satellites[0]
@@ -53,7 +57,7 @@ func Test_DailyUsage(t *testing.T) {
 			_, err = satelliteSys.DB.Console().ProjectMembers().Insert(ctx, user.ID, projectID)
 			require.NoError(t, err)
 
-			usage0, err := satelliteSys.DB.ProjectAccounting().GetProjectDailyUsageByDateRange(ctx, projectID, now, inFiveMinutes, 0)
+			usage0, err := satelliteSys.DB.ProjectAccounting().GetProjectDailyUsageByDateRange(ctx, projectID, twoDaysAgo, fivePastTwelve, 0)
 			require.NoError(t, err)
 			require.Zero(t, len(usage0.AllocatedBandwidthUsage))
 			require.Zero(t, len(usage0.SettledBandwidthUsage))
@@ -80,22 +84,43 @@ func Test_DailyUsage(t *testing.T) {
 				},
 			}
 
-			err = satelliteSys.DB.ProjectAccounting().SaveTallies(ctx, now, tallies)
+			// test multiple rows existing each day
+			createTallies := func(interval time.Time, tallies map[metabase.BucketLocation]*accounting.BucketTally) {
+				for i := 0; i < 3; i++ {
+					if i != 0 {
+						interval = interval.Add(1 * time.Hour)
+					}
+					err = satelliteSys.DB.ProjectAccounting().SaveTallies(ctx, interval, tallies)
+					require.NoError(t, err)
+				}
+			}
+			createTallies(twoDaysAgo, tallies)
+			createTallies(yesterday, tallies)
+			createTallies(twelveToday, tallies)
+
+			err = satelliteSys.DB.Orders().UpdateBucketBandwidthSettle(ctx, projectID, []byte(firstBucketName), pb.PieceAction_GET, segment, 0, fivePastTwelve)
 			require.NoError(t, err)
-			err = satelliteSys.DB.Orders().UpdateBucketBandwidthSettle(ctx, projectID, []byte(firstBucketName), pb.PieceAction_GET, segment, 0, inFiveMinutes)
+			err = satelliteSys.DB.Orders().UpdateBucketBandwidthSettle(ctx, projectID, []byte(secondBucketName), pb.PieceAction_GET, segment, 0, fivePastTwelve)
 			require.NoError(t, err)
-			err = planet.Satellites[0].DB.Orders().UpdateBucketBandwidthSettle(ctx, projectID, []byte(secondBucketName), pb.PieceAction_GET, segment, 0, inFiveMinutes)
+			err = satelliteSys.DB.Orders().UpdateBucketBandwidthAllocation(ctx, projectID, []byte(firstBucketName), pb.PieceAction_GET, segment, fivePastTwelve)
+			require.NoError(t, err)
+			err = satelliteSys.DB.Orders().UpdateBucketBandwidthAllocation(ctx, projectID, []byte(secondBucketName), pb.PieceAction_GET, segment, fivePastTwelve)
 			require.NoError(t, err)
 
-			usage1, err := satelliteSys.DB.ProjectAccounting().GetProjectDailyUsageByDateRange(ctx, projectID, now, inFiveMinutes, 0)
+			usage1, err := satelliteSys.DB.ProjectAccounting().GetProjectDailyUsageByDateRange(ctx, projectID, twoDaysAgo, fivePastTwelve, 0)
 			require.NoError(t, err)
-			require.Equal(t, 2*segment, usage1.StorageUsage[0].Value)
+
+			require.Len(t, usage1.StorageUsage, 3)
+			for _, u := range usage1.StorageUsage {
+				require.Equal(t, 2*segment, u.Value)
+			}
+			require.Equal(t, 2*segment, usage1.AllocatedBandwidthUsage[0].Value)
 			require.Equal(t, 2*segment, usage1.SettledBandwidthUsage[0].Value)
 		},
 	)
 }
 
-func Test_GetSingleBucketRollup(t *testing.T) {
+func TestGetSingleBucketRollup(t *testing.T) {
 	testplanet.Run(t, testplanet.Config{SatelliteCount: 1, StorageNodeCount: 1, UplinkCount: 1},
 		func(t *testing.T, ctx *testcontext.Context, planet *testplanet.Planet) {
 			const (
@@ -178,7 +203,7 @@ func Test_GetSingleBucketRollup(t *testing.T) {
 	)
 }
 
-func Test_GetProjectTotal(t *testing.T) {
+func TestGetProjectTotal(t *testing.T) {
 	testplanet.Run(t, testplanet.Config{SatelliteCount: 1, StorageNodeCount: 1},
 		func(t *testing.T, ctx *testcontext.Context, planet *testplanet.Planet) {
 			bucketName := testrand.BucketName()
@@ -236,7 +261,7 @@ func Test_GetProjectTotal(t *testing.T) {
 	)
 }
 
-func Test_GetProjectTotalByPartner(t *testing.T) {
+func TestGetProjectTotalByPartner(t *testing.T) {
 	const (
 		epsilon          = 1e-8
 		usagePeriod      = time.Hour
@@ -415,9 +440,11 @@ func randRollup(bucketName string, projectID uuid.UUID, intervalStart time.Time)
 	}
 }
 
-func Test_GetProjectObjectsSegments(t *testing.T) {
+func TestGetProjectObjectsSegments(t *testing.T) {
 	testplanet.Run(t, testplanet.Config{SatelliteCount: 1, UplinkCount: 1},
 		func(t *testing.T, ctx *testcontext.Context, planet *testplanet.Planet) {
+			planet.Satellites[0].Accounting.Tally.Loop.Pause()
+
 			projectID := planet.Uplinks[0].Projects[0].ID
 
 			projectStats, err := planet.Satellites[0].DB.ProjectAccounting().GetProjectObjectsSegments(ctx, projectID)
@@ -455,7 +482,7 @@ func Test_GetProjectObjectsSegments(t *testing.T) {
 		})
 }
 
-func Test_GetProjectSettledBandwidth(t *testing.T) {
+func TestGetProjectSettledBandwidth(t *testing.T) {
 	testplanet.Run(t, testplanet.Config{SatelliteCount: 1, UplinkCount: 1},
 		func(t *testing.T, ctx *testcontext.Context, planet *testplanet.Planet) {
 			projectID := planet.Uplinks[0].Projects[0].ID
@@ -554,7 +581,7 @@ func TestProjectaccounting_GetNonEmptyTallyBucketsInRange(t *testing.T) {
 		}, metabase.BucketLocation{
 			ProjectID:  testrand.UUID(),
 			BucketName: "b\\",
-		})
+		}, 0)
 		require.NoError(t, err)
 	})
 }

@@ -15,8 +15,8 @@ import (
 	"github.com/zeebo/errs"
 	"go.uber.org/zap"
 
-	"storj.io/private/dbutil/txutil"
-	"storj.io/private/tagsql"
+	"storj.io/common/dbutil/txutil"
+	"storj.io/common/tagsql"
 )
 
 var (
@@ -135,7 +135,10 @@ func (migration *Migration) ValidateVersions(ctx context.Context, log *zap.Logge
 		}
 
 		if expectedVersion != currentVersion {
-			return ErrValidateVersionMismatch.New("expected %d != %d", expectedVersion, currentVersion)
+			if currentVersion < 0 {
+				return ErrValidateVersionMismatch.New("expected %d, but database is uninitialized (version %d)", expectedVersion, currentVersion)
+			}
+			return ErrValidateVersionMismatch.New("expected %d, but current version is %d", expectedVersion, currentVersion)
 		}
 	}
 

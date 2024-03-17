@@ -15,6 +15,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"storj.io/common/pb"
+	"storj.io/common/process"
 	"storj.io/common/rpc"
 	"storj.io/common/storj"
 	"storj.io/common/sync2"
@@ -178,6 +179,12 @@ func (service *Service) SendOrders(ctx context.Context, now time.Time) {
 	errorSatellites := make(map[storj.NodeID]struct{})
 	var errorSatellitesMu sync.Mutex
 
+	addErrorSatellite := func(satelliteID storj.NodeID) {
+		errorSatellitesMu.Lock()
+		defer errorSatellitesMu.Unlock()
+		errorSatellites[satelliteID] = struct{}{}
+	}
+
 	// Continue sending until there are no more windows to send, or all relevant satellites are offline.
 	for {
 		ordersBySatellite, err := service.ordersStore.ListUnsentBySatellite(ctx, now)
@@ -201,15 +208,31 @@ func (service *Service) SendOrders(ctx context.Context, now time.Time) {
 			attemptedSatellites++
 
 			group.Go(func() error {
-				log := service.log.Named(satelliteID.String())
-				status, err := service.settleWindow(ctx, log, satelliteID, unsentInfo.InfoList)
+				log := process.NamedLog(service.log, satelliteID.String())
+
+				skipSettlement := false
+				nodeURL, err := service.trust.GetNodeURL(ctx, satelliteID)
 				if err != nil {
-					// satellite returned an error, but settlement was not explicitly rejected; we want to retry later
-					errorSatellitesMu.Lock()
-					errorSatellites[satelliteID] = struct{}{}
-					errorSatellitesMu.Unlock()
-					log.Error("failed to settle orders for satellite", zap.String("satellite ID", satelliteID.String()), zap.Error(err))
-					return nil
+					log.Error("unable to get satellite address", zap.Error(err))
+
+					if !errs.Is(err, trust.ErrUntrusted) {
+						addErrorSatellite(satelliteID)
+						return nil
+					}
+					skipSettlement = true
+				}
+
+				status := pb.SettlementWithWindowResponse_REJECTED
+				if !skipSettlement {
+					status, err = service.settleWindow(ctx, log, nodeURL, unsentInfo.InfoList)
+					if err != nil {
+						// satellite returned an error, but settlement was not explicitly rejected; we want to retry later
+						addErrorSatellite(satelliteID)
+						log.Error("failed to settle orders for satellite", zap.String("satellite ID", satelliteID.String()), zap.Error(err))
+						return nil
+					}
+				} else {
+					log.Warn("skipping order settlement for untrusted satellite. Order will be archived", zap.String("satellite ID", satelliteID.String()))
 				}
 
 				err = service.ordersStore.Archive(satelliteID, unsentInfo, time.Now().UTC(), status)
@@ -232,18 +255,13 @@ func (service *Service) SendOrders(ctx context.Context, now time.Time) {
 	}
 }
 
-func (service *Service) settleWindow(ctx context.Context, log *zap.Logger, satelliteID storj.NodeID, orders []*ordersfile.Info) (status pb.SettlementWithWindowResponse_Status, err error) {
+func (service *Service) settleWindow(ctx context.Context, log *zap.Logger, nodeURL storj.NodeURL, orders []*ordersfile.Info) (status pb.SettlementWithWindowResponse_Status, err error) {
 	defer mon.Task()(&ctx)(&err)
 
 	log.Info("sending", zap.Int("count", len(orders)))
 	defer log.Info("finished")
 
-	nodeurl, err := service.trust.GetNodeURL(ctx, satelliteID)
-	if err != nil {
-		return 0, OrderError.New("unable to get satellite address: %w", err)
-	}
-
-	conn, err := service.dialer.DialNodeURL(ctx, nodeurl)
+	conn, err := service.dialer.DialNodeURL(ctx, nodeURL)
 	if err != nil {
 		return 0, OrderError.New("unable to connect to the satellite: %w", err)
 	}
@@ -278,6 +296,11 @@ func (service *Service) settleWindow(ctx context.Context, log *zap.Logger, satel
 	}
 
 	return res.Status, nil
+}
+
+// TestSetLogger sets the logger.
+func (service *Service) TestSetLogger(log *zap.Logger) {
+	service.log = log
 }
 
 // sleep for random interval in [0;maxSleep).

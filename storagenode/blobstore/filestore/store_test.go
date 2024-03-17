@@ -219,15 +219,12 @@ func TestDeleteWhileReading(t *testing.T) {
 	// should be able to read the full content
 	require.Equal(t, data, result)
 
-	// collect trash
-	gStore := store.(interface {
-		GarbageCollect(ctx context.Context) error
-	})
-	_ = gStore.GarbageCollect(ctx)
-
 	// flaky test, for checking whether files have been actually deleted from disk
 	err = filepath.Walk(ctx.Dir("store"), func(path string, info os.FileInfo, _ error) error {
 		if info.IsDir() {
+			return nil
+		}
+		if info.Name() == filestore.TrashUsesDayDirsIndicator {
 			return nil
 		}
 		return errs.New("found file %q", path)
@@ -640,7 +637,7 @@ func TestEmptyTrash(t *testing.T) {
 			}
 
 			// Trash the ref
-			require.NoError(t, store.Trash(ctx, blobref))
+			require.NoError(t, store.Trash(ctx, blobref, time.Now()))
 		}
 	}
 
@@ -651,7 +648,7 @@ func TestEmptyTrash(t *testing.T) {
 			expectedFilesEmptied++
 		}
 	}
-	emptiedBytes, keys, err := store.EmptyTrash(ctx, namespaces[0].namespace, time.Now().Add(time.Hour))
+	emptiedBytes, keys, err := store.EmptyTrash(ctx, namespaces[0].namespace, time.Now().Add(24*time.Hour))
 	require.NoError(t, err)
 	assert.Equal(t, expectedFilesEmptied*int64(size), emptiedBytes)
 	assert.Equal(t, int(expectedFilesEmptied), len(keys))
@@ -765,13 +762,14 @@ func TestTrashAndRestore(t *testing.T) {
 			}
 
 			// Trash the ref
-			require.NoError(t, store.Trash(ctx, blobref))
+			require.NoError(t, store.Trash(ctx, blobref, time.Now()))
 
 			// Verify files are gone
-			for _, file := range ref.files {
+			for n, file := range ref.files {
 				_, err = store.OpenWithStorageFormat(ctx, blobref, file.formatVer)
 				require.Error(t, err)
-				require.True(t, os.IsNotExist(err))
+				require.True(t, os.IsNotExist(err),
+					"on file %d: expected IsNotExist error but got %v", n, err)
 			}
 		}
 	}
@@ -783,9 +781,13 @@ func TestTrashAndRestore(t *testing.T) {
 			expKeysRestored = append(expKeysRestored, ref.key)
 		}
 	}
-	sort.Slice(expKeysRestored, func(i int, j int) bool { return expKeysRestored[i][0] < expKeysRestored[j][0] })
+	sort.Slice(expKeysRestored, func(i int, j int) bool {
+		return bytes.Compare(expKeysRestored[i], expKeysRestored[j]) < 0
+	})
 	restoredKeys, err := store.RestoreTrash(ctx, namespaces[0].namespace)
-	sort.Slice(restoredKeys, func(i int, j int) bool { return restoredKeys[i][0] < restoredKeys[j][0] })
+	sort.Slice(restoredKeys, func(i int, j int) bool {
+		return bytes.Compare(restoredKeys[i], restoredKeys[j]) < 0
+	})
 	require.NoError(t, err)
 	assert.Equal(t, expKeysRestored, restoredKeys)
 

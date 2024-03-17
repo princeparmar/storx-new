@@ -11,6 +11,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"storj.io/common/storj"
 	"storj.io/common/testcontext"
 	"storj.io/common/testrand"
 	"storj.io/common/uuid"
@@ -63,14 +64,16 @@ func TestUpdateUser(t *testing.T) {
 		users := db.Console().Users()
 		id := testrand.UUID()
 		u, err := users.Insert(ctx, &console.User{
-			ID:           id,
-			FullName:     "testFullName",
-			ShortName:    "testShortName",
-			Email:        "test@storj.test",
-			PasswordHash: []byte("testPasswordHash"),
+			ID:               id,
+			FullName:         "testFullName",
+			ShortName:        "testShortName",
+			Email:            "test@storj.test",
+			PasswordHash:     []byte("testPasswordHash"),
+			DefaultPlacement: 12,
 		})
 		require.NoError(t, err)
 
+		now := time.Now()
 		newInfo := console.User{
 			FullName:               "updatedFullName",
 			ShortName:              "updatedShortName",
@@ -84,7 +87,18 @@ func TestUpdateUser(t *testing.T) {
 			MFASecretKey:           "secretKey",
 			MFARecoveryCodes:       []string{"code1", "code2"},
 			FailedLoginCount:       1,
-			LoginLockoutExpiration: time.Now().Truncate(time.Second),
+			LoginLockoutExpiration: now.Truncate(time.Second),
+			DefaultPlacement:       13,
+
+			HaveSalesContact: true,
+			IsProfessional:   true,
+			Position:         "Engineer",
+			CompanyName:      "Storj",
+			EmployeeCount:    "1-200",
+
+			TrialNotifications: 1,
+			TrialExpiration:    &now,
+			UpgradeTime:        &now,
 		}
 
 		require.NotEqual(t, u.FullName, newInfo.FullName)
@@ -100,6 +114,14 @@ func TestUpdateUser(t *testing.T) {
 		require.NotEqual(t, u.MFARecoveryCodes, newInfo.MFARecoveryCodes)
 		require.NotEqual(t, u.FailedLoginCount, newInfo.FailedLoginCount)
 		require.NotEqual(t, u.LoginLockoutExpiration, newInfo.LoginLockoutExpiration)
+		require.NotEqual(t, u.DefaultPlacement, newInfo.DefaultPlacement)
+		require.NotEqual(t, u.IsProfessional, newInfo.IsProfessional)
+		require.NotEqual(t, u.Position, newInfo.Position)
+		require.NotEqual(t, u.CompanyName, newInfo.CompanyName)
+		require.NotEqual(t, u.EmployeeCount, newInfo.EmployeeCount)
+		require.NotEqual(t, u.TrialNotifications, newInfo.TrialNotifications)
+		require.NotEqual(t, u.TrialExpiration, newInfo.TrialExpiration)
+		require.NotEqual(t, u.UpgradeTime, newInfo.UpgradeTime)
 
 		// update just fullname
 		updateReq := console.UpdateUserRequest{
@@ -285,6 +307,59 @@ func TestUpdateUser(t *testing.T) {
 
 		u.LoginLockoutExpiration = newInfo.LoginLockoutExpiration
 		require.Equal(t, u, updatedUser)
+
+		// update just the placement
+		defaultPlacement := &newInfo.DefaultPlacement
+		updateReq = console.UpdateUserRequest{
+			DefaultPlacement: *defaultPlacement,
+		}
+
+		err = users.Update(ctx, id, updateReq)
+		require.NoError(t, err)
+
+		updatedUser, err = users.Get(ctx, id)
+		require.NoError(t, err)
+
+		u.DefaultPlacement = newInfo.DefaultPlacement
+		require.Equal(t, u, updatedUser)
+
+		// update professional info
+		updateReq = console.UpdateUserRequest{
+			IsProfessional:   &newInfo.IsProfessional,
+			HaveSalesContact: &newInfo.HaveSalesContact,
+			Position:         &newInfo.Position,
+			CompanyName:      &newInfo.CompanyName,
+			EmployeeCount:    &newInfo.EmployeeCount,
+		}
+
+		err = users.Update(ctx, id, updateReq)
+		require.NoError(t, err)
+
+		updatedUser, err = users.Get(ctx, id)
+		require.NoError(t, err)
+
+		u.HaveSalesContact = newInfo.HaveSalesContact
+		u.IsProfessional = newInfo.IsProfessional
+		u.Position = newInfo.Position
+		u.CompanyName = newInfo.CompanyName
+		u.EmployeeCount = newInfo.EmployeeCount
+		require.Equal(t, u, updatedUser)
+
+		// update trial expiration and upgrade time.
+		newDate := now.Add(time.Hour)
+		newDatePtr := &newDate
+		updateReq = console.UpdateUserRequest{
+			TrialExpiration: &newDatePtr,
+			UpgradeTime:     &newDate,
+		}
+
+		err = users.Update(ctx, id, updateReq)
+		require.NoError(t, err)
+
+		updatedUser, err = users.Get(ctx, id)
+		require.NoError(t, err)
+		require.WithinDuration(t, newDate, *updatedUser.TrialExpiration, time.Minute)
+		require.WithinDuration(t, newDate, *updatedUser.UpgradeTime, time.Minute)
 	})
 }
 
@@ -297,7 +372,7 @@ func TestUpdateUserProjectLimits(t *testing.T) {
 			ID:           testrand.UUID(),
 			FullName:     "User",
 			Email:        "test@mail.test",
-			PasswordHash: []byte("123a123"),
+			PasswordHash: []byte("password"),
 		})
 		require.NoError(t, err)
 
@@ -309,6 +384,62 @@ func TestUpdateUserProjectLimits(t *testing.T) {
 		require.Equal(t, limits.Bandwidth, user.ProjectBandwidthLimit)
 		require.Equal(t, limits.Storage, user.ProjectStorageLimit)
 		require.Equal(t, limits.Segment, user.ProjectSegmentLimit)
+	})
+}
+
+func TestUpdateDefaultPlacement(t *testing.T) {
+	satellitedbtest.Run(t, func(ctx *testcontext.Context, t *testing.T, db satellite.DB) {
+		usersRepo := db.Console().Users()
+
+		user, err := usersRepo.Insert(ctx, &console.User{
+			ID:           testrand.UUID(),
+			FullName:     "User",
+			Email:        "test@mail.test",
+			PasswordHash: []byte("password"),
+		})
+		require.NoError(t, err)
+
+		err = usersRepo.UpdateDefaultPlacement(ctx, user.ID, 12)
+		require.NoError(t, err)
+
+		user, err = usersRepo.Get(ctx, user.ID)
+		require.NoError(t, err)
+		require.Equal(t, storj.PlacementConstraint(12), user.DefaultPlacement)
+
+		err = usersRepo.UpdateDefaultPlacement(ctx, user.ID, storj.EveryCountry)
+		require.NoError(t, err)
+
+		user, err = usersRepo.Get(ctx, user.ID)
+		require.NoError(t, err)
+		require.Equal(t, storj.EveryCountry, user.DefaultPlacement)
+	})
+}
+
+func TestGetUpgradeTime(t *testing.T) {
+	satellitedbtest.Run(t, func(ctx *testcontext.Context, t *testing.T, db satellite.DB) {
+		usersRepo := db.Console().Users()
+
+		user, err := usersRepo.Insert(ctx, &console.User{
+			ID:           testrand.UUID(),
+			FullName:     "User",
+			Email:        "test@mail.test",
+			PasswordHash: []byte("123a123"),
+		})
+		require.NoError(t, err)
+
+		upgradeTime, err := usersRepo.GetUpgradeTime(ctx, user.ID)
+		require.NoError(t, err)
+		require.Nil(t, upgradeTime)
+
+		now := time.Now()
+
+		err = usersRepo.Update(ctx, user.ID, console.UpdateUserRequest{UpgradeTime: &now})
+		require.NoError(t, err)
+
+		upgradeTime, err = usersRepo.GetUpgradeTime(ctx, user.ID)
+		require.NoError(t, err)
+		require.NotNil(t, upgradeTime)
+		require.WithinDuration(t, now, *upgradeTime, time.Minute)
 	})
 }
 
@@ -384,6 +515,32 @@ func TestUserSettings(t *testing.T) {
 			settings, err = users.GetSettings(ctx, id)
 			require.NoError(t, err)
 			require.Equal(t, newBool, settings.PassphrasePrompt)
+		})
+
+		t.Run("test notice dismissal", func(t *testing.T) {
+			id = testrand.UUID()
+			noticeDismissal := console.NoticeDismissal{
+				FileGuide:                false,
+				ServerSideEncryption:     false,
+				PartnerUpgradeBanner:     false,
+				ProjectMembersPassphrase: false,
+			}
+
+			require.NoError(t, users.UpsertSettings(ctx, id, console.UpsertUserSettingsRequest{}))
+			settings, err := users.GetSettings(ctx, id)
+			require.NoError(t, err)
+			require.Equal(t, noticeDismissal, settings.NoticeDismissal)
+
+			noticeDismissal.FileGuide = true
+			noticeDismissal.ServerSideEncryption = true
+			noticeDismissal.PartnerUpgradeBanner = true
+			noticeDismissal.ProjectMembersPassphrase = true
+			require.NoError(t, users.UpsertSettings(ctx, id, console.UpsertUserSettingsRequest{
+				NoticeDismissal: &noticeDismissal,
+			}))
+			settings, err = users.GetSettings(ctx, id)
+			require.NoError(t, err)
+			require.Equal(t, noticeDismissal, settings.NoticeDismissal)
 		})
 	})
 }

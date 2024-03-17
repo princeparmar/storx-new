@@ -83,12 +83,18 @@ type Blobs interface {
 	DeleteWithStorageFormat(ctx context.Context, ref BlobRef, formatVer FormatVersion) error
 	// DeleteNamespace deletes blobs folder for a specific namespace.
 	DeleteNamespace(ctx context.Context, ref []byte) (err error)
+	// DeleteTrashNamespace deletes the trash folder for a given namespace.
+	DeleteTrashNamespace(ctx context.Context, namespace []byte) (err error)
 	// Trash marks a file for pending deletion.
-	Trash(ctx context.Context, ref BlobRef) error
+	Trash(ctx context.Context, ref BlobRef, timestamp time.Time) error
 	// RestoreTrash restores all files in the trash for a given namespace and returns the keys restored.
 	RestoreTrash(ctx context.Context, namespace []byte) ([][]byte, error)
 	// EmptyTrash removes all files in trash that were moved to trash prior to trashedBefore and returns the total bytes emptied and keys deleted.
 	EmptyTrash(ctx context.Context, namespace []byte, trashedBefore time.Time) (int64, [][]byte, error)
+	// TryRestoreTrashBlob attempts to restore a blob from the trash.
+	// It returns nil if the blob was restored, or an error if the blob was not
+	// in the trash or could not be restored.
+	TryRestoreTrashBlob(ctx context.Context, ref BlobRef) error
 	// Stat looks up disk metadata on the blob file.
 	Stat(ctx context.Context, ref BlobRef) (BlobInfo, error)
 	// StatWithStorageFormat looks up disk metadata for the blob file with the given storage format
@@ -98,6 +104,8 @@ type Blobs interface {
 
 	// FreeSpace return how much free space is left on the whole disk, not just the allocated disk space.
 	FreeSpace(ctx context.Context) (int64, error)
+	// DiskInfo returns information about the disk.
+	DiskInfo(ctx context.Context) (DiskInfo, error)
 	// SpaceUsedForTrash returns the total space used by the trash.
 	SpaceUsedForTrash(ctx context.Context) (int64, error)
 	// SpaceUsedForBlobs adds up how much is used in all namespaces.
@@ -130,10 +138,17 @@ type Blobs interface {
 type BlobInfo interface {
 	// BlobRef returns the relevant BlobRef for the blob.
 	BlobRef() BlobRef
-	// StorageFormatVersion indicates the storage format version used to store the piece.
+	// StorageFormatVersion indicates the storage format version used to store the blob.
 	StorageFormatVersion() FormatVersion
 	// FullPath gives the full path to the on-disk blob file.
 	FullPath(ctx context.Context) (string, error)
 	// Stat does a stat on the on-disk blob file.
 	Stat(ctx context.Context) (os.FileInfo, error)
+}
+
+// DiskInfo contains information about the disk.
+type DiskInfo struct {
+	ID             string
+	TotalSpace     int64
+	AvailableSpace int64
 }

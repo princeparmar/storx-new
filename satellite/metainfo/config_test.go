@@ -9,6 +9,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"storj.io/common/memory"
+	"storj.io/common/testrand"
+	"storj.io/common/uuid"
 	"storj.io/storj/satellite/metainfo"
 )
 
@@ -95,4 +97,30 @@ func TestRSConfigValidation(t *testing.T) {
 			require.EqualValues(t, tt.expectedConfig.Total, rsConfig.Total)
 		}
 	}
+}
+
+func TestExtendedConfig_UseBucketLevelObjectVersioning(t *testing.T) {
+	projectA := testrand.UUID()
+	projectB := testrand.UUID()
+	projectC := testrand.UUID()
+	config, err := metainfo.NewExtendedConfig(metainfo.Config{
+		UseBucketLevelObjectVersioningProjects: []string{
+			projectA.String(),
+			projectB.String(),
+		},
+	})
+	require.NoError(t, err)
+
+	require.True(t, config.UseBucketLevelObjectVersioningByProject(projectA))
+	require.True(t, config.UseBucketLevelObjectVersioningByProject(projectB))
+	require.False(t, config.UseBucketLevelObjectVersioningByProject(projectC))
+
+	config, err = metainfo.NewExtendedConfig(metainfo.Config{
+		UseBucketLevelObjectVersioning: false,
+		UseBucketLevelObjectVersioningProjects: []string{
+			"01000000-0000-0000-0000-000000000000",
+		},
+	})
+	require.NoError(t, err)
+	require.True(t, config.UseBucketLevelObjectVersioningByProject(uuid.UUID{1}))
 }

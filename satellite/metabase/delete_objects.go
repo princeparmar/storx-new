@@ -12,8 +12,8 @@ import (
 	"github.com/zeebo/errs"
 	"go.uber.org/zap"
 
-	"storj.io/private/dbutil/pgxutil"
-	"storj.io/private/tagsql"
+	"storj.io/common/dbutil/pgxutil"
+	"storj.io/common/tagsql"
 )
 
 const (
@@ -102,6 +102,7 @@ type DeleteZombieObjects struct {
 }
 
 // DeleteZombieObjects deletes all objects that zombie deletion deadline passed.
+// TODO will be removed when objects table will be free from pending objects.
 func (db *DB) DeleteZombieObjects(ctx context.Context, opts DeleteZombieObjects) (err error) {
 	defer mon.Task()(&ctx)(&err)
 
@@ -115,7 +116,7 @@ func (db *DB) DeleteZombieObjects(ctx context.Context, opts DeleteZombieObjects)
 			` + db.impl.AsOfSystemInterval(opts.AsOfSystemInterval) + `
 			WHERE
 				(project_id, bucket_name, object_key, version) > ($1, $2, $3, $4)
-				AND status = ` + pendingStatus + `
+				AND status = ` + statusPending + `
 				AND (zombie_deletion_deadline IS NULL OR zombie_deletion_deadline < $5)
 				ORDER BY project_id, bucket_name, object_key, version
 			LIMIT $6;`

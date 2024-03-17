@@ -14,7 +14,7 @@ import (
 	"github.com/zeebo/errs"
 	"go.uber.org/zap"
 
-	"storj.io/private/process"
+	"storj.io/common/process"
 )
 
 var mon = monkit.Package()
@@ -74,6 +74,9 @@ func run(cmd *cobra.Command, args []string) error {
 }
 
 func main() {
+	logger, _, _ := process.NewLogger("migrate-public-ids")
+	zap.ReplaceGlobals(logger)
+
 	process.Exec(rootCmd)
 }
 

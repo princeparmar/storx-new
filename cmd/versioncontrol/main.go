@@ -11,9 +11,9 @@ import (
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
 
+	"storj.io/common/cfgstruct"
 	"storj.io/common/fpath"
-	"storj.io/private/cfgstruct"
-	"storj.io/private/process"
+	"storj.io/common/process"
 	_ "storj.io/storj/private/version" // This attaches version information during release builds.
 	"storj.io/storj/versioncontrol"
 )
@@ -94,5 +94,8 @@ func cmdSetup(cmd *cobra.Command, args []string) (err error) {
 }
 
 func main() {
+	logger, _, _ := process.NewLogger("versioncontrol")
+	zap.ReplaceGlobals(logger)
+
 	process.Exec(rootCmd)
 }

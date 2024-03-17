@@ -14,13 +14,13 @@ import (
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 
+	"storj.io/common/debug"
 	"storj.io/common/identity"
 	"storj.io/common/peertls/extensions"
 	"storj.io/common/peertls/tlsopts"
 	"storj.io/common/rpc"
 	"storj.io/common/storj"
-	"storj.io/private/debug"
-	"storj.io/private/version"
+	"storj.io/common/version"
 	"storj.io/storj/private/lifecycle"
 	version_checker "storj.io/storj/private/version/checker"
 	"storj.io/storj/satellite/gc/sender"
@@ -75,8 +75,8 @@ func NewGarbageCollection(log *zap.Logger, full *identity.FullIdentity, db DB,
 
 	{ // setup debug
 		var err error
-		if config.Debug.Address != "" {
-			peer.Debug.Listener, err = net.Listen("tcp", config.Debug.Address)
+		if config.Debug.Addr != "" {
+			peer.Debug.Listener, err = net.Listen("tcp", config.Debug.Addr)
 			if err != nil {
 				withoutStack := errors.New(err.Error())
 				peer.Log.Debug("failed to start debug endpoints", zap.Error(withoutStack))

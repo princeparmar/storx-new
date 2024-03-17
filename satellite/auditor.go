@@ -14,14 +14,14 @@ import (
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 
+	"storj.io/common/debug"
 	"storj.io/common/identity"
 	"storj.io/common/peertls/extensions"
 	"storj.io/common/peertls/tlsopts"
 	"storj.io/common/rpc"
 	"storj.io/common/signing"
 	"storj.io/common/storj"
-	"storj.io/private/debug"
-	"storj.io/private/version"
+	"storj.io/common/version"
 	"storj.io/storj/private/lifecycle"
 	version_checker "storj.io/storj/private/version/checker"
 	"storj.io/storj/satellite/audit"
@@ -95,8 +95,8 @@ func NewAuditor(log *zap.Logger, full *identity.FullIdentity,
 
 	{ // setup debug
 		var err error
-		if config.Debug.Address != "" {
-			peer.Debug.Listener, err = net.Listen("tcp", config.Debug.Address)
+		if config.Debug.Addr != "" {
+			peer.Debug.Listener, err = net.Listen("tcp", config.Debug.Addr)
 			if err != nil {
 				withoutStack := errors.New(err.Error())
 				peer.Log.Debug("failed to start debug endpoints", zap.Error(withoutStack))
@@ -139,9 +139,14 @@ func NewAuditor(log *zap.Logger, full *identity.FullIdentity,
 		peer.Dialer = rpc.NewDefaultDialer(tlsOptions)
 	}
 
+	placement, err := config.Placement.Parse(config.Overlay.Node.CreateDefaultPlacement)
+	if err != nil {
+		return nil, err
+	}
+
 	{ // setup overlay
 		var err error
-		peer.Overlay, err = overlay.NewService(log.Named("overlay"), overlayCache, nodeEvents, config.Placement.CreateFilters, config.Console.ExternalAddress, config.Console.SatelliteName, config.Overlay)
+		peer.Overlay, err = overlay.NewService(log.Named("overlay"), overlayCache, nodeEvents, placement, config.Console.ExternalAddress, config.Console.SatelliteName, config.Overlay)
 		if err != nil {
 			return nil, errs.Combine(err, peer.Close())
 		}
@@ -174,7 +179,12 @@ func NewAuditor(log *zap.Logger, full *identity.FullIdentity,
 	}
 
 	{ // setup orders
-		var err error
+
+		placement, err := config.Placement.Parse(config.Overlay.Node.CreateDefaultPlacement)
+		if err != nil {
+			return nil, err
+		}
+
 		peer.Orders.Service, err = orders.NewService(
 			log.Named("orders"),
 			signing.SignerFromFullIdentity(peer.Identity),
@@ -183,7 +193,7 @@ func NewAuditor(log *zap.Logger, full *identity.FullIdentity,
 			// PUT and GET actions which are not used by
 			// auditor so we can set noop implementation.
 			orders.NewNoopDB(),
-			config.Placement.CreateFilters,
+			placement.CreateFilters,
 			config.Orders,
 		)
 		if err != nil {

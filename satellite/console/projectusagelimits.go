@@ -15,11 +15,15 @@ type ProjectUsageLimits struct {
 	SegmentLimit   int64 `json:"segmentLimit"`
 	RateUsed       int64 `json:"rateUsed"`
 	SegmentUsed    int64 `json:"segmentUsed"`
+	BucketsUsed    int64 `json:"bucketsUsed"`
+	BucketsLimit   int64 `json:"bucketsLimit"`
 }
 
 // UsageLimits represents storage, bandwidth, and segment limits imposed on an entity.
 type UsageLimits struct {
-	Storage   int64 `json:"storage"`
-	Bandwidth int64 `json:"bandwidth"`
-	Segment   int64 `json:"segment"`
+	Storage    int64 `json:"storage"`
+	Bandwidth  int64 `json:"bandwidth"`
+	Segment    int64 `json:"segment"`
+	RateLimit  *int  `json:"rateLimit"`
+	BurstLimit *int  `json:"burstLimit"`
 }

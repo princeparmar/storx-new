@@ -1,13 +1,34 @@
-// Copyright (C) 2020 Storx Labs, Inc.
+// Copyright (C) 2020 Storj Labs, Inc.
 // See LICENSE for copying information.
 
-// eslint-disable-next-line no-undef
-importScripts('/static/static/wasm/wasm_exec.js');
-
-// importScripts('../../static/wasm/wasm_exec.js');
-
 if (!WebAssembly.instantiate) {
-    self.postMessage(new Error('web assembly is not supported'));
+    self.postMessage({ error: new Error('Web assembly is not supported') });
+}
+
+async function setupWithCacheControl(mode) {
+    const manifestResp = await fetch('/static/static/wasm/wasm-manifest.json', { cache: 'no-store' });
+    if (!manifestResp.ok) {
+        throw new Error('Failed to fetch wasm manifest.');
+    }
+    const manifest = await manifestResp.json();
+
+    // eslint-disable-next-line no-undef
+    importScripts(`/static/static/wasm/${manifest.helperFileName}`);
+
+    const go = new self.Go();
+
+    const response = await fetch(`/static/static/wasm/${manifest.moduleFileName}`, { cache: mode });
+    if (!response.ok) {
+        throw new Error('Failed to fetch wasm module.');
+    }
+
+    const buffer = await response.arrayBuffer();
+    const module = await WebAssembly.compile(buffer);
+    const instance = await WebAssembly.instantiate(module, go.importObject);
+
+    go.run(instance);
+
+    self.postMessage('configured');
 }
 
 self.onmessage = async function (event) {
@@ -17,17 +38,13 @@ self.onmessage = async function (event) {
     switch (data.type) {
     case 'Setup':
         try {
-            const go = new self.Go();
-            const response = await fetch('/static/static/wasm/access.wasm');
-            const buffer = await response.arrayBuffer();
-            const module = await WebAssembly.compile(buffer);
-            const instance = await WebAssembly.instantiate(module, go.importObject);
-
-            go.run(instance);
-
-            self.postMessage('configured');
-        } catch (e) {
-            self.postMessage(new Error(e.message));
+            await setupWithCacheControl('default');
+        } catch {
+            try {
+                await setupWithCacheControl('reload');
+            } catch (e) {
+                self.postMessage({ error: new Error(e.message) });
+            }
         }
 
         break;
@@ -86,6 +103,6 @@ self.onmessage = async function (event) {
         }
         break;
     default:
-        self.postMessage(new Error('provided message event type is not supported'));
+        self.postMessage({ error: new Error('provided message event type is not supported') });
     }
 };

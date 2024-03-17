@@ -36,51 +36,82 @@ type Types struct {
 
 // Register registers a type for generation.
 func (types *Types) Register(t reflect.Type) {
+	if t.Name() == "" {
+		switch t.Kind() {
+		case reflect.Array, reflect.Slice, reflect.Ptr:
+			if t.Elem().Name() == "" {
+				panic(
+					fmt.Sprintf("register an %q of elements of an anonymous type is not supported", t.Name()),
+				)
+			}
+		default:
+			panic("register an anonymous type is not supported. All the types must have a name")
+		}
+	}
 	types.top[t] = struct{}{}
 }
 
-// All returns a slice containing every top-level type and their dependencies.
-func (types *Types) All() []reflect.Type {
-	seen := map[reflect.Type]struct{}{}
-	all := []reflect.Type{}
+// All returns a map containing every top-level and their dependency types with their associated name.
+func (types *Types) All() map[reflect.Type]string {
+	all := map[reflect.Type]string{}
 
 	var walk func(t reflect.Type)
 	walk = func(t reflect.Type) {
-		if _, ok := seen[t]; ok {
-			return
-		}
-		seen[t] = struct{}{}
-		all = append(all, t)
-
-		if _, ok := commonClasses[t]; ok {
+		if _, ok := all[t]; ok {
 			return
 		}
 
-		switch t.Kind() {
-		case reflect.Array, reflect.Ptr, reflect.Slice:
+		if n, ok := commonClasses[t]; ok {
+			all[t] = n
+			return
+		}
+
+		switch k := t.Kind(); k {
+		case reflect.Ptr:
+			walk(t.Elem())
+		case reflect.Array, reflect.Slice:
 			walk(t.Elem())
 		case reflect.Struct:
-			for i := 0; i < t.NumField(); i++ {
-				walk(t.Field(i).Type)
+			if t.Name() == "" {
+				panic(fmt.Sprintf("BUG: found an anonymous 'struct'. Found type=%q", t))
 			}
-		case reflect.Bool:
-		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		case reflect.Float32, reflect.Float64:
-		case reflect.String:
-			break
+
+			all[t] = typeNameWithoutGenerics(t.Name())
+
+			for i := 0; i < t.NumField(); i++ {
+				field := t.Field(i)
+				if field.Anonymous {
+					if field.Type.Kind() != reflect.Struct {
+						panic(fmt.Sprintf("only embedded struct types are allowed. (%s).%s", field.Type, field.Name))
+					}
+
+					_, has, err := parseJSONTag(field.Type, field)
+					if err != nil {
+						panic(err)
+					}
+
+					if !has {
+						// We don't want to create Typescript classes of fields which are structs anonymous, and
+						// without JSON tag their fields are flatten into the parent.
+						continue
+					}
+				}
+				walk(field.Type)
+			}
+		case reflect.Bool,
+			reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+			reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+			reflect.Float32, reflect.Float64,
+			reflect.String:
+			all[t] = t.Name()
 		default:
-			panic(fmt.Sprintf("type '%s' is not supported", t.Kind().String()))
+			panic(fmt.Sprintf("type %q is not supported", t.Kind().String()))
 		}
 	}
 
 	for t := range types.top {
 		walk(t)
 	}
-
-	sort.Slice(all, func(i, j int) bool {
-		return strings.Compare(all[i].Name(), all[j].Name()) < 0
-	})
 
 	return all
 }
@@ -90,40 +121,32 @@ func (types *Types) GenerateTypescriptDefinitions() string {
 	var out StringBuilder
 	pf := out.Writelnf
 
-	pf(types.getTypescriptImports())
+	{
+		i := types.getTypescriptImports()
+		if i != "" {
+			pf(i)
+		}
+	}
 
-	all := filter(types.All(), func(t reflect.Type) bool {
-		if _, ok := commonClasses[t]; ok {
+	allTypes := types.All()
+	namedTypes := mapToSlice(allTypes)
+	allStructs := filter(namedTypes, func(tn typeAndName) bool {
+		if _, ok := commonClasses[tn.Type]; ok {
 			return false
 		}
-		return t.Kind() == reflect.Struct
+
+		return tn.Type.Kind() == reflect.Struct
 	})
 
-	for _, t := range all {
+	for _, t := range allStructs {
 		func() {
-			pf("\nexport class %s {", t.Name())
+			name := capitalize(t.Name)
+			pf("\nexport class %s {", name)
 			defer pf("}")
 
-			for i := 0; i < t.NumField(); i++ {
-				field := t.Field(i)
-				attributes := strings.Fields(field.Tag.Get("json"))
-				if len(attributes) == 0 || attributes[0] == "" {
-					pathParts := strings.Split(t.PkgPath(), "/")
-					pkg := pathParts[len(pathParts)-1]
-					panic(fmt.Sprintf("(%s.%s).%s missing json declaration", pkg, t.Name(), field.Name))
-				}
-
-				jsonField := attributes[0]
-				if jsonField == "-" {
-					continue
-				}
-
-				isOptional := ""
-				if isNillableType(t) {
-					isOptional = "?"
-				}
-
-				pf("\t%s%s: %s;", jsonField, isOptional, TypescriptTypeName(field.Type))
+			fields := GetClassFieldsFromStruct(t.Type)
+			for _, f := range fields {
+				pf(f.String())
 			}
 		}()
 	}
@@ -135,8 +158,7 @@ func (types *Types) GenerateTypescriptDefinitions() string {
 func (types *Types) getTypescriptImports() string {
 	classes := []string{}
 
-	all := types.All()
-	for _, t := range all {
+	for t := range types.All() {
 		if tsClass, ok := commonClasses[t]; ok {
 			classes = append(classes, tsClass)
 		}
@@ -154,6 +176,7 @@ func (types *Types) getTypescriptImports() string {
 }
 
 // TypescriptTypeName gets the corresponding TypeScript type for a provided reflect.Type.
+// If the type is an anonymous struct, it returns an empty string.
 func TypescriptTypeName(t reflect.Type) string {
 	if override, ok := commonClasses[t]; ok {
 		return override
@@ -162,15 +185,18 @@ func TypescriptTypeName(t reflect.Type) string {
 	switch t.Kind() {
 	case reflect.Ptr:
 		return TypescriptTypeName(t.Elem())
-	case reflect.Slice:
+	case reflect.Array, reflect.Slice:
+		if t.Name() != "" {
+			return capitalize(t.Name())
+		}
+
 		// []byte ([]uint8) is marshaled as a base64 string
 		elem := t.Elem()
 		if elem.Kind() == reflect.Uint8 {
 			return "string"
 		}
-		fallthrough
-	case reflect.Array:
-		return TypescriptTypeName(t.Elem()) + "[]"
+
+		return TypescriptTypeName(elem) + "[]"
 	case reflect.String:
 		return "string"
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
@@ -182,8 +208,110 @@ func TypescriptTypeName(t reflect.Type) string {
 	case reflect.Bool:
 		return "boolean"
 	case reflect.Struct:
-		return t.Name()
+		if t.Name() == "" {
+			panic(fmt.Sprintf(`anonymous struct aren't accepted because their type doesn't have a name. Type="%+v"`, t))
+		}
+		return capitalize(typeNameWithoutGenerics(t.Name()))
 	default:
-		panic("unhandled type: " + t.Name())
+		panic(fmt.Sprintf(`unhandled type. Type="%+v"`, t))
 	}
+}
+
+// ClassField is a description of a field to generate a string representation of a TypeScript class
+// field.
+type ClassField struct {
+	Name     string
+	Type     reflect.Type
+	TypeName string
+	Optional bool
+	Nullable bool
+}
+
+// String returns the c string representation.
+func (c *ClassField) String() string {
+	isOptional := ""
+	if c.Optional {
+		isOptional = "?"
+	}
+
+	isNullable := ""
+	if c.Nullable {
+		isNullable = " | null"
+	}
+
+	return fmt.Sprintf("\t%s%s: %s%s;", c.Name, isOptional, c.TypeName, isNullable)
+}
+
+// GetClassFieldsFromStruct takes a struct type and returns the list of Class fields definition to
+// create a TypeScript class based on t JSON representation.
+//
+// It panics if t is not a struct, it has embedded fields that aren't structs, it has JSON tags
+// names which aren't unique (considering that embedded ones are flatten into the class),
+// a non-embedded field has no JSON tag, or a JSON tag is malformed.
+func GetClassFieldsFromStruct(t reflect.Type) []ClassField {
+	fieldNames := map[string]struct{}{}
+
+	var walk func(t reflect.Type) []ClassField
+	walk = func(t reflect.Type) []ClassField {
+		if t.Kind() != reflect.Struct {
+			panic("BUG: getClassFields must only be called with struct types")
+		}
+
+		fields := []ClassField{}
+		for i := 0; i < t.NumField(); i++ {
+			field := t.Field(i)
+			jsonInfo, ok, err := parseJSONTag(t, field)
+			if err != nil {
+				panic(err)
+			}
+
+			if jsonInfo.Skip {
+				continue
+			}
+
+			if !ok && !field.Anonymous {
+				panic(
+					fmt.Sprintf(
+						"only embedded struct fields are allowed to not have a JSON tag definition. (%s).%s",
+						t, field.Name,
+					),
+				)
+			}
+
+			if field.Anonymous {
+				if field.Type.Kind() != reflect.Struct {
+					panic(fmt.Sprintf("only embedded struct types are allowed. (%s).%s", t, field.Name))
+				}
+
+				fields = append(fields, walk(field.Type)...)
+				continue
+			}
+
+			if _, ok := fieldNames[jsonInfo.FieldName]; ok {
+				panic(fmt.Sprintf(
+					"duplicated field name for TypeScript class. Go embedded struct fields are only accepted if their JSON field name is unique across all the fields that flatten into the parent struct. Found duplicated on (%s).%s (json name: %s)",
+					t,
+					field.Name,
+					jsonInfo.FieldName,
+				))
+			}
+
+			fieldNames[jsonInfo.FieldName] = struct{}{}
+
+			fields = append(
+				fields,
+				ClassField{
+					Name:     jsonInfo.FieldName,
+					Type:     field.Type,
+					TypeName: TypescriptTypeName(field.Type),
+					Optional: jsonInfo.OmitEmpty,
+					Nullable: isNillableType(field.Type),
+				},
+			)
+		}
+
+		return fields
+	}
+
+	return walk(t)
 }

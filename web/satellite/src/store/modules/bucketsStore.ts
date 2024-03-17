@@ -1,4 +1,4 @@
-// Copyright (C) 2022 Storx Labs, Inc.
+// Copyright (C) 2022 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 import { reactive } from 'vue';
@@ -12,7 +12,7 @@ import {
 } from '@aws-sdk/client-s3';
 import { SignatureV4 } from '@smithy/signature-v4';
 
-import { Bucket, BucketCursor, BucketPage, BucketsApi } from '@/types/buckets';
+import { Bucket, BucketCursor, BucketPlacement, BucketPage, BucketsApi } from '@/types/buckets';
 import { BucketsHttpApi } from '@/api/buckets';
 import { AccessGrant, EdgeCredentials } from '@/types/accessGrants';
 import { useAccessGrantsStore } from '@/store/modules/accessGrantsStore';
@@ -25,6 +25,7 @@ export const FILE_BROWSER_AG_NAME = 'Web file browser API key';
 
 export class BucketsState {
     public allBucketNames: string[] = [];
+    public allBucketPlacements: BucketPlacement[] = [];
     public cursor: BucketCursor = { limit: DEFAULT_PAGE_LIMIT, search: '', page: FIRST_PAGE };
     public page: BucketPage = { buckets: new Array<Bucket>(), currentPage: 1, pageCount: 1, offset: 0, limit: DEFAULT_PAGE_LIMIT, search: '', totalCount: 0 };
     public edgeCredentials: EdgeCredentials = new EdgeCredentials();
@@ -46,8 +47,10 @@ export class BucketsState {
     public passphrase = '';
     public promptForPassphrase = true;
     public fileComponentBucketName = '';
+    public fileComponentPath = '';
     public leaveRoute = '';
     public enterPassphraseCallback: (() => void) | null = null;
+    public bucketToDelete = '';
 }
 
 export const useBucketsStore = defineStore('buckets', () => {
@@ -69,6 +72,10 @@ export const useBucketsStore = defineStore('buckets', () => {
 
     async function getAllBucketsNames(projectID: string): Promise<void> {
         state.allBucketNames = await api.getAllBucketNames(projectID);
+    }
+
+    async function getAllBucketsPlacements(projectID: string): Promise<void> {
+        state.allBucketPlacements = await api.getAllBucketPlacements(projectID);
     }
 
     function setPromptForPassphrase(value: boolean): void {
@@ -101,7 +108,7 @@ export const useBucketsStore = defineStore('buckets', () => {
 
         state.s3ClientForDelete.middlewareStack.add(
             (next, _) => (args) => {
-                (args.request as { headers: {key:string} }).headers['x-minio-force-delete'] = 'true';
+                (args.request as { headers: { key: string } }).headers['x-minio-force-delete'] = 'true';
                 return next(args);
             },
             { step: 'build' },
@@ -146,7 +153,7 @@ export const useBucketsStore = defineStore('buckets', () => {
             throw new Error(error.message);
         };
 
-        await worker.postMessage({
+        worker.postMessage({
             'type': 'SetPermission',
             'isDownload': true,
             'isUpload': true,
@@ -210,6 +217,10 @@ export const useBucketsStore = defineStore('buckets', () => {
         state.fileComponentBucketName = bucketName;
     }
 
+    function setFileComponentPath(path: string): void {
+        state.fileComponentPath = path;
+    }
+
     function setEnterPassphraseCallback(fn: (() => void) | null): void {
         state.enterPassphraseCallback = fn;
     }
@@ -233,31 +244,16 @@ export const useBucketsStore = defineStore('buckets', () => {
     }
 
     async function getObjectsCount(name: string): Promise<number> {
-        const abortController = new AbortController();
-
-        const request = state.s3Client.send(new ListObjectsV2Command({
+        const response = await state.s3Client.send(new ListObjectsV2Command({
             Bucket: name,
-        }), { abortSignal: abortController.signal });
-
-        const timeout = setTimeout(() => {
-            abortController.abort();
-        }, 10000); // abort request in 10 seconds.
-
-        let response;
-        try {
-            response = await request;
-            clearTimeout(timeout);
-        } catch (error) {
-            clearTimeout(timeout);
-
-            if (abortController.signal.aborted) {
-                return 0;
-            }
-
-            throw error;
-        }
+            MaxKeys: 1, // We need to know if there is at least 1 decryptable object.
+        }));
 
         return (!response || response.KeyCount === undefined) ? 0 : response.KeyCount;
+    }
+
+    function setBucketToDelete(bucket: string): void {
+        state.bucketToDelete = bucket;
     }
 
     function clearS3Data(): void {
@@ -281,6 +277,7 @@ export const useBucketsStore = defineStore('buckets', () => {
         });
         state.fileComponentBucketName = '';
         state.leaveRoute = '';
+        state.bucketToDelete = '';
     }
 
     function clear(): void {
@@ -296,6 +293,7 @@ export const useBucketsStore = defineStore('buckets', () => {
         setBucketsSearch,
         getBuckets,
         getAllBucketsNames,
+        getAllBucketsPlacements,
         setPromptForPassphrase,
         setEdgeCredentials,
         setEdgeCredentialsForDelete,
@@ -304,11 +302,13 @@ export const useBucketsStore = defineStore('buckets', () => {
         setPassphrase,
         setApiKey,
         setFileComponentBucketName,
+        setFileComponentPath,
         setEnterPassphraseCallback,
         createBucket,
         createBucketWithNoPassphrase,
         deleteBucket,
         getObjectsCount,
+        setBucketToDelete,
         clearS3Data,
         clear,
     };

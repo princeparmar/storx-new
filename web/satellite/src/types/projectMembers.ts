@@ -1,4 +1,4 @@
-// Copyright (C) 2019 Storx Labs, Inc.
+// Copyright (C) 2019 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 /**
@@ -8,8 +8,6 @@ import { SortDirection } from '@/types/common';
 import { User } from '@/types/users';
 import { DEFAULT_PAGE_LIMIT } from '@/types/pagination';
 
-export type OnHeaderClickCallback = (sortBy: ProjectMemberOrderBy, sortDirection: SortDirection) => Promise<void>;
-
 export enum ProjectMemberOrderBy {
     NAME = 1,
     EMAIL,
@@ -17,20 +15,29 @@ export enum ProjectMemberOrderBy {
 }
 
 /**
- * ProjectMembersApi is a graphql implementation of ProjectMembers API.
- * Exposes all ProjectMembers-related functionality
+ * ProjectMembersApi exposes all ProjectMembers-related functionality
  */
 export interface ProjectMembersApi {
 
     /**
-     * Invite members to project by user emails.
+     * Invites a user to a project.
      *
      * @param projectId
-     * @param emails list of project members email to add
+     * @param email email of the project member to add
      *
      * @throws Error
      */
-    invite(projectId: string, emails: string[]): Promise<void>;
+    invite(projectId: string, email: string): Promise<void>;
+
+    /**
+     * Resends invitations to pending project members.
+     *
+     * @param projectId
+     * @param emails emails of the project members whose invitations should be resent
+     *
+     * @throws Error
+     */
+    reinvite(projectId: string, emails: string[]): Promise<void>;
 
     /**
      * Get invite link for the specified project and email.
@@ -72,7 +79,7 @@ export class ProjectMemberCursor {
         public limit: number = DEFAULT_PAGE_LIMIT,
         public page: number = 1,
         public order: ProjectMemberOrderBy = ProjectMemberOrderBy.NAME,
-        public orderDirection: SortDirection = SortDirection.ASCENDING,
+        public orderDirection: SortDirection = SortDirection.asc,
     ) {}
 }
 
@@ -85,7 +92,7 @@ export class ProjectMembersPage {
         public projectInvitations: ProjectInvitationItemModel[] = [],
         public search: string = '',
         public order: ProjectMemberOrderBy = ProjectMemberOrderBy.NAME,
-        public orderDirection: SortDirection = SortDirection.ASCENDING,
+        public orderDirection: SortDirection = SortDirection.asc,
         public limit: number = 6,
         public pageCount: number = 0,
         public currentPage: number = 1,
@@ -106,7 +113,7 @@ export class ProjectMembersPage {
                 cmp = (a, b) => a.getName().toLowerCase().localeCompare(b.getName().toLowerCase());
             }
 
-            const result = (this.orderDirection === SortDirection.DESCENDING) ? cmp(b, a) : cmp(a, b);
+            const result = (this.orderDirection === SortDirection.desc) ? cmp(b, a) : cmp(a, b);
             return (result !== 0) ? result : a.getEmail().toLowerCase().localeCompare(b.getEmail().toLowerCase());
         });
     }

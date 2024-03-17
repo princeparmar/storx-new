@@ -5,6 +5,7 @@ package console
 
 import (
 	"context"
+	"time"
 
 	"storj.io/common/memory"
 	"storj.io/storj/satellite/payments/billing"
@@ -18,21 +19,35 @@ type UpgradeUserObserver struct {
 	transactionsDB        billing.TransactionsDB
 	usageLimitsConfig     UsageLimitsConfig
 	userBalanceForUpgrade int64
+	freezeService         *AccountFreezeService
+	nowFn                 func() time.Time
 }
 
 // NewUpgradeUserObserver creates new observer instance.
-func NewUpgradeUserObserver(consoleDB DB, transactionsDB billing.TransactionsDB, usageLimitsConfig UsageLimitsConfig, userBalanceForUpgrade int64) *UpgradeUserObserver {
+func NewUpgradeUserObserver(consoleDB DB, transactionsDB billing.TransactionsDB, usageLimitsConfig UsageLimitsConfig, userBalanceForUpgrade int64, freezeService *AccountFreezeService) *UpgradeUserObserver {
 	return &UpgradeUserObserver{
 		consoleDB:             consoleDB,
 		transactionsDB:        transactionsDB,
 		usageLimitsConfig:     usageLimitsConfig,
 		userBalanceForUpgrade: userBalanceForUpgrade,
+		freezeService:         freezeService,
+		nowFn:                 time.Now,
 	}
 }
 
 // Process puts user into the paid tier and converts projects to upgraded limits.
 func (o *UpgradeUserObserver) Process(ctx context.Context, transaction billing.Transaction) (err error) {
 	defer mon.Task()(&ctx)(&err)
+
+	freezes, err := o.freezeService.GetAll(ctx, transaction.UserID)
+	if err != nil {
+		return err
+	}
+
+	if freezes.LegalFreeze != nil || freezes.ViolationFreeze != nil {
+		// user can not exit these freezes by paying with tokens
+		return nil
+	}
 
 	user, err := o.consoleDB.Users().Get(ctx, transaction.UserID)
 	if err != nil {
@@ -53,11 +68,13 @@ func (o *UpgradeUserObserver) Process(ctx context.Context, transaction billing.T
 		return nil
 	}
 
+	now := o.nowFn()
 	err = o.consoleDB.Users().UpdatePaidTier(ctx, user.ID, true,
 		o.usageLimitsConfig.Bandwidth.Paid,
 		o.usageLimitsConfig.Storage.Paid,
 		o.usageLimitsConfig.Segment.Paid,
 		o.usageLimitsConfig.Project.Paid,
+		&now,
 	)
 	if err != nil {
 		return err
@@ -86,4 +103,9 @@ func (o *UpgradeUserObserver) Process(ctx context.Context, transaction billing.T
 	}
 
 	return nil
+}
+
+// TestSetNow allows tests to have the observer act as if the current time is whatever they want.
+func (o *UpgradeUserObserver) TestSetNow(nowFn func() time.Time) {
+	o.nowFn = nowFn
 }

@@ -102,9 +102,9 @@ func TestOIDC(t *testing.T) {
 		consoleAddr := sat.API.Console.Listener.Addr().String()
 
 		issuer := "http://" + consoleAddr + "/"
-		authEndpoint := "http://" + consoleAddr + "/oauth/v2/authorize"
-		tokenEndpoint := "http://" + consoleAddr + "/oauth/v2/tokens"
-		userinfoEndpoint := "http://" + consoleAddr + "/oauth/v2/userinfo"
+		authEndpoint := "http://" + consoleAddr + "/api/v0/oauth/v2/authorize"
+		tokenEndpoint := "http://" + consoleAddr + "/api/v0/oauth/v2/tokens"
+		userinfoEndpoint := "http://" + consoleAddr + "/api/v0/oauth/v2/userinfo"
 
 		// Setup test user
 
@@ -114,7 +114,7 @@ func TestOIDC(t *testing.T) {
 		user, err := sat.API.Console.Service.CreateUser(ctx, console.CreateUser{
 			FullName: "User",
 			Email:    "u@mail.test",
-			Password: "123a123",
+			Password: "password",
 		}, regToken.Secret)
 		require.NoError(t, err)
 
@@ -124,7 +124,7 @@ func TestOIDC(t *testing.T) {
 		user, err = sat.API.Console.Service.ActivateAccount(ctx, activationToken)
 		require.NoError(t, err)
 
-		tokenInfo, err := sat.API.Console.Service.GenerateSessionToken(ctx, user.ID, user.Email, "", "")
+		tokenInfo, err := sat.API.Console.Service.GenerateSessionToken(ctx, user.ID, user.Email, "", "", nil)
 		require.NoError(t, err)
 
 		// Set up a test project and bucket
@@ -170,7 +170,7 @@ func TestOIDC(t *testing.T) {
 
 		// Ensure OpenID Connect's well-known configuration endpoint works.
 
-		wellKnownConfig := fmt.Sprintf("http://%s/.well-known/openid-configuration", consoleAddr)
+		wellKnownConfig := fmt.Sprintf("http://%s/api/v0/.well-known/openid-configuration", consoleAddr)
 
 		cfg := oidc.ProviderConfig{}
 		send(t, nil, &cfg, http.StatusOK, wellKnownConfig)

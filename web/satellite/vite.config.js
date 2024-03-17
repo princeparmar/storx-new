@@ -1,25 +1,31 @@
-// Copyright (C) 2023 Storx Labs, Inc.
+// Copyright (C) 2023 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 import { resolve } from 'path';
 
+import vue from '@vitejs/plugin-vue';
+import vuetify, { transformAssetUrls } from 'vite-plugin-vuetify';
 import { defineConfig } from 'vite';
 import { visualizer } from 'rollup-plugin-visualizer';
-import vue from '@vitejs/plugin-vue';
 import viteCompression from 'vite-plugin-compression';
-import vitePluginRequire from 'vite-plugin-require';
-import svgLoader from 'vite-svg-loader';
+
+import vuetifyThemeCSS from './vitePlugins/vuetifyThemeCSS';
+import papaParseWorker from './vitePlugins/papaParseWorker';
 
 const productionBrotliExtensions = ['js', 'css', 'ttf', 'woff', 'woff2'];
 
 const plugins = [
-    vue(),
-    svgLoader({
-        svgoConfig: {
-            plugins: [{ name: 'removeViewBox', fn: () => {} }],
+    vue({
+        template: { transformAssetUrls },
+    }),
+    vuetify({
+        autoImport: true,
+        styles: {
+            configFile: 'src/styles/settings.scss',
         },
     }),
-    vitePluginRequire(),
+    vuetifyThemeCSS(),
+    papaParseWorker(),
 ];
 
 if (process.env['STORJ_DEBUG_BUNDLE_SIZE']) {
@@ -32,44 +38,51 @@ if (process.env['STORJ_DEBUG_BUNDLE_SIZE']) {
 }
 
 export default defineConfig(({ mode }) => {
+    const isProd = mode === 'production';
+
     // compress chunks only for production mode builds.
-    if (mode === "production") {
+    if (isProd) {
         plugins.push(viteCompression({
             algorithm: 'brotliCompress',
             threshold: 1024,
             ext: '.br',
             filter: new RegExp('\\.(' + productionBrotliExtensions.join('|') + ')$'),
         }));
+    } else {
+        process.env['NODE_ENV'] = 'development';
     }
 
-    return { 
-        base: '/',
+    return {
+        base: '/static/dist',
         plugins,
+        define: {
+            'process.env': {},
+        },
         resolve: {
             alias: {
                 '@': resolve(__dirname, './src'),
-                '@poc': resolve(__dirname, './vuetify-poc/src'),
-                'stream': 'stream-browserify',
-                'util': 'util/',
+                'stream': 'stream-browserify', // Passphrase mnemonic generation will not work without this
             },
-            extensions: ['.js', '.ts', '.svg', '.vue'],
+            extensions: [
+                '.js',
+                '.json',
+                '.jsx',
+                '.mjs',
+                '.ts',
+                '.tsx',
+                '.vue',
+            ],
         },
         build: {
             outDir: resolve(__dirname, 'dist'),
             emptyOutDir: true,
+            reportCompressedSize: isProd,
             rollupOptions: {
                 output: {
                     experimentalMinChunkSize: 50*1024,
                 },
-                external: [
-                    /vuetify-poc/,
-                ],
             },
             chunkSizeWarningLimit: 3000,
-        },
-        define: {
-            'process.env': {},
-             global: {}
         },
         test: {
             globals: true,

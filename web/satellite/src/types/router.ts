@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Storx Labs, Inc.
+// Copyright (C) 2023 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 import { NavigationLink } from '@/types/navigation';
@@ -13,6 +13,7 @@ export abstract class RouteConfig {
     public static Login = new NavigationLink('/login', 'Login');
     public static Register = new NavigationLink('/signup', 'Register');
     public static RegisterSuccess = new NavigationLink('/signup-success', 'RegisterSuccess');
+    public static RegisterConfirmation = new NavigationLink('/signup-confirmation', 'RegisterSuccess');
     public static Activate = new NavigationLink('/activate', 'Activate');
     public static ForgotPassword = new NavigationLink('/forgot-password', 'Forgot Password');
     public static ResetPassword = new NavigationLink('/password-recovery', 'Reset Password');
@@ -25,7 +26,6 @@ export abstract class RouteConfig {
     public static CreateProject = new NavigationLink('/create-project', 'Create Project');
     public static EditProjectDetails = new NavigationLink('/edit-project-details', 'Edit Project Details');
     public static AccessGrants = new NavigationLink('/access-grants', 'Access');
-    public static ProjectsList = new NavigationLink('/projects', 'Projects');
     public static Buckets = new NavigationLink('/buckets', 'Buckets');
 
     // account child paths
@@ -69,4 +69,6 @@ export abstract class RouteConfig {
     public static BucketsDetails = new NavigationLink('details', 'Bucket Details');
     public static UploadFile = new NavigationLink('upload/', 'Objects Upload');
     public static UploadFileChildren = new NavigationLink(':pathMatch*', 'Objects Upload Children');
+
+    public static AuthRoutes = ['/login', '/signup', '/forgot-password', '/activate', '/password-recovery', '/signup-confirmation', '/password-reset-confirmation'];
 }

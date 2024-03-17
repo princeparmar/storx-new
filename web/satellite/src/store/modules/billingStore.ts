@@ -1,7 +1,7 @@
-// Copyright (C) 2023 Storx Labs, Inc.
+// Copyright (C) 2023 Storj Labs, Inc.
 // See LICENSE for copying information.
 
-import { computed, reactive } from 'vue';
+import { reactive } from 'vue';
 import { defineStore } from 'pinia';
 
 import {
@@ -10,10 +10,9 @@ import {
     CreditCard,
     DateRange,
     NativePaymentHistoryItem,
+    PaymentHistoryPage,
+    PaymentHistoryParam,
     PaymentsApi,
-    PaymentsHistoryItem,
-    PaymentsHistoryItemStatus,
-    PaymentsHistoryItemType,
     PaymentStatus,
     PaymentWithConfirmations,
     ProjectCharges,
@@ -25,7 +24,7 @@ import { PaymentsHttpApi } from '@/api/payments';
 export class PaymentsState {
     public balance: AccountBalance = new AccountBalance();
     public creditCards: CreditCard[] = [];
-    public paymentsHistory: PaymentsHistoryItem[] = [];
+    public paymentsHistory: PaymentHistoryPage = new PaymentHistoryPage([]);
     public pendingPaymentsWithConfirmations: PaymentWithConfirmations[] = [];
     public nativePaymentsHistory: NativePaymentHistoryItem[] = [];
     public projectCharges: ProjectCharges = new ProjectCharges();
@@ -73,6 +72,10 @@ export const useBillingStore = defineStore('billing', () => {
         await api.addCreditCard(token);
     }
 
+    async function addCardByPaymentMethodID(pmID: string): Promise<void> {
+        await api.addCardByPaymentMethodID(pmID);
+    }
+
     function toggleCardSelection(id: string): void {
         state.creditCards = state.creditCards.map(card => {
             if (card.id === id) {
@@ -102,16 +105,8 @@ export const useBillingStore = defineStore('billing', () => {
     async function makeCardDefault(id: string): Promise<void> {
         await api.makeCreditCardDefault(id);
 
-        state.creditCards = state.creditCards.map(card => {
-            if (card.id === id) {
-                card.isDefault = !card.isDefault;
-
-                return card;
-            }
-
-            card.isDefault = false;
-
-            return card;
+        state.creditCards.forEach(card => {
+            card.isDefault = card.id === id;
         });
     }
 
@@ -121,8 +116,8 @@ export const useBillingStore = defineStore('billing', () => {
         state.creditCards = state.creditCards.filter(card => card.id !== cardId);
     }
 
-    async function getPaymentsHistory(): Promise<void> {
-        state.paymentsHistory = await api.paymentsHistory();
+    async function getPaymentsHistory(params: PaymentHistoryParam): Promise<void> {
+        state.paymentsHistory = await api.paymentsHistory(params);
     }
 
     async function getNativePaymentsHistory(): Promise<void> {
@@ -184,14 +179,14 @@ export const useBillingStore = defineStore('billing', () => {
         state.coupon = await api.getCoupon();
     }
 
-    async function purchasePricingPackage(token: string): Promise<void> {
-        await api.purchasePricingPackage(token);
+    async function purchasePricingPackage(dataStr: string, isPMID: boolean): Promise<void> {
+        await api.purchasePricingPackage(dataStr, isPMID);
     }
 
     function clear(): void {
         state.balance = new AccountBalance();
         state.creditCards = [];
-        state.paymentsHistory = [];
+        state.paymentsHistory = new PaymentHistoryPage([]);
         state.nativePaymentsHistory = [];
         state.projectCharges = new ProjectCharges();
         state.usagePriceModel = new ProjectUsagePriceModel();
@@ -202,37 +197,15 @@ export const useBillingStore = defineStore('billing', () => {
         state.wallet = new Wallet();
     }
 
-    const canUserCreateFirstProject = computed((): boolean => {
-        return state.balance.sum > 0 || state.creditCards.length > 0;
-    });
-
-    const isTransactionProcessing = computed((): boolean => {
-        return state.balance.sum === 0 &&
-            state.paymentsHistory.some((item: PaymentsHistoryItem) => {
-                return item.amount >= 50 && item.type === PaymentsHistoryItemType.Transaction &&
-                    (
-                        item.status === PaymentsHistoryItemStatus.Pending ||
-                        item.status === PaymentsHistoryItemStatus.Paid ||
-                        item.status === PaymentsHistoryItemStatus.Completed
-                    );
-            });
-    });
-
-    const isBalancePositive = computed((): boolean => {
-        return state.balance.sum > 0;
-    });
-
     return {
         state,
-        canUserCreateFirstProject,
-        isTransactionProcessing,
-        isBalancePositive,
         getBalance,
         getWallet,
         claimWallet,
         setupAccount,
         getCreditCards,
         addCreditCard,
+        addCardByPaymentMethodID,
         toggleCardSelection,
         clearCardsSelection,
         makeCardDefault,

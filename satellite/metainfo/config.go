@@ -9,9 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/vivint/infectious"
-
 	"storj.io/common/memory"
+	"storj.io/common/uuid"
 	"storj.io/storj/satellite/metabase"
 	"storj.io/uplink/private/eestream"
 )
@@ -94,7 +93,7 @@ func (rs *RSConfig) Set(s string) error {
 
 // RedundancyStrategy creates eestream.RedundancyStrategy from config values.
 func (rs *RSConfig) RedundancyStrategy() (eestream.RedundancyStrategy, error) {
-	fec, err := infectious.NewFEC(rs.Min, rs.Total)
+	fec, err := eestream.NewFEC(rs.Min, rs.Total)
 	if err != nil {
 		return eestream.RedundancyStrategy{}, err
 	}
@@ -130,7 +129,7 @@ type Config struct {
 	MaxInlineSegmentSize memory.Size `default:"4KiB" help:"maximum inline segment size"`
 	// we have such default value because max value for ObjectKey is 1024(1 Kib) but EncryptedObjectKey
 	// has encryption overhead 16 bytes. So overall size is 1024 + 16 * 16.
-	MaxEncryptedObjectKeyLength int                 `default:"2000" help:"maximum encrypted object key length"`
+	MaxEncryptedObjectKeyLength int                 `default:"4000" help:"maximum encrypted object key length"`
 	MaxSegmentSize              memory.Size         `default:"64MiB" help:"maximum segment size"`
 	MaxMetadataSize             memory.Size         `default:"2KiB" help:"maximum segment metadata size"`
 	MaxCommitInterval           time.Duration       `default:"48h" testDefault:"1h" help:"maximum time allowed to pass between creating and committing a segment"`
@@ -146,7 +145,9 @@ type Config struct {
 	ServerSideCopy         bool `help:"enable code for server-side copy, deprecated. please leave this to true." default:"true"`
 	ServerSideCopyDisabled bool `help:"disable already enabled server-side copy. this is because once server side copy is enabled, delete code should stay changed, even if you want to disable server side copy" default:"false"`
 
-	UsePendingObjectsTable bool `help:"enable new flow for upload which is using pending_objects table" default:"false"`
+	UseBucketLevelObjectVersioning bool `help:"enable the use of bucket level object versioning" default:"false"`
+	// flag to simplify testing by enabling bucket level versioning feature only for specific projects
+	UseBucketLevelObjectVersioningProjects []string `help:"list of projects which will have UseBucketLevelObjectVersioning feature flag enabled" default:"" hidden:"true"`
 
 	// TODO remove when we benchmarking are done and decision is made.
 	TestListingQuery bool `default:"false" help:"test the new query for non-recursive listing"`
@@ -160,4 +161,40 @@ func (c Config) Metabase(applicationName string) metabase.Config {
 		MaxNumberOfParts: c.MaxNumberOfParts,
 		ServerSideCopy:   c.ServerSideCopy,
 	}
+}
+
+// ExtendedConfig extended config keeps additional helper fields and methods around Config.
+type ExtendedConfig struct {
+	Config
+
+	useBucketLevelObjectVersioningProjects []uuid.UUID
+}
+
+// NewExtendedConfig creates new instance of extended config.
+func NewExtendedConfig(config Config) (_ ExtendedConfig, err error) {
+	extendedConfig := ExtendedConfig{Config: config}
+	for _, projectIDString := range config.UseBucketLevelObjectVersioningProjects {
+		projectID, err := uuid.FromString(projectIDString)
+		if err != nil {
+			return ExtendedConfig{}, err
+		}
+		extendedConfig.useBucketLevelObjectVersioningProjects = append(extendedConfig.useBucketLevelObjectVersioningProjects, projectID)
+	}
+
+	return extendedConfig, nil
+}
+
+// UseBucketLevelObjectVersioningByProject checks if UseBucketLevelObjectVersioning should be enabled for specific project.
+func (ec ExtendedConfig) UseBucketLevelObjectVersioningByProject(projectID uuid.UUID) bool {
+	// if its globally enabled don't look at projects
+	if ec.UseBucketLevelObjectVersioning {
+		return true
+	}
+	for _, p := range ec.useBucketLevelObjectVersioningProjects {
+		if p == projectID {
+			return true
+		}
+	}
+
+	return false
 }

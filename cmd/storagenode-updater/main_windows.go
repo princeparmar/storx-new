@@ -20,7 +20,7 @@ import (
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/sys/windows/svc"
 
-	"storj.io/private/process"
+	"storj.io/common/process"
 )
 
 func isRunCmd() bool {
@@ -28,6 +28,9 @@ func isRunCmd() bool {
 }
 
 func main() {
+	logger, _, _ := process.NewLogger("storagenode-updater")
+	zap.ReplaceGlobals(logger)
+
 	isService, err := svc.IsWindowsService()
 	if err != nil {
 		zap.L().Fatal("Failed to determine if session is interactive.", zap.Error(err))

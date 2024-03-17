@@ -15,11 +15,11 @@ import (
 	"time"
 
 	"github.com/calebcase/tmpfile"
-	"github.com/vivint/infectious"
 	"github.com/zeebo/errs"
 	"go.uber.org/zap"
 
 	"storj.io/common/errs2"
+	"storj.io/common/fpath"
 	"storj.io/common/pb"
 	"storj.io/common/rpc"
 	"storj.io/common/rpc/rpcpool"
@@ -43,26 +43,29 @@ var (
 
 // ECRepairer allows the repairer to download, verify, and upload pieces from storagenodes.
 type ECRepairer struct {
-	log             *zap.Logger
-	dialer          rpc.Dialer
-	satelliteSignee signing.Signee
-	dialTimeout     time.Duration
-	downloadTimeout time.Duration
-	inmemory        bool
+	log              *zap.Logger
+	dialer           rpc.Dialer
+	satelliteSignee  signing.Signee
+	dialTimeout      time.Duration
+	downloadTimeout  time.Duration
+	inmemoryDownload bool
+	inmemoryUpload   bool
 
 	// used only in tests, where we expect failures and want to wait for them
 	minFailures int
 }
 
 // NewECRepairer creates a new repairer for interfacing with storagenodes.
-func NewECRepairer(log *zap.Logger, dialer rpc.Dialer, satelliteSignee signing.Signee, dialTimeout time.Duration, downloadTimeout time.Duration, inmemory bool) *ECRepairer {
+func NewECRepairer(log *zap.Logger, dialer rpc.Dialer, satelliteSignee signing.Signee, dialTimeout time.Duration, downloadTimeout time.Duration,
+	inmemoryDownload, inmemoryUpload bool) *ECRepairer {
 	return &ECRepairer{
-		log:             log,
-		dialer:          dialer,
-		satelliteSignee: satelliteSignee,
-		dialTimeout:     dialTimeout,
-		downloadTimeout: downloadTimeout,
-		inmemory:        inmemory,
+		log:              log,
+		dialer:           dialer,
+		satelliteSignee:  satelliteSignee,
+		dialTimeout:      dialTimeout,
+		downloadTimeout:  downloadTimeout,
+		inmemoryDownload: inmemoryDownload,
+		inmemoryUpload:   inmemoryUpload,
 	}
 }
 
@@ -249,7 +252,7 @@ func (ec *ECRepairer) Get(ctx context.Context, limits []*pb.AddressedOrderLimit,
 		return nil, pieces, Error.New("expected %d failures, but only observed %d", ec.minFailures, errorCount)
 	}
 
-	fec, err := infectious.NewFEC(es.RequiredCount(), es.TotalCount())
+	fec, err := eestream.NewFEC(es.RequiredCount(), es.TotalCount())
 	if err != nil {
 		return nil, pieces, Error.Wrap(err)
 	}
@@ -322,7 +325,7 @@ func (ec *ECRepairer) downloadAndVerifyPiece(ctx context.Context, limit *pb.Addr
 	downloadReader := io.TeeReader(downloader, hashWriter)
 	var downloadedPieceSize int64
 
-	if ec.inmemory {
+	if ec.inmemoryDownload {
 		pieceBytes, err := io.ReadAll(downloadReader)
 		if err != nil {
 			return nil, nil, nil, err
@@ -423,6 +426,10 @@ func (ec *ECRepairer) Repair(ctx context.Context, limits []*pb.AddressedOrderLim
 		return nil, nil, Error.New("duplicated nodes are not allowed")
 	}
 
+	if ec.inmemoryUpload {
+		ctx = fpath.WithTempData(ctx, "", true)
+	}
+
 	readers, err := eestream.EncodeReader2(ctx, io.NopCloser(data), rs)
 	if err != nil {
 		return nil, nil, err
@@ -497,6 +504,10 @@ func (ec *ECRepairer) Repair(ctx context.Context, limits []*pb.AddressedOrderLim
 		successfulCount++
 
 		if successfulCount >= int32(successfulNeeded) {
+			// if this is logged more than once for a given repair operation, it is because
+			// an upload succeeded right after we called cancel(), before that upload could
+			// actually be canceled. So, successfulCount should increase by one with each
+			// repeated logging.
 			ec.log.Debug("Number of successful uploads met. Canceling the long tail...",
 				zap.Int32("Successfully repaired", atomic.LoadInt32(&successfulCount)),
 			)
@@ -574,10 +585,12 @@ func (ec *ECRepairer) putPiece(ctx, parent context.Context, limit *pb.AddressedO
 			// to slow connection. No error logging for this case.
 			if errors.Is(parent.Err(), context.Canceled) {
 				ec.log.Debug("Upload to node canceled by user",
-					zap.Stringer("Node ID", storageNodeID))
+					zap.Stringer("Node ID", storageNodeID),
+					zap.Stringer("Piece ID", pieceID))
 			} else {
 				ec.log.Debug("Node cut from upload due to slow connection",
-					zap.Stringer("Node ID", storageNodeID))
+					zap.Stringer("Node ID", storageNodeID),
+					zap.Stringer("Piece ID", pieceID))
 			}
 
 			// make sure context.Canceled is the primary error in the error chain

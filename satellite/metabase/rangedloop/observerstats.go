@@ -7,8 +7,9 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/jtolio/eventkit"
 	"github.com/spacemonkeygo/monkit/v3"
+
+	"storj.io/eventkit"
 )
 
 var (
@@ -19,7 +20,7 @@ var (
 func sendObserverDurations(observerDurations []ObserverDuration) {
 	for _, od := range observerDurations {
 		ev.Event("rangedloop",
-			eventkit.String("observer", fmt.Sprintf("%T", od.Observer)),
+			eventkit.String("observer", observerName(od.Observer)),
 			eventkit.Duration("duration", od.Duration))
 	}
 
@@ -44,7 +45,7 @@ func (o *completedObserverStats) Stats(cb func(key monkit.SeriesKey, field strin
 	// if there are no completed observers yet, no statistics will be sent
 	for _, observerDuration := range o.observerDurations {
 		key := monkit.NewSeriesKey("completed-observer-duration")
-		key = key.WithTag("observer", fmt.Sprintf("%T", observerDuration.Observer))
+		key = key.WithTag("observer", observerName(observerDuration.Observer))
 
 		cb(key, "duration", observerDuration.Duration.Seconds())
 	}
@@ -56,4 +57,17 @@ func (o *completedObserverStats) setObserverDurations(observerDurations []Observ
 	defer o.mu.Unlock()
 
 	o.observerDurations = observerDurations
+}
+
+type withClass interface {
+	GetClass() string
+}
+
+func observerName(o Observer) string {
+	name := fmt.Sprintf("%T", o)
+	// durability observers are per class instances.
+	if dr, ok := o.(withClass); ok {
+		name += fmt.Sprintf("[%s]", dr.GetClass())
+	}
+	return name
 }

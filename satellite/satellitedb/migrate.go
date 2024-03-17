@@ -11,10 +11,10 @@ import (
 	"github.com/zeebo/errs"
 	"go.uber.org/zap"
 
-	"storj.io/private/dbutil"
-	"storj.io/private/dbutil/cockroachutil"
-	"storj.io/private/dbutil/pgutil"
-	"storj.io/private/tagsql"
+	"storj.io/common/dbutil"
+	"storj.io/common/dbutil/cockroachutil"
+	"storj.io/common/dbutil/pgutil"
+	"storj.io/common/tagsql"
 	"storj.io/storj/private/migrate"
 )
 
@@ -2424,10 +2424,236 @@ func (db *satelliteDB) ProductionMigration() *migrate.Migration {
 			},
 			{
 				DB:          &db.migrationDB,
-				Description: "add new column prevDays_UntilExpiration in projects table",
+				Description: "add (indexed) placement to repair_queue",
 				Version:     242,
 				Action: migrate.SQL{
-					`ALTER TABLE projects ADD COLUMN prevDays_UntilExpiration int NOT NULL DEFAULT 0;`,
+					`ALTER TABLE repair_queue ADD COLUMN placement integer;`,
+					`CREATE INDEX repair_queue_placement_index ON repair_queue ( placement ) ;`,
+				},
+			},
+			{
+				DB:          &db.migrationDB,
+				Description: "drop index from bucket_metainfos",
+				Version:     243,
+				Action: migrate.Func(func(ctx context.Context, log *zap.Logger, _ tagsql.DB, tx tagsql.Tx) (err error) {
+					if _, ok := db.Driver().(*cockroachutil.Driver); ok {
+						_, err = tx.ExecContext(ctx, `DROP INDEX IF EXISTS bucket_metainfos_project_id_name_key CASCADE`)
+					} else {
+						_, err = tx.ExecContext(ctx, `ALTER TABLE bucket_metainfos DROP CONSTRAINT IF EXISTS bucket_metainfos_project_id_name_key;`)
+					}
+					return ErrMigrate.Wrap(err)
+				}),
+			},
+			{
+				DB:          &db.migrationDB,
+				Description: "alter bucket_metainfos primary key",
+				Version:     244,
+				Action: migrate.Func(func(ctx context.Context, log *zap.Logger, _ tagsql.DB, tx tagsql.Tx) error {
+					alterPrimaryKey := true
+					// for crdb lets check if key was already altered, for pg we will do migration always
+					if _, ok := db.Driver().(*cockroachutil.Driver); ok {
+						var primaryKey string
+						err := db.QueryRow(ctx,
+							`WITH constraints AS (SHOW CONSTRAINTS FROM bucket_metainfos) SELECT details FROM constraints WHERE constraint_type = 'PRIMARY KEY';`,
+						).Scan(&primaryKey)
+						if err != nil {
+							return ErrMigrate.Wrap(err)
+						}
+
+						// alter primary key only if it was not adjusted manually
+						alterPrimaryKey = primaryKey != "PRIMARY KEY (project_id ASC, name ASC)"
+					}
+
+					if alterPrimaryKey {
+						_, err := tx.ExecContext(ctx, `
+							ALTER TABLE bucket_metainfos DROP CONSTRAINT bucket_metainfos_pkey;
+							ALTER TABLE bucket_metainfos ADD CONSTRAINT bucket_metainfos_pkey PRIMARY KEY ( project_id, name );
+						`)
+						if err != nil {
+							return ErrMigrate.Wrap(err)
+						}
+					}
+					return nil
+				}),
+			},
+			{
+				DB:          &db.migrationDB,
+				Description: "add index to bucket_storage_tallies",
+				Version:     245,
+				Action: migrate.SQL{
+					`CREATE INDEX IF NOT EXISTS bucket_storage_tallies_interval_start_index ON bucket_storage_tallies ( interval_start );`,
+				},
+			},
+			{
+				DB:          &db.migrationDB,
+				Description: "add column to account freeze event for days until next freeze event",
+				Version:     246,
+				Action: migrate.SQL{
+					`ALTER TABLE account_freeze_events ADD COLUMN days_till_escalation integer;`,
+				},
+			},
+			{
+				DB:          &db.migrationDB,
+				Description: "back fill days_till_escalation column for account_freeze_events",
+				SeparateTx:  true,
+				Version:     247,
+				Action: migrate.SQL{
+					// current default days for billing warning(1)-billing freeze is 15,
+					// for billing freeze(0)-violation freeze is 60.
+					`UPDATE account_freeze_events SET days_till_escalation = 15 WHERE event = 1;`,
+					`UPDATE account_freeze_events SET days_till_escalation = 60 WHERE event = 0;`,
+				},
+			},
+			{
+				DB:          &db.migrationDB,
+				Description: "remove type column from indices on nodes",
+				Version:     248,
+				Action: migrate.Func(func(ctx context.Context, log *zap.Logger, _ tagsql.DB, tx tagsql.Tx) error {
+					storingClause := func(fields ...string) string {
+						if db.impl == dbutil.Cockroach {
+							return fmt.Sprintf("STORING (%s)", strings.Join(fields, ", "))
+						}
+
+						return ""
+					}
+					queries := [4]string{
+						`CREATE INDEX IF NOT EXISTS  nodes_last_cont_success_free_disk_ma_mi_patch_vetted_partial_index
+							ON nodes (last_contact_success, free_disk, major, minor, patch, vetted_at)
+							` + storingClause("last_net", "address", "last_ip_port") + `
+							WHERE disqualified IS NULL AND
+							unknown_audit_suspended IS NULL AND
+							exit_initiated_at IS NULL AND
+							release = true AND
+							last_net != ''`,
+						`CREATE INDEX IF NOT EXISTS  nodes_dis_unk_aud_exit_init_rel_last_cont_success_stored_index
+							ON nodes (disqualified ASC, unknown_audit_suspended ASC, exit_initiated_at ASC, release ASC, last_contact_success DESC)
+							` + storingClause("free_disk", "minor", "major", "patch", "vetted_at", "last_net", "address", "last_ip_port") + `
+							WHERE disqualified IS NULL AND
+							unknown_audit_suspended IS NULL AND
+							exit_initiated_at IS NULL AND
+							release = true`,
+						`DROP INDEX IF EXISTS nodes_type_last_cont_success_free_disk_ma_mi_patch_vetted_partial_index`,
+						`DROP INDEX IF EXISTS nodes_dis_unk_aud_exit_init_rel_type_last_cont_success_stored_index`,
+					}
+
+					for _, query := range queries {
+						_, err := tx.ExecContext(ctx, query)
+						if err != nil {
+							return err
+						}
+					}
+
+					return nil
+				}),
+			},
+			{
+				DB:          &db.migrationDB,
+				Description: "drop partner_id column",
+				Version:     249,
+				Action: migrate.SQL{
+					`ALTER TABLE value_attributions DROP COLUMN partner_id;`,
+				},
+			},
+			{
+				DB:          &db.migrationDB,
+				Description: "add versioning to bucket_metainfos",
+				Version:     250,
+				Action: migrate.SQL{
+					`ALTER TABLE bucket_metainfos ADD COLUMN versioning INTEGER NOT NULL DEFAULT 0;`,
+				},
+			},
+			{
+				DB:          &db.migrationDB,
+				Description: "Add activation_code column to users table",
+				Version:     251,
+				Action: migrate.SQL{
+					`ALTER TABLE users ADD COLUMN activation_code TEXT;`,
+					`ALTER TABLE users ADD COLUMN signup_id TEXT;`,
+				},
+			},
+			{
+				DB:          &db.migrationDB,
+				Description: "add default versioning to project",
+				Version:     252,
+				Action: migrate.SQL{
+					`ALTER TABLE projects ADD COLUMN default_versioning INTEGER NOT NULL DEFAULT 0;`,
+				},
+			},
+			{
+				DB:          &db.migrationDB,
+				Description: "drop type column from nodes",
+				Version:     253,
+				Action: migrate.SQL{
+					`ALTER TABLE nodes DROP COLUMN type;`,
+				},
+			},
+			{
+				DB:          &db.migrationDB,
+				Description: "update default versioning for projects to match default versioning values for buckets DB",
+				Version:     254,
+				Action: migrate.SQL{
+					`ALTER TABLE projects ALTER COLUMN default_versioning SET DEFAULT 1;`,
+					`UPDATE projects SET default_versioning = 1 WHERE default_versioning = 0;`,
+				},
+			},
+			{
+				DB:          &db.migrationDB,
+				Description: "add last_ip_port to node_events",
+				Version:     255,
+				Action: migrate.SQL{
+					`ALTER TABLE node_events ADD COLUMN last_ip_port TEXT;`,
+				},
+			},
+			{
+				DB:          &db.migrationDB,
+				Description: "add notice_dismissal column to user_settings to track dismissed notices",
+				Version:     256,
+				Action: migrate.SQL{
+					`ALTER TABLE user_settings ADD COLUMN notice_dismissal jsonb NOT NULL DEFAULT '{}';`,
+				},
+			},
+			{
+				DB:          &db.migrationDB,
+				Description: "add columns to handle user free trial",
+				Version:     257,
+				Action: migrate.SQL{
+					`ALTER TABLE users ADD COLUMN trial_notifications INTEGER NOT NULL DEFAULT 0;`,
+					`ALTER TABLE users ADD COLUMN trial_expiration timestamp with time zone;`,
+					`ALTER TABLE users ADD COLUMN upgrade_time timestamp with time zone;`,
+				},
+			},
+			{
+				DB:          &db.migrationDB,
+				Description: "add chain_id to storjscan payments table",
+				Version:     258,
+				Action: migrate.SQL{
+					`ALTER TABLE storjscan_payments ADD COLUMN chain_id bigint NOT NULL DEFAULT 0;`,
+				},
+			},
+			{
+				DB:          &db.migrationDB,
+				Description: "backfill storjscan chain_id column",
+				Version:     259,
+				Action: migrate.SQL{
+					`UPDATE storjscan_payments SET chain_id = 1 WHERE chain_id = 0;`,
+				},
+			},
+			{
+				DB:          &db.migrationDB,
+				Description: "update storjscan payments table index to include chain_id",
+				Version:     260,
+				Action: migrate.SQL{
+					`DROP INDEX storjscan_payments_block_number_log_index_index;`,
+					`CREATE INDEX storjscan_payments_chain_id_block_number_log_index_index ON storjscan_payments ( chain_id, block_number, log_index );`,
+				},
+			},
+			{
+				DB:          &db.migrationDB,
+				Description: "update storjscan payments table to use chain_id in primary key",
+				Version:     261,
+				Action: migrate.SQL{
+					`ALTER TABLE storjscan_payments DROP CONSTRAINT storjscan_payments_pkey;`,
+					`ALTER TABLE storjscan_payments ADD CONSTRAINT storjscan_payments_pkey PRIMARY KEY ( chain_id, block_hash, log_index );`,
 				},
 			},
 			// NB: after updating testdata in `testdata`, run

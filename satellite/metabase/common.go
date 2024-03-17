@@ -5,6 +5,8 @@ package metabase
 
 import (
 	"database/sql/driver"
+	"encoding/binary"
+	"fmt"
 	"math"
 	"sort"
 	"strconv"
@@ -25,6 +27,8 @@ var (
 	ErrPendingObjectMissing = errs.Class("pending object missing")
 	// ErrPermissionDenied general error for denying permission.
 	ErrPermissionDenied = errs.Class("permission denied")
+	// ErrMethodNotAllowed general error when operation is not allowed.
+	ErrMethodNotAllowed = errs.Class("method not allowed")
 )
 
 // Common constants for segment keys.
@@ -264,6 +268,42 @@ type ObjectStream struct {
 	StreamID   uuid.UUID
 }
 
+// Less implements sorting on object streams.
+// Where ProjectID asc, BucketName asc, ObjectKey asc, Version desc.
+func (obj ObjectStream) Less(b ObjectStream) bool {
+	if obj.ProjectID != b.ProjectID {
+		return obj.ProjectID.Less(b.ProjectID)
+	}
+	if obj.BucketName != b.BucketName {
+		return obj.BucketName < b.BucketName
+	}
+	if obj.ObjectKey != b.ObjectKey {
+		return obj.ObjectKey < b.ObjectKey
+	}
+	if obj.Version != b.Version {
+		return obj.Version > b.Version
+	}
+	return obj.StreamID.Less(b.StreamID)
+}
+
+// LessVersionAsc implements sorting on object streams.
+// Where ProjectID asc, BucketName asc, ObjectKey asc, Version asc.
+func (obj ObjectStream) LessVersionAsc(b ObjectStream) bool {
+	if obj.ProjectID != b.ProjectID {
+		return obj.ProjectID.Less(b.ProjectID)
+	}
+	if obj.BucketName != b.BucketName {
+		return obj.BucketName < b.BucketName
+	}
+	if obj.ObjectKey != b.ObjectKey {
+		return obj.ObjectKey < b.ObjectKey
+	}
+	if obj.Version != b.Version {
+		return obj.Version < b.Version
+	}
+	return obj.StreamID.Less(b.StreamID)
+}
+
 // Verify object stream fields.
 func (obj *ObjectStream) Verify() error {
 	switch {
@@ -342,23 +382,134 @@ const NextVersion = Version(0)
 // DefaultVersion represents default version 1.
 const DefaultVersion = Version(1)
 
-// MaxVersion represents maximum version.
-// Version in DB is represented as INT4.
-const MaxVersion = Version(math.MaxInt32)
+// PendingVersion represents version that is used for pending objects (with UsePendingObjects).
+const PendingVersion = Version(0)
 
-// ObjectStatus defines the statuses that the object might be in.
+// MaxVersion represents maximum version.
+// Version in DB is represented as INT8.
+//
+// It uses `MaxInt64 - 64` to avoid issues with `-MaxVersion`.
+const MaxVersion = Version(math.MaxInt64 - 64)
+
+// StreamVersionID represents combined Version and StreamID suffix for purposes of public API.
+// First 8 bytes represents Version and rest are object StreamID suffix.
+// TODO(ver): we may consider renaming this type to VersionID but to do that
+// we would need to rename metabase.Version into metabase.SequenceNumber/metabase.Sequence to
+// avoid confusion.
+type StreamVersionID uuid.UUID
+
+// Version returns Version encoded into stream version id.
+func (s StreamVersionID) Version() Version {
+	return Version(binary.BigEndian.Uint64(s[:8]))
+}
+
+// StreamIDSuffix returns StreamID suffix encoded into stream version id.
+func (s StreamVersionID) StreamIDSuffix() []byte {
+	return s[8:]
+}
+
+// Bytes returnes stream version id bytes.
+func (s StreamVersionID) Bytes() []byte {
+	return s[:]
+}
+
+func newStreamVersionID(version Version, streamID uuid.UUID) StreamVersionID {
+	var sv StreamVersionID
+	binary.BigEndian.PutUint64(sv[:8], uint64(version))
+	copy(sv[8:], streamID[8:])
+	return sv
+}
+
+// StreamVersionIDFromBytes decodes stream version id from bytes.
+func StreamVersionIDFromBytes(bytes []byte) (_ StreamVersionID, err error) {
+	if len(bytes) != len(StreamVersionID{}) {
+		return StreamVersionID{}, ErrInvalidRequest.New("invalid stream version id")
+	}
+	var sv StreamVersionID
+	copy(sv[:], bytes)
+	return sv, nil
+}
+
+// ObjectStatus defines the status that the object is in.
+//
+// There are two types of objects:
+//   - Regular (i.e. Committed), which is used for storing data.
+//   - Delete Marker, which is used to show that an object has been deleted, while preserving older versions.
+//
+// Each object can be in two states:
+//   - Pending, meaning that it's still being uploaded.
+//   - Committed, meaning it has finished uploading.
+//     Delete Markers are always considered committed, because they do not require committing.
+//
+// There are two options for versioning:
+//   - Unversioned, there's only one allowed per project, bucket and encryption key.
+//   - Versioned, there can be any number of such objects for a given project, bucket and encryption key.
+//
+// These lead to a few meaningful distinct statuses, listed below.
 type ObjectStatus byte
 
 const (
 	// Pending means that the object is being uploaded or that the client failed during upload.
 	// The failed upload may be continued in the future.
 	Pending = ObjectStatus(1)
-	// Committed means that the object is finished and should be visible for general listing.
-	Committed = ObjectStatus(3)
+	// Committing used to one of the stages, which is not in use anymore.
+	_ = ObjectStatus(2)
+	// CommittedUnversioned means that the object is finished and should be visible for general listing.
+	CommittedUnversioned = ObjectStatus(3)
+	// CommittedVersioned means that the object is finished and should be visible for general listing.
+	CommittedVersioned = ObjectStatus(4)
+	// DeleteMarkerVersioned is inserted when an object is deleted in a versioning enabled bucket.
+	DeleteMarkerVersioned = ObjectStatus(5)
+	// DeleteMarkerUnversioned is inserted when an unversioned object is deleted in a versioning suspended bucket.
+	DeleteMarkerUnversioned = ObjectStatus(6)
 
-	pendingStatus   = "1"
-	committedStatus = "3"
+	// Prefix is an ephemeral status used during non-recursive listing.
+	Prefix = ObjectStatus(7)
+
+	// Constants that can be used while constructing SQL queries.
+	statusPending                 = "1"
+	statusCommittedUnversioned    = "3"
+	statusCommittedVersioned      = "4"
+	statusesCommitted             = "(" + statusCommittedUnversioned + "," + statusCommittedVersioned + ")"
+	statusDeleteMarkerVersioned   = "5"
+	statusDeleteMarkerUnversioned = "6"
+	statusesDeleteMarker          = "(" + statusDeleteMarkerUnversioned + "," + statusDeleteMarkerVersioned + ")"
+	statusesUnversioned           = "(" + statusCommittedUnversioned + "," + statusDeleteMarkerUnversioned + ")"
 )
+
+func committedWhereVersioned(versioned bool) ObjectStatus {
+	if versioned {
+		return CommittedVersioned
+	}
+	return CommittedUnversioned
+}
+
+// IsDeleteMarker return whether the status is a delete marker.
+func (status ObjectStatus) IsDeleteMarker() bool {
+	return status == DeleteMarkerUnversioned || status == DeleteMarkerVersioned
+}
+
+// String returns textual representation of status.
+func (status ObjectStatus) String() string {
+	switch status {
+	case Pending:
+		return "Pending"
+	case ObjectStatus(2):
+		return "Deleted" // Deprecated
+	case CommittedUnversioned:
+		return "CommittedUnversioned"
+	case CommittedVersioned:
+		return "CommittedVersioned"
+	case DeleteMarkerVersioned:
+		return "DeleteMarkerVersioned"
+	case DeleteMarkerUnversioned:
+		return "DeleteMarkerUnversioned"
+	case Prefix:
+		return "Prefix"
+	default:
+		return fmt.Sprintf("ObjectStatus(%d)", int(status))
+	}
+}
 
 // Pieces defines information for pieces.
 type Pieces []Piece

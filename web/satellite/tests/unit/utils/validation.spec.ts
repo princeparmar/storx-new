@@ -1,5 +1,7 @@
-// Copyright (C) 2019 Storx Labs, Inc.
+// Copyright (C) 2019 Storj Labs, Inc.
 // See LICENSE for copying information.
+
+import { describe, it, expect } from 'vitest';
 
 import { Validator } from '@/utils/validation';
 

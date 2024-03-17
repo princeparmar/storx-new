@@ -27,6 +27,7 @@ import (
 	"storj.io/storj/private/revocation"
 	"storj.io/storj/private/server"
 	"storj.io/storj/private/testplanet"
+	"storj.io/storj/satellite/nodeselection"
 	"storj.io/uplink"
 	"storj.io/uplink/private/metaclient"
 )
@@ -105,8 +106,14 @@ func TestDownloadWithSomeNodesOffline(t *testing.T) {
 		}
 
 		// confirm that we marked the correct number of storage nodes as offline
-		online, _, err := satellite.Overlay.Service.Reliable(ctx)
+		allNodes, err := satellite.Overlay.Service.GetParticipatingNodes(ctx)
 		require.NoError(t, err)
+		online := make([]nodeselection.SelectedNode, 0, len(allNodes))
+		for _, node := range allNodes {
+			if node.Online {
+				online = append(online, node)
+			}
+		}
 		require.Len(t, online, len(planet.StorageNodes)-toKill)
 
 		// we should be able to download data without any of the original nodes
@@ -145,6 +152,11 @@ func (mock *piecestoreMock) DeletePieces(ctx context.Context, delete *pb.DeleteP
 func (mock *piecestoreMock) Retain(ctx context.Context, retain *pb.RetainRequest) (_ *pb.RetainResponse, err error) {
 	return nil, nil
 }
+
+func (mock *piecestoreMock) RetainBig(stream pb.DRPCPiecestore_RetainBigStream) (err error) {
+	return nil
+}
+
 func (mock *piecestoreMock) RestoreTrash(context.Context, *pb.RestoreTrashRequest) (*pb.RestoreTrashResponse, error) {
 	return nil, nil
 }

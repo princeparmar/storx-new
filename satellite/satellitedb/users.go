@@ -13,6 +13,7 @@ import (
 
 	"github.com/zeebo/errs"
 
+	"storj.io/common/dbutil/pgutil"
 	"storj.io/common/memory"
 	"storj.io/common/storj"
 	"storj.io/common/uuid"
@@ -60,6 +61,67 @@ func (users *users) Get(ctx context.Context, id uuid.UUID) (_ *console.User, err
 	return userFromDBX(ctx, user)
 }
 
+func (users *users) GetExpiredFreeTrialsAfter(ctx context.Context, after time.Time, cursor console.UserCursor) (page *console.UsersPage, err error) {
+	defer mon.Task()(&ctx)(&err)
+
+	if cursor.Limit == 0 {
+		return nil, Error.New("limit cannot be 0")
+	}
+
+	if cursor.Page == 0 {
+		return nil, Error.New("page cannot be 0")
+	}
+
+	page = &console.UsersPage{
+		Limit:  cursor.Limit,
+		Offset: uint64((cursor.Page - 1) * cursor.Limit),
+	}
+
+	count, err := users.db.Count_User_By_PaidTier_Equal_False_And_TrialExpiration_Less(ctx, dbx.User_TrialExpiration(after))
+	if err != nil {
+		return nil, err
+	}
+	page.TotalCount = uint64(count)
+
+	if page.TotalCount == 0 {
+		return page, nil
+	}
+
+	dbxUsers, err := users.db.Limited_User_Id_User_Email_By_PaidTier_Equal_False_And_TrialExpiration_Less(ctx,
+		dbx.User_TrialExpiration(after),
+		int(page.Limit), int64(page.Offset))
+	if err != nil {
+		if errs.Is(err, sql.ErrNoRows) {
+			return &console.UsersPage{
+				Users: []console.User{},
+			}, nil
+		}
+		return nil, Error.Wrap(err)
+	}
+
+	for _, usr := range dbxUsers {
+		id, err := uuid.FromBytes(usr.Id)
+		if err != nil {
+			return &console.UsersPage{
+				Users: []console.User{},
+			}, nil
+		}
+		page.Users = append(page.Users, console.User{
+			ID:    id,
+			Email: usr.Email,
+		})
+	}
+
+	page.PageCount = uint(page.TotalCount / uint64(cursor.Limit))
+	if page.TotalCount%uint64(cursor.Limit) != 0 {
+		page.PageCount++
+	}
+
+	page.CurrentPage = cursor.Page
+
+	return page, nil
+}
+
 // GetByEmailWithUnverified is a method for querying users by email from the database.
 func (users *users) GetByEmailWithUnverified(ctx context.Context, email string) (verified *console.User, unverified []console.User, err error) {
 	defer mon.Task()(&ctx)(&err)
@@ -87,25 +149,69 @@ func (users *users) GetByEmailWithUnverified(ctx context.Context, email string) 
 	return verified, unverified, errors.Err()
 }
 
-func (users *users) GetByEmailWithUnverified_google(ctx context.Context, email string) (verified *console.User, unverified []console.User, err error) {
+func (users *users) GetByStatus(ctx context.Context, status console.UserStatus, cursor console.UserCursor) (page *console.UsersPage, err error) {
 	defer mon.Task()(&ctx)(&err)
-	usersDbx, err := users.db.All_User_By_NormalizedEmail(ctx, dbx.User_NormalizedEmail(normalizeEmail(email)))
 
+	if cursor.Limit == 0 {
+		return nil, Error.New("limit cannot be 0")
+	}
+
+	if cursor.Page == 0 {
+		return nil, Error.New("page cannot be 0")
+	}
+
+	page = &console.UsersPage{
+		Limit:  cursor.Limit,
+		Offset: uint64((cursor.Page - 1) * cursor.Limit),
+	}
+
+	count, err := users.db.Count_User_By_Status(ctx, dbx.User_Status(int(status)))
 	if err != nil {
-		return nil, nil, err
+		return nil, err
+	}
+	page.TotalCount = uint64(count)
+
+	if page.TotalCount == 0 {
+		return page, nil
+	}
+	if page.Offset > page.TotalCount-1 {
+		return nil, Error.New("page is out of range")
 	}
 
-	var errors errs.Group
-	for _, userDbx := range usersDbx {
-		u, err := userFromDBX(ctx, userDbx)
-		if err != nil {
-			errors.Add(err)
-			continue
+	dbxUsers, err := users.db.Limited_User_Id_User_Email_User_FullName_By_Status(ctx,
+		dbx.User_Status(int(status)),
+		int(page.Limit), int64(page.Offset))
+	if err != nil {
+		if errs.Is(err, sql.ErrNoRows) {
+			return &console.UsersPage{
+				Users: []console.User{},
+			}, nil
 		}
-		verified = u
+		return nil, Error.Wrap(err)
 	}
 
-	return verified, unverified, errors.Err()
+	for _, usr := range dbxUsers {
+		id, err := uuid.FromBytes(usr.Id)
+		if err != nil {
+			return &console.UsersPage{
+				Users: []console.User{},
+			}, nil
+		}
+		page.Users = append(page.Users, console.User{
+			ID:       id,
+			Email:    usr.Email,
+			FullName: usr.FullName,
+		})
+	}
+
+	page.PageCount = uint(page.TotalCount / uint64(cursor.Limit))
+	if page.TotalCount%uint64(cursor.Limit) != 0 {
+		page.PageCount++
+	}
+
+	page.CurrentPage = cursor.Page
+
+	return page, nil
 }
 
 // GetByEmail is a method for querying user by verified email from the database.
@@ -118,27 +224,6 @@ func (users *users) GetByEmail(ctx context.Context, email string) (_ *console.Us
 	}
 
 	return userFromDBX(ctx, user)
-}
-
-// boris: Get all users from the database
-func (users *users) GetAllUsers(ctx context.Context) (usersFromDB []*console.User, err error) {
-	defer mon.Task()(&ctx)(&err)
-
-	allUsers, err := users.db.Get_All_Users(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	// var usersFromDB []*console.User
-	for _, user := range allUsers {
-		userFromDB, err := userFromDBX(ctx, user)
-		if err != nil {
-			return nil, err
-		}
-		usersFromDB = append(usersFromDB, userFromDB)
-	}
-
-	return usersFromDB, nil
 }
 
 // GetUnverifiedNeedingReminder returns users in need of a reminder to verify their email.
@@ -221,6 +306,22 @@ func (users *users) Insert(ctx context.Context, user *console.User) (_ *console.
 		optional.SignupCaptcha = dbx.User_SignupCaptcha(*user.SignupCaptcha)
 	}
 
+	if user.DefaultPlacement > 0 {
+		optional.DefaultPlacement = dbx.User_DefaultPlacement(int(user.DefaultPlacement))
+	}
+
+	if user.ActivationCode != "" {
+		optional.ActivationCode = dbx.User_ActivationCode(user.ActivationCode)
+	}
+
+	if user.SignupId != "" {
+		optional.SignupId = dbx.User_SignupId(user.SignupId)
+	}
+
+	if user.TrialExpiration != nil {
+		optional.TrialExpiration = dbx.User_TrialExpiration(*user.TrialExpiration)
+	}
+
 	createdUser, err := users.db.Create_User(ctx,
 		dbx.User_Id(user.ID[:]),
 		dbx.User_Email(user.Email),
@@ -254,7 +355,8 @@ func (users *users) DeleteUnverifiedBefore(
 		return Error.New("expected page size to be positive; got %d", pageSize)
 	}
 
-	var pageCursor, pageEnd uuid.UUID
+	var pageCursor uuid.UUID
+	selected := make([]uuid.UUID, pageSize)
 	aost := users.db.impl.AsOfSystemInterval(asOfSystemTimeInterval)
 	for {
 		// Select the ID beginning this page of records
@@ -271,42 +373,42 @@ func (users *users) DeleteUnverifiedBefore(
 			return Error.Wrap(err)
 		}
 
-		// Select the ID ending this page of records
-		err = users.db.QueryRowContext(ctx, `
+		// Select page of records
+		rows, err := users.db.QueryContext(ctx, `
 			SELECT id FROM users
 			`+aost+`
-			WHERE id >= $1
-			ORDER BY id LIMIT 1 OFFSET $2
-		`, pageCursor, pageSize).Scan(&pageEnd)
-		if err != nil {
-			if !errors.Is(err, sql.ErrNoRows) {
-				return Error.Wrap(err)
-			}
-			// Since this is the last page, we want to return all remaining IDs
-			pageEnd = uuid.Max()
-		}
-
-		// Delete all old, unverified users in the range between the beginning and ending IDs
-		_, err = users.db.ExecContext(ctx, `
-			DELETE FROM users
-			WHERE id IN (
-				SELECT id FROM users
-				`+aost+`
-				WHERE id >= $1 AND id <= $2
-				AND users.status = $3 AND users.created_at < $4
-				ORDER BY id
-			)
-		`, pageCursor, pageEnd, console.Inactive, before)
+			WHERE id >= $1 ORDER BY id LIMIT $2
+		`, pageCursor, pageSize)
 		if err != nil {
 			return Error.Wrap(err)
 		}
 
-		if pageEnd == uuid.Max() {
+		var i int
+		for i = 0; rows.Next(); i++ {
+			if err = rows.Scan(&selected[i]); err != nil {
+				return Error.Wrap(err)
+			}
+		}
+		if err = errs.Combine(rows.Err(), rows.Close()); err != nil {
+			return Error.Wrap(err)
+		}
+
+		// Delete all old, unverified users in the page
+		_, err = users.db.ExecContext(ctx, `
+			DELETE FROM users
+			WHERE id = ANY($1)
+			AND status = $2 AND created_at < $3
+		`, pgutil.UUIDArray(selected[:i]), console.Inactive, before)
+		if err != nil {
+			return Error.Wrap(err)
+		}
+
+		if i < pageSize {
 			return nil
 		}
 
 		// Advance the cursor to the next page
-		pageCursor = pageEnd
+		pageCursor = selected[i-1]
 	}
 }
 
@@ -329,34 +431,24 @@ func (users *users) Update(ctx context.Context, userID uuid.UUID, updateRequest 
 }
 
 // UpdatePaidTier sets whether the user is in the paid tier.
-func (users *users) UpdatePaidTier(ctx context.Context, id uuid.UUID, paidTier bool, projectBandwidthLimit, projectStorageLimit memory.Size, projectSegmentLimit int64, projectLimit int) (err error) {
+func (users *users) UpdatePaidTier(ctx context.Context, id uuid.UUID, paidTier bool, projectBandwidthLimit, projectStorageLimit memory.Size, projectSegmentLimit int64, projectLimit int, upgradeTime *time.Time) (err error) {
 	defer mon.Task()(&ctx)(&err)
+
+	updateFields := dbx.User_Update_Fields{
+		PaidTier:              dbx.User_PaidTier(paidTier),
+		ProjectLimit:          dbx.User_ProjectLimit(projectLimit),
+		ProjectBandwidthLimit: dbx.User_ProjectBandwidthLimit(projectBandwidthLimit.Int64()),
+		ProjectStorageLimit:   dbx.User_ProjectStorageLimit(projectStorageLimit.Int64()),
+		ProjectSegmentLimit:   dbx.User_ProjectSegmentLimit(projectSegmentLimit),
+	}
+	if paidTier && upgradeTime != nil {
+		updateFields.UpgradeTime = dbx.User_UpgradeTime(*upgradeTime)
+	}
 
 	_, err = users.db.Update_User_By_Id(
 		ctx,
 		dbx.User_Id(id[:]),
-		dbx.User_Update_Fields{
-			PaidTier:              dbx.User_PaidTier(paidTier),
-			ProjectLimit:          dbx.User_ProjectLimit(projectLimit),
-			ProjectBandwidthLimit: dbx.User_ProjectBandwidthLimit(projectBandwidthLimit.Int64()),
-			ProjectStorageLimit:   dbx.User_ProjectStorageLimit(projectStorageLimit.Int64()),
-			ProjectSegmentLimit:   dbx.User_ProjectSegmentLimit(projectSegmentLimit),
-		},
-	)
-
-	return err
-}
-
-// boris
-func (users *users) UpdatePaidTiers(ctx context.Context, id uuid.UUID, paidTier bool) (err error) {
-	defer mon.Task()(&ctx)(&err)
-
-	_, err = users.db.Update_User_By_Id(
-		ctx,
-		dbx.User_Id(id[:]),
-		dbx.User_Update_Fields{
-			PaidTier: dbx.User_PaidTier(paidTier),
-		},
+		updateFields,
 	)
 
 	return err
@@ -388,6 +480,21 @@ func (users *users) UpdateUserProjectLimits(ctx context.Context, id uuid.UUID, l
 			ProjectBandwidthLimit: dbx.User_ProjectBandwidthLimit(limits.Bandwidth),
 			ProjectStorageLimit:   dbx.User_ProjectStorageLimit(limits.Storage),
 			ProjectSegmentLimit:   dbx.User_ProjectSegmentLimit(limits.Segment),
+		},
+	)
+
+	return err
+}
+
+// UpdateDefaultPlacement is a method to update the user's default placement for new projects.
+func (users *users) UpdateDefaultPlacement(ctx context.Context, id uuid.UUID, placement storj.PlacementConstraint) (err error) {
+	defer mon.Task()(&ctx)(&err)
+
+	_, err = users.db.Update_User_By_Id(
+		ctx,
+		dbx.User_Id(id[:]),
+		dbx.User_Update_Fields{
+			DefaultPlacement: dbx.User_DefaultPlacement(int(placement)),
 		},
 	)
 
@@ -427,6 +534,18 @@ func (users *users) GetUserPaidTier(ctx context.Context, id uuid.UUID) (isPaid b
 	return row.PaidTier, nil
 }
 
+// GetUpgradeTime is a method for returning a user's upgrade time.
+func (users *users) GetUpgradeTime(ctx context.Context, id uuid.UUID) (*time.Time, error) {
+	var err error
+	defer mon.Task()(&ctx)(&err)
+
+	row, err := users.db.Get_User_UpgradeTime_By_Id(ctx, dbx.User_Id(id[:]))
+	if err != nil {
+		return nil, err
+	}
+	return row.UpgradeTime, nil
+}
+
 // GetSettings is a method for returning a user's set of configurations.
 func (users *users) GetSettings(ctx context.Context, userID uuid.UUID) (settings *console.UserSettings, err error) {
 	defer mon.Task()(&ctx)(&err)
@@ -447,6 +566,11 @@ func (users *users) GetSettings(ctx context.Context, userID uuid.UUID) (settings
 	if row.SessionMinutes != nil {
 		dur := time.Duration(*row.SessionMinutes) * time.Minute
 		settings.SessionDuration = &dur
+	}
+
+	err = json.Unmarshal(row.NoticeDismissal, &settings.NoticeDismissal)
+	if err != nil {
+		return nil, err
 	}
 
 	return settings, nil
@@ -482,6 +606,15 @@ func (users *users) UpsertSettings(ctx context.Context, userID uuid.UUID, settin
 	}
 	if settings.OnboardingStep != nil {
 		update.OnboardingStep = dbx.UserSettings_OnboardingStep(*settings.OnboardingStep)
+		fieldCount++
+	}
+
+	if settings.NoticeDismissal != nil {
+		noticesBytes, err := json.Marshal(settings.NoticeDismissal)
+		if err != nil {
+			return err
+		}
+		update.NoticeDismissal = dbx.UserSettings_NoticeDismissal(noticesBytes)
 		fieldCount++
 	}
 
@@ -580,7 +713,41 @@ func toUpdateUser(request console.UpdateUserRequest) (*dbx.User_Update_Fields, e
 			update.LoginLockoutExpiration = dbx.User_LoginLockoutExpiration(**request.LoginLockoutExpiration)
 		}
 	}
-	update.DefaultPlacement = dbx.User_DefaultPlacement(int(request.DefaultPlacement))
+
+	if request.DefaultPlacement > 0 {
+		update.DefaultPlacement = dbx.User_DefaultPlacement(int(request.DefaultPlacement))
+	}
+
+	if request.ActivationCode != nil {
+		update.ActivationCode = dbx.User_ActivationCode(*request.ActivationCode)
+	}
+
+	if request.SignupId != nil {
+		update.SignupId = dbx.User_SignupId(*request.SignupId)
+	}
+
+	if request.IsProfessional != nil {
+		update.IsProfessional = dbx.User_IsProfessional(*request.IsProfessional)
+	}
+	if request.HaveSalesContact != nil {
+		update.HaveSalesContact = dbx.User_HaveSalesContact(*request.HaveSalesContact)
+	}
+	if request.Position != nil {
+		update.Position = dbx.User_Position(*request.Position)
+	}
+	if request.CompanyName != nil {
+		update.CompanyName = dbx.User_CompanyName(*request.CompanyName)
+	}
+	if request.EmployeeCount != nil {
+		update.EmployeeCount = dbx.User_EmployeeCount(*request.EmployeeCount)
+	}
+
+	if request.TrialExpiration != nil {
+		update.TrialExpiration = dbx.User_TrialExpiration_Raw(*request.TrialExpiration)
+	}
+	if request.UpgradeTime != nil {
+		update.UpgradeTime = dbx.User_UpgradeTime(*request.UpgradeTime)
+	}
 
 	return &update, nil
 }
@@ -621,7 +788,10 @@ func userFromDBX(ctx context.Context, user *dbx.User) (_ *console.User, err erro
 		HaveSalesContact:      user.HaveSalesContact,
 		MFAEnabled:            user.MfaEnabled,
 		VerificationReminders: user.VerificationReminders,
+		TrialNotifications:    user.TrialNotifications,
 		SignupCaptcha:         user.SignupCaptcha,
+		TrialExpiration:       user.TrialExpiration,
+		UpgradeTime:           user.UpgradeTime,
 	}
 
 	if user.DefaultPlacement != nil {
@@ -670,6 +840,14 @@ func userFromDBX(ctx context.Context, user *dbx.User) (_ *console.User, err erro
 
 	if user.LoginLockoutExpiration != nil {
 		result.LoginLockoutExpiration = *user.LoginLockoutExpiration
+	}
+
+	if user.ActivationCode != nil {
+		result.ActivationCode = *user.ActivationCode
+	}
+
+	if user.SignupId != nil {
+		result.SignupId = *user.SignupId
 	}
 
 	return &result, nil

@@ -238,10 +238,10 @@ export class Admin {
 					['API Key name', new InputText('text', true)]
 				],
 				func: async (projectId: string, apiKeyName: string): Promise<null> => {
-					return this.fetch(
-						'DELETE',
-						`projects/${projectId}/apikeys/${apiKeyName}`
-					) as Promise<null>;
+					const query = this.urlQueryFromObject({
+						name: apiKeyName
+					});
+					return this.fetch('DELETE', `projects/${projectId}/apikeys`, query) as Promise<null>;
 				}
 			},
 			{
@@ -262,7 +262,7 @@ export class Admin {
 			},
 			{
 				name: 'get project limits',
-				desc: 'Get the current limits of a specific project',
+				desc: 'Get the current limits of a specific project. NULL values means that the satellite applies the configured defaults',
 				params: [['Project ID', new InputText('text', true)]],
 				func: async (projectId: string): Promise<Record<string, unknown>> => {
 					return this.fetch('GET', `projects/${projectId}/limit`);
@@ -270,25 +270,32 @@ export class Admin {
 			},
 			{
 				name: 'update project limits',
-				desc: 'Update the limits of a specific project',
+				desc: 'Update the limits of a specific project. Only the no blank fields are updated. Fields with the 0 value are set to 0, which is not the default value. The fields that accept -1 set the value to null, which is the value that indicate the satellite to apply the configured defaults',
 				params: [
 					['Project ID', new InputText('text', true)],
-					['Storage (in bytes)', new InputText('number', false)],
-					['Bandwidth (in bytes)', new InputText('number', false)],
-					['Rate (requests per second)', new InputText('number', false)],
-					['Buckets (maximum number)', new InputText('number', false)],
-					['Burst (max concurrent requests)', new InputText('number', false)],
+					['Storage (in bytes or notations like 1GB, 2tb)', new InputText('text', false)],
+					['Bandwidth (in bytes or notations like 1GB, 2tb)', new InputText('text', false)],
+					['Rate: requests per second (accepts -1)', new InputText('number', false)],
+					['Buckets: maximum number (accepts -1)', new InputText('number', false)],
+					['Burst: max concurrent requests (accepts -1)', new InputText('number', false)],
 					['Segments (maximum number)', new InputText('number', false)]
 				],
 				func: async (
 					projectId: string,
-					usage: number,
-					bandwidth: number,
+					usage: string,
+					bandwidth: string,
 					rate: number,
 					buckets: number,
 					burst: number,
 					segments: number
 				): Promise<null> => {
+					usage = this.emptyToUndefined(usage);
+					bandwidth = this.emptyToUndefined(bandwidth);
+					rate = this.nullToUndefined(rate);
+					buckets = this.nullToUndefined(buckets);
+					burst = this.nullToUndefined(burst);
+					segments = this.nullToUndefined(segments);
+
 					const query = this.urlQueryFromObject({
 						usage,
 						bandwidth,
@@ -341,6 +348,17 @@ export class Admin {
 				params: [['email', new InputText('email', true)]],
 				func: async (email: string): Promise<Record<string, unknown>> => {
 					return this.fetch('GET', `users/${email}`);
+				}
+			},
+			{
+				name: 'get users pending deletion',
+				desc: 'Get the information of a users pending deletion and have no unpaid invoices',
+				params: [
+					['Limit', new InputText('number', true)],
+					['Page', new InputText('number', true)]
+				],
+				func: async (limit: number, page: number): Promise<Record<string, unknown>> => {
+					return this.fetch('GET', `users-pending-deletion?limit=${limit}&page=${page}`);
 				}
 			},
 			{
@@ -442,6 +460,17 @@ Blank fields will not be updated.`,
 				}
 			},
 			{
+				name: 'activate account/disable bot restriction',
+				desc: 'Disables account bot restrictions by activating the account and restoring its limit values. This is used only for accounts with the PendingBotVerification status.',
+				params: [['email', new InputText('email', true)]],
+				func: async (email: string): Promise<null> => {
+					return this.fetch(
+						'PATCH',
+						`users/${email}/activate-account/disable-bot-restriction`
+					) as Promise<null>;
+				}
+			},
+			{
 				name: 'disable MFA',
 				desc: "Disable user's mulifactor authentication",
 				params: [['email', new InputText('email', true)]],
@@ -450,27 +479,75 @@ Blank fields will not be updated.`,
 				}
 			},
 			{
-				name: 'freeze user',
+				name: 'billing freeze user',
 				desc: "insert user into account_freeze_events and set user's limits to zero",
 				params: [['email', new InputText('email', true)]],
 				func: async (email: string): Promise<null> => {
-					return this.fetch('PUT', `users/${email}/freeze`) as Promise<null>;
+					return this.fetch('PUT', `users/${email}/billing-freeze`) as Promise<null>;
 				}
 			},
 			{
-				name: 'unfreeze user',
+				name: 'billing unfreeze user',
 				desc: "remove user from account_freeze_events and reset user's limits to what is stored in account_freeze_events",
 				params: [['email', new InputText('email', true)]],
 				func: async (email: string): Promise<null> => {
-					return this.fetch('DELETE', `users/${email}/freeze`) as Promise<null>;
+					return this.fetch('DELETE', `users/${email}/billing-freeze`) as Promise<null>;
 				}
 			},
 			{
-				name: 'unwarn user',
-				desc: "Remove a user's warning status",
+				name: 'violation freeze user',
+				desc: 'freeze a user for ToS violation, set limits to zero and status to pending deletion',
 				params: [['email', new InputText('email', true)]],
 				func: async (email: string): Promise<null> => {
-					return this.fetch('DELETE', `users/${email}/warning`) as Promise<null>;
+					return this.fetch('PUT', `users/${email}/violation-freeze`) as Promise<null>;
+				}
+			},
+			{
+				name: 'violation unfreeze user',
+				desc: "remove a user's violation freeze, reinstating their limits and status (Active)",
+				params: [['email', new InputText('email', true)]],
+				func: async (email: string): Promise<null> => {
+					return this.fetch('DELETE', `users/${email}/violation-freeze`) as Promise<null>;
+				}
+			},
+			{
+				name: 'legal freeze user',
+				desc: 'freeze a user for legal review, set limits to zero and status to legal hold',
+				params: [['email', new InputText('email', true)]],
+				func: async (email: string): Promise<null> => {
+					return this.fetch('PUT', `users/${email}/legal-freeze`) as Promise<null>;
+				}
+			},
+			{
+				name: 'legal unfreeze user',
+				desc: "remove a user's legal freeze, reinstating their limits and status (Active)",
+				params: [['email', new InputText('email', true)]],
+				func: async (email: string): Promise<null> => {
+					return this.fetch('DELETE', `users/${email}/legal-freeze`) as Promise<null>;
+				}
+			},
+			{
+				name: 'trial expiration freeze user',
+				desc: 'freeze a user for trial expiration, setting limits to zero',
+				params: [['email', new InputText('email', true)]],
+				func: async (email: string): Promise<null> => {
+					return this.fetch('PUT', `users/${email}/trial-expiration-freeze`) as Promise<null>;
+				}
+			},
+			{
+				name: 'trial expiration unfreeze user',
+				desc: "remove a user's trial expiration freeze, reinstating their limits",
+				params: [['email', new InputText('email', true)]],
+				func: async (email: string): Promise<null> => {
+					return this.fetch('DELETE', `users/${email}/trial-expiration-freeze`) as Promise<null>;
+				}
+			},
+			{
+				name: 'remove billing warning',
+				desc: "Remove the billing warning status from a user's account",
+				params: [['email', new InputText('email', true)]],
+				func: async (email: string): Promise<null> => {
+					return this.fetch('DELETE', `users/${email}/billing-warning`) as Promise<null>;
 				}
 			},
 			{
@@ -502,12 +579,28 @@ Blank fields will not be updated.`,
 				func: async (email: string): Promise<null> => {
 					return this.fetch('DELETE', `users/${email}/geofence`) as Promise<null>;
 				}
+			},
+			{
+				name: 'update free trial expiration',
+				desc: `Update a date when user's free trial will end.`,
+				params: [
+					["current user's email", new InputText('email', true)],
+					[
+						'trial expiration date (date string i.e. YYYY/MM/DD or null)',
+						new InputText('text', true)
+					]
+				],
+				func: async (currentEmail: string, date: string): Promise<null> => {
+					return this.fetch('PATCH', `users/${currentEmail}/trial-expiration`, null, {
+						trialExpiration: date === 'null' ? null : this.toISOStringWithLocalTimezone(date)
+					}) as Promise<null>;
+				}
 			}
 		],
 		rest_api_keys: [
 			{
 				name: 'create',
-				desc: 'Create a REST key',
+				desc: 'Create a REST key. The expiration format must be accepted by https://pkg.go.dev/time#ParseDuration (e.g 20d4h20s) and if it is blank the default applies',
 				params: [
 					["user's email", new InputText('text', true)],
 					['expiration', new InputText('text', false)]
@@ -571,6 +664,19 @@ Blank fields will not be updated.`,
 		return null;
 	}
 
+	protected toISOStringWithLocalTimezone(dateInput: string): string {
+		const date = new Date(dateInput);
+		// getTimezoneOffset() returns the difference in minutes between local time and UTC,
+		// where local time is ahead of UTC (e.g., UTC+2) it returns a negative value,
+		// and where local time is behind UTC (e.g., UTC-5) it returns a positive value.
+		const timezoneOffset = date.getTimezoneOffset() * 60000; // convert offset to milliseconds
+
+		// Adjusting the date by its own timezone offset ensures the date part remains unchanged
+		// when converting to the ISO string, regardless of the local timezone.
+		const adjustedDate = new Date(date.getTime() - timezoneOffset);
+		return adjustedDate.toISOString();
+	}
+
 	protected apiURL(path: string, query?: string): string {
 		path = path.startsWith('/') ? path.substring(1) : path;
 
@@ -596,6 +702,22 @@ Blank fields will not be updated.`,
 		}
 
 		return queryParts.join('&');
+	}
+
+	protected nullToUndefined<Type>(val: Type): Type {
+		if (val === null) {
+			return undefined;
+		}
+
+		return val;
+	}
+
+	protected emptyToUndefined(s: string): string {
+		if (s === '') {
+			return undefined;
+		}
+
+		return s;
 	}
 }
 

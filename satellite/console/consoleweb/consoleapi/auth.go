@@ -5,26 +5,25 @@ package consoleapi
 
 import (
 	"context"
-	"encoding/base64"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
+	"math/big"
 	"net/http"
 	"strings"
 	"time"
 
-	"github.com/golang-jwt/jwt"
 	"github.com/gorilla/mux"
 	"github.com/zeebo/errs"
 	"go.uber.org/zap"
 
+	"storj.io/common/http/requestid"
 	"storj.io/common/uuid"
 	"storj.io/storj/private/post"
 	"storj.io/storj/private/web"
 	"storj.io/storj/satellite/analytics"
 	"storj.io/storj/satellite/console"
-	"storj.io/storj/satellite/console/consoleweb/consoleapi/socialmedia"
 	"storj.io/storj/satellite/console/consoleweb/consoleapi/utils"
 	"storj.io/storj/satellite/console/consoleweb/consolewebauth"
 	"storj.io/storj/satellite/mailservice"
@@ -39,10 +38,6 @@ var (
 	errNotImplemented = errs.New("not implemented")
 )
 
-var mainPageURL string = "/project-dashboard"
-var signupPageURL string = "/signup"
-var signupSuccessURL string = "/signup-success"
-
 // Auth is an api controller that exposes all auth functionality.
 type Auth struct {
 	log                       *zap.Logger
@@ -54,7 +49,9 @@ type Auth struct {
 	PasswordRecoveryURL       string
 	CancelPasswordRecoveryURL string
 	ActivateAccountURL        string
+	ActivationCodeEnabled     bool
 	SatelliteName             string
+	badPasswords              map[string]struct{}
 	service                   *console.Service
 	accountFreezeService      *console.AccountFreezeService
 	analytics                 *analytics.Service
@@ -62,35 +59,8 @@ type Auth struct {
 	cookieAuth                *consolewebauth.CookieAuth
 }
 
-// ErrorResponse is struct for sending error message with code.
-type ErrorResponse struct {
-	Code    int
-	Message string
-}
-
-// SuccessResponse is struct for sending error message with code.
-type SuccessResponse struct {
-	Code     int
-	Message  string
-	Response interface{}
-}
-
-// Claims is  a struct that will be encoded to a JWT.
-// jwt.StandardClaims is an embedded type to provide expiry time
-type Claims struct {
-	Email string
-	jwt.StandardClaims
-}
-
-// UserDetails is struct used for user details
-type UserDetails struct {
-	Name     string
-	Email    string
-	Password string
-}
-
 // NewAuth is a constructor for api auth controller.
-func NewAuth(log *zap.Logger, service *console.Service, accountFreezeService *console.AccountFreezeService, mailService *mailservice.Service, cookieAuth *consolewebauth.CookieAuth, analytics *analytics.Service, satelliteName, externalAddress, letUsKnowURL, termsAndConditionsURL, contactInfoURL, generalRequestURL string) *Auth {
+func NewAuth(log *zap.Logger, service *console.Service, accountFreezeService *console.AccountFreezeService, mailService *mailservice.Service, cookieAuth *consolewebauth.CookieAuth, analytics *analytics.Service, satelliteName, externalAddress, letUsKnowURL, termsAndConditionsURL, contactInfoURL, generalRequestURL string, activationCodeEnabled bool, badPasswords map[string]struct{}) *Auth {
 	return &Auth{
 		log:                       log,
 		ExternalAddress:           externalAddress,
@@ -102,11 +72,13 @@ func NewAuth(log *zap.Logger, service *console.Service, accountFreezeService *co
 		PasswordRecoveryURL:       externalAddress + "password-recovery",
 		CancelPasswordRecoveryURL: externalAddress + "cancel-password-recovery",
 		ActivateAccountURL:        externalAddress + "activation",
+		ActivationCodeEnabled:     activationCodeEnabled,
 		service:                   service,
 		accountFreezeService:      accountFreezeService,
 		mailService:               mailService,
 		cookieAuth:                cookieAuth,
 		analytics:                 analytics,
+		badPasswords:              badPasswords,
 	}
 }
 
@@ -131,7 +103,6 @@ func (a *Auth) Token(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tokenInfo, err := a.service.Token(ctx, tokenRequest)
-
 	if err != nil {
 		if console.ErrMFAMissing.Has(err) {
 			web.ServeCustomJSONError(ctx, a.log, w, http.StatusOK, err, a.getUserErrorMessage(err))
@@ -238,7 +209,6 @@ func (a *Auth) Logout(w http.ResponseWriter, r *http.Request) {
 // Register creates new user, sends activation e-mail.
 // If a user with the given e-mail address already exists, a password reset e-mail is sent instead.
 func (a *Auth) Register(w http.ResponseWriter, r *http.Request) {
-
 	ctx := r.Context()
 	var err error
 	defer mon.Task()(&ctx)(&err)
@@ -260,18 +230,13 @@ func (a *Auth) Register(w http.ResponseWriter, r *http.Request) {
 		HaveSalesContact bool   `json:"haveSalesContact"`
 		CaptchaResponse  string `json:"captchaResponse"`
 		SignupPromoCode  string `json:"signupPromoCode"`
+		IsMinimal        bool   `json:"isMinimal"`
 	}
 
 	err = json.NewDecoder(r.Body).Decode(&registerData)
 	if err != nil {
 		a.serveJSONError(ctx, w, err)
 		return
-	}
-
-	if r.URL.Query().Has("zoho-insert") {
-		a.log.Debug("inserting lead in Zoho CRM")
-		// Inserting lead in Zoho CRM
-		go zohoInsertLead(ctx, registerData.FullName, registerData.Email, a.log)
 	}
 
 	// trim leading and trailing spaces of email address.
@@ -281,6 +246,14 @@ func (a *Auth) Register(w http.ResponseWriter, r *http.Request) {
 	if !isValidEmail {
 		a.serveJSONError(ctx, w, console.ErrValidation.Wrap(errs.New("Invalid email.")))
 		return
+	}
+
+	if a.badPasswords != nil {
+		_, exists := a.badPasswords[registerData.Password]
+		if exists {
+			a.serveJSONError(ctx, w, console.ErrValidation.Wrap(errs.New("The password you chose is on a list of insecure or breached passwords. Please choose a different one.")))
+			return
+		}
 	}
 
 	if len([]rune(registerData.Partner)) > 100 {
@@ -338,6 +311,20 @@ func (a *Auth) Register(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		var code string
+		var requestID string
+		if a.ActivationCodeEnabled {
+			randNum, err := rand.Int(rand.Reader, big.NewInt(900000))
+			if err != nil {
+				a.serveJSONError(ctx, w, console.Error.Wrap(err))
+				return
+			}
+			randNum = randNum.Add(randNum, big.NewInt(100000))
+			code = randNum.String()
+
+			requestID = requestid.FromContext(ctx)
+		}
+
 		user, err = a.service.CreateUser(ctx,
 			console.CreateUser{
 				FullName:         registerData.FullName,
@@ -353,13 +340,38 @@ func (a *Auth) Register(w http.ResponseWriter, r *http.Request) {
 				CaptchaResponse:  registerData.CaptchaResponse,
 				IP:               ip,
 				SignupPromoCode:  registerData.SignupPromoCode,
+				ActivationCode:   code,
+				SignupId:         requestID,
+				// the minimal signup from the v2 app doesn't require name.
+				AllowNoName: registerData.IsMinimal,
 			},
-			secret, false,
+			secret,
 		)
-
 		if err != nil {
-			a.serveJSONError(ctx, w, err)
+			if !console.ErrEmailUsed.Has(err) {
+				a.serveJSONError(ctx, w, err)
+			}
 			return
+		}
+
+		invites, err := a.service.GetInvitesByEmail(ctx, registerData.Email)
+		if err != nil {
+			a.log.Error("Could not get invitations", zap.String("email", registerData.Email), zap.Error(err))
+		} else if len(invites) > 0 {
+			var firstInvite console.ProjectInvitation
+			for _, inv := range invites {
+				if inv.InviterID != nil && (firstInvite.CreatedAt.IsZero() || inv.CreatedAt.Before(firstInvite.CreatedAt)) {
+					firstInvite = inv
+				}
+			}
+			if firstInvite.InviterID != nil {
+				inviter, err := a.service.GetUser(ctx, *firstInvite.InviterID)
+				if err != nil {
+					a.log.Error("Error getting inviter info", zap.String("ID", firstInvite.InviterID.String()), zap.Error(err))
+				} else {
+					a.analytics.TrackInviteLinkSignup(inviter.Email, registerData.Email)
+				}
+			}
 		}
 
 		// see if referrer was provided in URL query, otherwise use the Referer header in the request.
@@ -374,15 +386,16 @@ func (a *Auth) Register(w http.ResponseWriter, r *http.Request) {
 		}
 
 		trackCreateUserFields := analytics.TrackCreateUserFields{
-			ID:           user.ID,
-			AnonymousID:  loadSession(r),
-			FullName:     user.FullName,
-			Email:        user.Email,
-			Type:         analytics.Personal,
-			OriginHeader: r.Header.Get("Origin"),
-			Referrer:     referrer,
-			HubspotUTK:   hubspotUTK,
-			UserAgent:    string(user.UserAgent),
+			ID:            user.ID,
+			AnonymousID:   loadSession(r),
+			FullName:      user.FullName,
+			Email:         user.Email,
+			Type:          analytics.Personal,
+			OriginHeader:  r.Header.Get("Origin"),
+			Referrer:      referrer,
+			HubspotUTK:    hubspotUTK,
+			UserAgent:     string(user.UserAgent),
+			SignupCaptcha: user.SignupCaptcha,
 		}
 		if user.IsProfessional {
 			trackCreateUserFields.Type = analytics.Professional
@@ -395,6 +408,23 @@ func (a *Auth) Register(w http.ResponseWriter, r *http.Request) {
 		a.analytics.TrackCreateUser(trackCreateUserFields)
 	}
 
+	if a.ActivationCodeEnabled {
+		*user, err = a.service.SetActivationCodeAndSignupID(ctx, *user)
+		if err != nil {
+			a.serveJSONError(ctx, w, err)
+			return
+		}
+
+		a.mailService.SendRenderedAsync(
+			ctx,
+			[]post.Address{{Address: user.Email}},
+			&console.AccountActivationCodeEmail{
+				ActivationCode: user.ActivationCode,
+			},
+		)
+
+		return
+	}
 	token, err := a.service.GenerateActivationToken(ctx, user.ID, user.Email)
 	if err != nil {
 		a.serveJSONError(ctx, w, err)
@@ -411,113 +441,31 @@ func (a *Auth) Register(w http.ResponseWriter, r *http.Request) {
 			Origin:         a.ExternalAddress,
 		},
 	)
-
-	// Create Default Project - Munjal - 1/Oct/2023
-	tokenInfo, err := a.service.GenerateSessionToken(ctx, user.ID, user.Email, "", "")
-	//require.NoError(t, err)
-	a.log.Error("Token Info:")
-	a.log.Error(tokenInfo.Token.String())
-
-	// Set up a test project and bucket
-
-	authed := console.WithUser(ctx, user)
-
-	project, err := a.service.CreateProject(authed, console.UpsertProjectInfo{
-		Name: "My Project",
-	})
-	//require.NoError(t, err)
-	if err != nil {
-		a.log.Error("Error in Default Project:")
-		a.log.Error(err.Error())
-		a.serveJSONError(ctx, w, err)
-	}
-
-	a.log.Error("Default Project Name: " + project.Name)
 }
 
-func CreateToken(ttl time.Duration, payload interface{}, privateKey string) (string, error) {
-	decodedPrivateKey, err := base64.StdEncoding.DecodeString(privateKey)
-	if err != nil {
-		return "", fmt.Errorf("could not decode key: %w", err)
-	}
-	key, err := jwt.ParseRSAPrivateKeyFromPEM(decodedPrivateKey)
-
-	if err != nil {
-		return "", fmt.Errorf("create: parse key: %w", err)
-	}
-
-	now := time.Now().UTC()
-
-	claims := make(jwt.MapClaims)
-	claims["sub"] = payload
-	claims["exp"] = now.Add(ttl).Unix()
-	claims["iat"] = now.Unix()
-	claims["nbf"] = now.Unix()
-
-	token, err := jwt.NewWithClaims(jwt.SigningMethodRS256, claims).SignedString(key)
-
-	if err != nil {
-		return "", fmt.Errorf("create: sign token: %w", err)
-	}
-
-	return token, nil
-}
-
-// **** Google sign ****//
-func (a *Auth) RegisterGoogle(w http.ResponseWriter, r *http.Request) {
-
-	var mode string = "signup"
+// ActivateAccount verifies a signup activation code.
+func (a *Auth) ActivateAccount(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	var err error
 	defer mon.Task()(&ctx)(&err)
 
-	var registerData struct {
-		FullName         string `json:"fullName"`
-		ShortName        string `json:"shortName"`
-		Email            string `json:"email"`
-		Partner          string `json:"partner"`
-		UserAgent        []byte `json:"userAgent"`
-		Password         string `json:"password"`
-		Status           int    `json:"status"`
-		SecretInput      string `json:"secret"`
-		ReferrerUserID   string `json:"referrerUserId"`
-		IsProfessional   bool   `json:"isProfessional"`
-		Position         string `json:"position"`
-		CompanyName      string `json:"companyName"`
-		StorageNeeds     string `json:"storageNeeds"`
-		EmployeeCount    string `json:"employeeCount"`
-		HaveSalesContact bool   `json:"haveSalesContact"`
-		CaptchaResponse  string `json:"captchaResponse"`
-		SignupPromoCode  string `json:"signupPromoCode"`
+	var activateData struct {
+		Email    string `json:"email"`
+		Code     string `json:"code"`
+		SignupId string `json:"signupId"`
 	}
-
-	code := r.URL.Query().Get("code")
-
-	if code == "" {
-		a.serveJSONError(ctx, w, console.ErrUnauthorized.Wrap(errs.New("Authorization code not provided!")))
-		return
-	}
-
-	// Use the code to get the id and access tokens
-	tokenRes, err := socialmedia.GetGoogleOauthToken(code, mode)
+	err = json.NewDecoder(r.Body).Decode(&activateData)
 	if err != nil {
 		a.serveJSONError(ctx, w, err)
 		return
 	}
 
-	googleuser, err := socialmedia.GetGoogleUser(tokenRes.Access_token, tokenRes.Id_token)
-	if err != nil {
-		a.serveJSONError(ctx, w, err)
-		return
-	}
-
-	verified, unverified, err := a.service.GetUserByEmailWithUnverified_google(ctx, googleuser.Email)
+	verified, unverified, err := a.service.GetUserByEmailWithUnverified(ctx, activateData.Email)
 	if err != nil && !console.ErrEmailNotFound.Has(err) {
 		a.serveJSONError(ctx, w, err)
 		return
 	}
 
-	var user *console.User
 	if verified != nil {
 		satelliteAddress := a.ExternalAddress
 		if !strings.HasSuffix(satelliteAddress, "/") {
@@ -534,675 +482,52 @@ func (a *Auth) RegisterGoogle(w http.ResponseWriter, r *http.Request) {
 				CreateAccountLink: satelliteAddress + "signup",
 			},
 		)
-	} else {
-		if len(unverified) > 0 {
-			user = &unverified[0]
-		} else {
-			secret, err := console.RegistrationSecretFromBase64(registerData.SecretInput)
-			if err != nil {
-				a.serveJSONError(ctx, w, err)
-				return
-			}
-
-			if registerData.Partner != "" {
-				registerData.UserAgent = []byte(registerData.Partner)
-			}
-
-			ip, err := web.GetRequestIP(r)
-			if err != nil {
-				a.serveJSONError(ctx, w, err)
-				return
-			}
-			registerData.Status = 1
-			user, err = a.service.CreateUser(ctx,
-				console.CreateUser{
-					FullName:         googleuser.Name,
-					ShortName:        registerData.ShortName,
-					Email:            googleuser.Email,
-					UserAgent:        registerData.UserAgent,
-					Password:         registerData.Password,
-					Status:           registerData.Status,
-					IsProfessional:   registerData.IsProfessional,
-					Position:         registerData.Position,
-					CompanyName:      registerData.CompanyName,
-					EmployeeCount:    registerData.EmployeeCount,
-					HaveSalesContact: registerData.HaveSalesContact,
-					IP:               ip,
-					SignupPromoCode:  registerData.SignupPromoCode,
-				},
-				secret, true,
-			)
-
-			if err != nil {
-				a.serveJSONError(ctx, w, err)
-				return
-			}
-
-			referrer := r.URL.Query().Get("referrer")
-			if referrer == "" {
-				referrer = r.Referer()
-			}
-			hubspotUTK := ""
-			hubspotCookie, err := r.Cookie("hubspotutk")
-			if err == nil {
-				hubspotUTK = hubspotCookie.Value
-			}
-
-			trackCreateUserFields := analytics.TrackCreateUserFields{
-				ID:           user.ID,
-				AnonymousID:  loadSession(r),
-				FullName:     user.FullName,
-				Email:        user.Email,
-				Type:         analytics.Personal,
-				OriginHeader: r.Header.Get("Origin"),
-				Referrer:     referrer,
-				HubspotUTK:   hubspotUTK,
-				UserAgent:    string(user.UserAgent),
-			}
-			if user.IsProfessional {
-				trackCreateUserFields.Type = analytics.Professional
-				trackCreateUserFields.EmployeeCount = user.EmployeeCount
-				trackCreateUserFields.CompanyName = user.CompanyName
-				trackCreateUserFields.StorageNeeds = registerData.StorageNeeds
-				trackCreateUserFields.JobTitle = user.Position
-				trackCreateUserFields.HaveSalesContact = user.HaveSalesContact
-			}
-			a.analytics.TrackCreateUser(trackCreateUserFields)
-		}
-	}
-
-	// Create Default Project
-	tokenInfo, err := a.service.GenerateSessionToken(ctx, user.ID, user.Email, "", "")
-	//require.NoError(t, err)
-	a.log.Error("Token Info:")
-	a.log.Error(tokenInfo.Token.String())
-
-	// Set up a test project and bucket
-
-	authed := console.WithUser(ctx, user)
-
-	project, err := a.service.CreateProject(authed, console.UpsertProjectInfo{
-		Name: "My Project",
-	})
-	//require.NoError(t, err)
-	if err != nil {
-		a.log.Error("Error in Default Project:")
-		a.log.Error(err.Error())
-		a.serveJSONError(ctx, w, err)
-	}
-
-	a.log.Error("Default Project Name: " + project.Name)
-
-	http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, signupSuccessURL), http.StatusTemporaryRedirect)
-}
-
-func (a *Auth) LoginUserConfirm(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	var err error
-	defer mon.Task()(&ctx)(&err)
-	var mode string = "signin"
-
-	code := r.URL.Query().Get("code")
-
-	if code == "" {
-		a.serveJSONError(ctx, w, console.ErrUnauthorized.Wrap(errs.New("Authorization code not provided!")))
+		// return error since verified user already exists.
+		a.serveJSONError(ctx, w, console.ErrUnauthorized.New("user already verified"))
 		return
 	}
 
-	// Use the code to get the id and access tokens
-	tokenRes, err := socialmedia.GetGoogleOauthToken(code, mode)
+	var user *console.User
+	if len(unverified) == 0 {
+		a.serveJSONError(ctx, w, console.ErrEmailNotFound.New("no unverified user found"))
+		return
+	}
+	user = &unverified[0]
 
+	if user.ActivationCode != activateData.Code || user.SignupId != activateData.SignupId {
+		a.serveJSONError(ctx, w, console.ErrActivationCode.New("invalid activation code"))
+		return
+	}
+
+	err = a.service.SetAccountActive(ctx, user)
 	if err != nil {
 		a.serveJSONError(ctx, w, err)
 		return
 	}
 
-	googleuser, err := socialmedia.GetGoogleUser(tokenRes.Access_token, tokenRes.Id_token)
-
-	verified, unverified, err := a.service.GetUserByEmailWithUnverified_google(ctx, googleuser.Email)
-	if err != nil && !console.ErrEmailNotFound.Has(err) {
-		a.serveJSONError(ctx, w, err)
-		return
-	}
-	fmt.Println(verified, unverified, err)
-
-	if verified == nil {
-		http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, signupPageURL), http.StatusTemporaryRedirect)
-		return
-	}
-	a.TokenGoogleWrapper(r.Context(), googleuser.Email, w, r)
-
-	http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, mainPageURL), http.StatusTemporaryRedirect)
-}
-
-func (a *Auth) TokenGoogleWrapperHandler(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	var err error
-	defer mon.Task()(&ctx)(&err)
-
-	a.TokenGoogleWrapper(ctx, "userGmail", w, r)
-}
-
-func (a *Auth) TokenGoogleWrapper(ctx context.Context, userGmail string, w http.ResponseWriter, r *http.Request) {
-
-	var err error
-
-	tokenRequest := console.AuthUser{}
-	tokenRequest.Email = userGmail
-	userGmail = ""
-	tokenRequest.UserAgent = r.UserAgent()
-	tokenRequest.IP, err = web.GetRequestIP(r)
+	ip, err := web.GetRequestIP(r)
 	if err != nil {
 		a.serveJSONError(ctx, w, err)
 		return
 	}
 
-	tokenInfo, err := a.service.Token_google(ctx, tokenRequest)
-
+	tokenInfo, err := a.service.GenerateSessionToken(ctx, user.ID, user.Email, ip, r.UserAgent(), nil)
 	if err != nil {
-		if console.ErrMFAMissing.Has(err) {
-			web.ServeCustomJSONError(ctx, a.log, w, http.StatusOK, err, a.getUserErrorMessage(err))
-		} else {
-			a.log.Info("Error authenticating token request", zap.String("email", tokenRequest.Email), zap.Error(ErrAuthAPI.Wrap(err)))
-			a.serveJSONError(ctx, w, err)
-		}
+		a.serveJSONError(ctx, w, err)
 		return
 	}
 
 	a.cookieAuth.SetTokenCookie(w, *tokenInfo)
-}
 
-func (a *Auth) InitFacebookRegister(w http.ResponseWriter, r *http.Request) {
-	var OAuth2Config = socialmedia.GetFacebookOAuthConfig_Register()
-	url := OAuth2Config.AuthCodeURL(socialmedia.GetRandomOAuthStateString())
-	http.Redirect(w, r, url, http.StatusTemporaryRedirect)
-}
-
-func (a *Auth) InitFacebookLogin(w http.ResponseWriter, r *http.Request) {
-	var OAuth2Config = socialmedia.GetFacebookOAuthConfig_Login()
-	url := OAuth2Config.AuthCodeURL(socialmedia.GetRandomOAuthStateString())
-	http.Redirect(w, r, url, http.StatusTemporaryRedirect)
-}
-
-func (a *Auth) HandleFacebookRegister(w http.ResponseWriter, r *http.Request) {
-
-	ctx := r.Context()
-	var err error
-	defer mon.Task()(&ctx)(&err)
-
-	var registerData struct {
-		FullName         string `json:"fullName"`
-		ShortName        string `json:"shortName"`
-		Email            string `json:"email"`
-		Partner          string `json:"partner"`
-		UserAgent        []byte `json:"userAgent"`
-		Password         string `json:"password"`
-		Status           int    `json:"status"`
-		SecretInput      string `json:"secret"`
-		ReferrerUserID   string `json:"referrerUserId"`
-		IsProfessional   bool   `json:"isProfessional"`
-		Position         string `json:"position"`
-		CompanyName      string `json:"companyName"`
-		StorageNeeds     string `json:"storageNeeds"`
-		EmployeeCount    string `json:"employeeCount"`
-		HaveSalesContact bool   `json:"haveSalesContact"`
-		CaptchaResponse  string `json:"captchaResponse"`
-		SignupPromoCode  string `json:"signupPromoCode"`
-	}
-
-	var code = r.FormValue("code")
-
-	var OAuth2Config = socialmedia.GetFacebookOAuthConfig_Register()
-
-	token, err := OAuth2Config.Exchange(context.TODO(), code)
-
-	if err != nil || token == nil {
-		a.serveJSONError(ctx, w, err)
-		return
-	}
-	fbUserDetails, fbUserDetailsError := socialmedia.GetUserInfoFromFacebook(token.AccessToken)
-
-	if fbUserDetailsError != nil {
-		a.serveJSONError(ctx, w, err)
-		return
-	}
-
-	verified, unverified, err := a.service.GetUserByEmailWithUnverified_google(ctx, fbUserDetails.Email)
-	if err != nil && !console.ErrEmailNotFound.Has(err) {
-		a.serveJSONError(ctx, w, err)
-		return
-	}
-	var user *console.User
-	if verified != nil {
-		satelliteAddress := a.ExternalAddress
-		if !strings.HasSuffix(satelliteAddress, "/") {
-			satelliteAddress += "/"
-		}
-		a.mailService.SendRenderedAsync(
-			ctx,
-			[]post.Address{{Address: verified.Email}},
-			&console.AccountAlreadyExistsEmail{
-				Origin:            satelliteAddress,
-				SatelliteName:     a.SatelliteName,
-				SignInLink:        satelliteAddress + "login",
-				ResetPasswordLink: satelliteAddress + "forgot-password",
-				CreateAccountLink: satelliteAddress + "signup",
-			},
-		)
-	} else {
-		if len(unverified) > 0 {
-			user = &unverified[0]
-		} else {
-			secret, err := console.RegistrationSecretFromBase64(registerData.SecretInput)
-			if err != nil {
-				a.serveJSONError(ctx, w, err)
-				return
-			}
-
-			if registerData.Partner != "" {
-				registerData.UserAgent = []byte(registerData.Partner)
-			}
-
-			ip, err := web.GetRequestIP(r)
-			if err != nil {
-				a.serveJSONError(ctx, w, err)
-				return
-			}
-			registerData.Status = 1
-
-			user, err = a.service.CreateUser(ctx,
-				console.CreateUser{
-					FullName:         fbUserDetails.Name,
-					ShortName:        registerData.ShortName,
-					Email:            fbUserDetails.Email,
-					UserAgent:        registerData.UserAgent,
-					Password:         registerData.Password,
-					Status:           registerData.Status,
-					IsProfessional:   registerData.IsProfessional,
-					Position:         registerData.Position,
-					CompanyName:      registerData.CompanyName,
-					EmployeeCount:    registerData.EmployeeCount,
-					HaveSalesContact: registerData.HaveSalesContact,
-					IP:               ip,
-					SignupPromoCode:  registerData.SignupPromoCode,
-				},
-				secret, true,
-			)
-
-			if err != nil {
-				a.serveJSONError(ctx, w, err)
-				return
-			}
-
-			referrer := r.URL.Query().Get("referrer")
-			if referrer == "" {
-				referrer = r.Referer()
-			}
-			hubspotUTK := ""
-			hubspotCookie, err := r.Cookie("hubspotutk")
-			if err == nil {
-				hubspotUTK = hubspotCookie.Value
-			}
-
-			trackCreateUserFields := analytics.TrackCreateUserFields{
-				ID:           user.ID,
-				AnonymousID:  loadSession(r),
-				FullName:     user.FullName,
-				Email:        user.Email,
-				Type:         analytics.Personal,
-				OriginHeader: r.Header.Get("Origin"),
-				Referrer:     referrer,
-				HubspotUTK:   hubspotUTK,
-				UserAgent:    string(user.UserAgent),
-			}
-			if user.IsProfessional {
-				trackCreateUserFields.Type = analytics.Professional
-				trackCreateUserFields.EmployeeCount = user.EmployeeCount
-				trackCreateUserFields.CompanyName = user.CompanyName
-				trackCreateUserFields.StorageNeeds = registerData.StorageNeeds
-				trackCreateUserFields.JobTitle = user.Position
-				trackCreateUserFields.HaveSalesContact = user.HaveSalesContact
-			}
-			a.analytics.TrackCreateUser(trackCreateUserFields)
-		}
-	}
-
-	// Create Default Project
-	tokenInfo, err := a.service.GenerateSessionToken(ctx, user.ID, user.Email, "", "")
-	//require.NoError(t, err)
-	a.log.Error("Token Info:")
-	a.log.Error(tokenInfo.Token.String())
-
-	// Set up a test project and bucket
-
-	authed := console.WithUser(ctx, user)
-
-	project, err := a.service.CreateProject(authed, console.UpsertProjectInfo{
-		Name: "My Project",
-	})
-	//require.NoError(t, err)
+	w.Header().Set("Content-Type", "application/json")
+	err = json.NewEncoder(w).Encode(struct {
+		console.TokenInfo
+		Token string `json:"token"`
+	}{*tokenInfo, tokenInfo.Token.String()})
 	if err != nil {
-		a.log.Error("Error in Default Project:")
-		a.log.Error(err.Error())
-		a.serveJSONError(ctx, w, err)
+		a.log.Error("could not encode token response", zap.Error(ErrAuthAPI.Wrap(err)))
 		return
 	}
-
-	a.log.Error("Default Project Name: " + project.Name)
-
-	http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, signupSuccessURL), http.StatusTemporaryRedirect)
-}
-
-func (a *Auth) HandleFacebookLogin(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	var err error
-	defer mon.Task()(&ctx)(&err)
-
-	var state = r.FormValue("state")
-	var code = r.FormValue("code")
-
-	if state != socialmedia.GetRandomOAuthStateString() {
-		a.serveJSONError(ctx, w, err)
-		return
-	}
-
-	var OAuth2Config = socialmedia.GetFacebookOAuthConfig_Login()
-
-	token, err := OAuth2Config.Exchange(context.TODO(), code)
-
-	if err != nil || token == nil {
-		a.serveJSONError(ctx, w, err)
-		return
-	}
-
-	fbUserDetails, fbUserDetailsError := socialmedia.GetUserInfoFromFacebook(token.AccessToken)
-
-	if fbUserDetailsError != nil {
-		a.serveJSONError(ctx, w, err)
-		return
-	}
-
-	verified, unverified, err := a.service.GetUserByEmailWithUnverified_google(ctx, fbUserDetails.Email)
-	if err != nil && !console.ErrEmailNotFound.Has(err) {
-		a.serveJSONError(ctx, w, err)
-		return
-	}
-	fmt.Println(verified, unverified, err)
-
-	if verified == nil {
-		http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, signupPageURL), http.StatusTemporaryRedirect)
-		return
-	}
-	a.TokenGoogleWrapper(ctx, verified.Email, w, r)
-
-	http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, mainPageURL), http.StatusTemporaryRedirect)
-}
-
-func (a *Auth) InitLinkedInRegister(w http.ResponseWriter, r *http.Request) {
-	var OAuth2Config = socialmedia.GetLinkedinOAuthConfig_Register()
-	url := OAuth2Config.AuthCodeURL(socialmedia.GetRandomOAuthStateString())
-	http.Redirect(w, r, url, http.StatusTemporaryRedirect)
-}
-
-func (a *Auth) InitLinkedInLogin(w http.ResponseWriter, r *http.Request) {
-	var OAuth2Config = socialmedia.GetLinkedinOAuthConfig_Login()
-	url := OAuth2Config.AuthCodeURL(socialmedia.GetRandomOAuthStateString())
-	http.Redirect(w, r, url, http.StatusTemporaryRedirect)
-}
-
-func (a *Auth) HandleLinkedInRegister(w http.ResponseWriter, r *http.Request) {
-
-	ctx := r.Context()
-	var err error
-	defer mon.Task()(&ctx)(&err)
-
-	var registerData struct {
-		FullName         string `json:"fullName"`
-		ShortName        string `json:"shortName"`
-		Email            string `json:"email"`
-		Partner          string `json:"partner"`
-		UserAgent        []byte `json:"userAgent"`
-		Password         string `json:"password"`
-		Status           int    `json:"status"`
-		SecretInput      string `json:"secret"`
-		ReferrerUserID   string `json:"referrerUserId"`
-		IsProfessional   bool   `json:"isProfessional"`
-		Position         string `json:"position"`
-		CompanyName      string `json:"companyName"`
-		StorageNeeds     string `json:"storageNeeds"`
-		EmployeeCount    string `json:"employeeCount"`
-		HaveSalesContact bool   `json:"haveSalesContact"`
-		CaptchaResponse  string `json:"captchaResponse"`
-		SignupPromoCode  string `json:"signupPromoCode"`
-	}
-
-	var code = r.FormValue("code")
-
-	var OAuth2Config = socialmedia.GetLinkedinOAuthConfig_Register()
-
-	token, err := OAuth2Config.Exchange(context.TODO(), code)
-
-	if err != nil || token == nil {
-		a.serveJSONError(ctx, w, err)
-		return
-	}
-
-	client := OAuth2Config.Client(context.TODO(), token)
-	req, err := http.NewRequest("GET", "https://api.linkedin.com/v2/userinfo", nil)
-
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	req.Header.Set("Bearer", token.AccessToken)
-	response, err := client.Do(req)
-
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	defer response.Body.Close()
-	str, err := io.ReadAll(response.Body)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	var LinkedinUserDetails socialmedia.LinkedinUserDetails
-	err = json.Unmarshal(str, &LinkedinUserDetails)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	verified, unverified, err := a.service.GetUserByEmailWithUnverified_google(ctx, LinkedinUserDetails.Email)
-	if err != nil && !console.ErrEmailNotFound.Has(err) {
-		a.serveJSONError(ctx, w, err)
-		return
-	}
-
-	var user *console.User
-	if verified != nil {
-		satelliteAddress := a.ExternalAddress
-		if !strings.HasSuffix(satelliteAddress, "/") {
-			satelliteAddress += "/"
-		}
-		a.mailService.SendRenderedAsync(
-			ctx,
-			[]post.Address{{Address: verified.Email}},
-			&console.AccountAlreadyExistsEmail{
-				Origin:            satelliteAddress,
-				SatelliteName:     a.SatelliteName,
-				SignInLink:        satelliteAddress + "login",
-				ResetPasswordLink: satelliteAddress + "forgot-password",
-				CreateAccountLink: satelliteAddress + "signup",
-			},
-		)
-	} else {
-		if len(unverified) > 0 {
-			user = &unverified[0]
-		} else {
-			secret, err := console.RegistrationSecretFromBase64(registerData.SecretInput)
-			if err != nil {
-				a.serveJSONError(ctx, w, err)
-				return
-			}
-
-			if registerData.Partner != "" {
-				registerData.UserAgent = []byte(registerData.Partner)
-			}
-
-			ip, err := web.GetRequestIP(r)
-			if err != nil {
-				a.serveJSONError(ctx, w, err)
-				return
-			}
-			registerData.Status = 1
-
-			user, err = a.service.CreateUser(ctx,
-				console.CreateUser{
-					FullName:         LinkedinUserDetails.Name,
-					ShortName:        LinkedinUserDetails.GivenName,
-					Email:            LinkedinUserDetails.Email,
-					UserAgent:        registerData.UserAgent,
-					Password:         registerData.Password,
-					Status:           registerData.Status,
-					IsProfessional:   registerData.IsProfessional,
-					Position:         registerData.Position,
-					CompanyName:      registerData.CompanyName,
-					EmployeeCount:    registerData.EmployeeCount,
-					HaveSalesContact: registerData.HaveSalesContact,
-					IP:               ip,
-					SignupPromoCode:  registerData.SignupPromoCode,
-				},
-				secret, true,
-			)
-
-			if err != nil {
-				a.serveJSONError(ctx, w, err)
-				return
-			}
-			referrer := r.URL.Query().Get("referrer")
-			if referrer == "" {
-				referrer = r.Referer()
-			}
-			hubspotUTK := ""
-			hubspotCookie, err := r.Cookie("hubspotutk")
-			if err == nil {
-				hubspotUTK = hubspotCookie.Value
-			}
-
-			trackCreateUserFields := analytics.TrackCreateUserFields{
-				ID:           user.ID,
-				AnonymousID:  loadSession(r),
-				FullName:     user.FullName,
-				Email:        user.Email,
-				Type:         analytics.Personal,
-				OriginHeader: r.Header.Get("Origin"),
-				Referrer:     referrer,
-				HubspotUTK:   hubspotUTK,
-				UserAgent:    string(user.UserAgent),
-			}
-			if user.IsProfessional {
-				trackCreateUserFields.Type = analytics.Professional
-				trackCreateUserFields.EmployeeCount = user.EmployeeCount
-				trackCreateUserFields.CompanyName = user.CompanyName
-				trackCreateUserFields.StorageNeeds = registerData.StorageNeeds
-				trackCreateUserFields.JobTitle = user.Position
-				trackCreateUserFields.HaveSalesContact = user.HaveSalesContact
-			}
-			a.analytics.TrackCreateUser(trackCreateUserFields)
-		}
-	}
-
-	// Create Default Project
-	tokenInfo, err := a.service.GenerateSessionToken(ctx, user.ID, user.Email, "", "")
-	//require.NoError(t, err)
-	a.log.Error("Token Info:")
-	a.log.Error(tokenInfo.Token.String())
-
-	// Set up a test project and bucket
-
-	authed := console.WithUser(ctx, user)
-
-	project, err := a.service.CreateProject(authed, console.UpsertProjectInfo{
-		Name: "My Project",
-	})
-	//require.NoError(t, err)
-	if err != nil {
-		a.log.Error("Error in Default Project:")
-		a.log.Error(err.Error())
-		a.serveJSONError(ctx, w, err)
-		return
-	}
-
-	a.log.Error("Default Project Name: " + project.Name)
-
-	http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, signupSuccessURL), http.StatusTemporaryRedirect)
-}
-func (a *Auth) HandleLinkedInLogin(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	var err error
-	defer mon.Task()(&ctx)(&err)
-
-	var state = r.FormValue("state")
-	var code = r.FormValue("code")
-
-	if state != socialmedia.GetRandomOAuthStateString() {
-		a.serveJSONError(ctx, w, err)
-		return
-	}
-
-	var OAuth2Config = socialmedia.GetLinkedinOAuthConfig_Login()
-	token, err := OAuth2Config.Exchange(context.TODO(), code)
-
-	if err != nil || token == nil {
-		a.serveJSONError(ctx, w, err)
-		return
-	}
-
-	client := OAuth2Config.Client(context.TODO(), token)
-	req, err := http.NewRequest("GET", "https://api.linkedin.com/v2/userinfo", nil)
-
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	req.Header.Set("Bearer", token.AccessToken)
-	response, err := client.Do(req)
-
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	defer response.Body.Close()
-	str, err := io.ReadAll(response.Body)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	var LinkedinUserDetails socialmedia.LinkedinUserDetails
-	err = json.Unmarshal(str, &LinkedinUserDetails)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	verified, unverified, err := a.service.GetUserByEmailWithUnverified_google(ctx, LinkedinUserDetails.Email)
-	if err != nil && !console.ErrEmailNotFound.Has(err) {
-		a.serveJSONError(ctx, w, err)
-		return
-	}
-	fmt.Println(verified, unverified)
-
-	if verified == nil {
-		http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, signupPageURL), http.StatusTemporaryRedirect)
-		return
-	}
-	a.TokenGoogleWrapper(ctx, LinkedinUserDetails.Email, w, r)
-
-	http.Redirect(w, r, fmt.Sprint(socialmedia.GetConfig().ClientOrigin, mainPageURL), http.StatusTemporaryRedirect)
 }
 
 // loadSession looks for a cookie for the session id.
@@ -1218,8 +543,10 @@ func loadSession(req *http.Request) string {
 // GetFreezeStatus checks to see if an account is frozen or warned.
 func (a *Auth) GetFreezeStatus(w http.ResponseWriter, r *http.Request) {
 	type FrozenResult struct {
-		Frozen bool `json:"frozen"`
-		Warned bool `json:"warned"`
+		Frozen             bool `json:"frozen"`
+		Warned             bool `json:"warned"`
+		ViolationFrozen    bool `json:"violationFrozen"`
+		TrialExpiredFrozen bool `json:"trialExpiredFrozen"`
 	}
 
 	ctx := r.Context()
@@ -1232,7 +559,7 @@ func (a *Auth) GetFreezeStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	freeze, warning, err := a.accountFreezeService.GetAll(ctx, userID)
+	freezes, err := a.accountFreezeService.GetAll(ctx, userID)
 	if err != nil {
 		a.serveJSONError(ctx, w, err)
 		return
@@ -1240,8 +567,10 @@ func (a *Auth) GetFreezeStatus(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	err = json.NewEncoder(w).Encode(FrozenResult{
-		Frozen: freeze != nil,
-		Warned: warning != nil,
+		Frozen:             freezes.BillingFreeze != nil,
+		Warned:             freezes.BillingWarning != nil,
+		ViolationFrozen:    freezes.ViolationFreeze != nil,
+		TrialExpiredFrozen: freezes.TrialExpirationFreeze != nil,
 	})
 	if err != nil {
 		a.log.Error("could not encode account status", zap.Error(ErrAuthAPI.Wrap(err)))
@@ -1271,6 +600,25 @@ func (a *Auth) UpdateAccount(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// SetupAccount updates user's full name and short name.
+func (a *Auth) SetupAccount(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	var err error
+	defer mon.Task()(&ctx)(&err)
+
+	var updatedInfo console.SetUpAccountRequest
+
+	err = json.NewDecoder(r.Body).Decode(&updatedInfo)
+	if err != nil {
+		a.serveJSONError(ctx, w, err)
+		return
+	}
+
+	if err = a.service.SetupAccount(ctx, updatedInfo); err != nil {
+		a.serveJSONError(ctx, w, err)
+	}
+}
+
 // GetAccount gets authorized user and take it's params.
 func (a *Auth) GetAccount(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -1278,24 +626,27 @@ func (a *Auth) GetAccount(w http.ResponseWriter, r *http.Request) {
 	defer mon.Task()(&ctx)(&err)
 
 	var user struct {
-		ID                    uuid.UUID `json:"id"`
-		FullName              string    `json:"fullName"`
-		ShortName             string    `json:"shortName"`
-		Email                 string    `json:"email"`
-		Partner               string    `json:"partner"`
-		ProjectLimit          int       `json:"projectLimit"`
-		ProjectStorageLimit   int64     `json:"projectStorageLimit"`
-		ProjectBandwidthLimit int64     `json:"projectBandwidthLimit"`
-		ProjectSegmentLimit   int64     `json:"projectSegmentLimit"`
-		IsProfessional        bool      `json:"isProfessional"`
-		Position              string    `json:"position"`
-		CompanyName           string    `json:"companyName"`
-		EmployeeCount         string    `json:"employeeCount"`
-		HaveSalesContact      bool      `json:"haveSalesContact"`
-		PaidTier              bool      `json:"paidTier"`
-		MFAEnabled            bool      `json:"isMFAEnabled"`
-		MFARecoveryCodeCount  int       `json:"mfaRecoveryCodeCount"`
-		CreatedAt             time.Time `json:"createdAt"`
+		ID                    uuid.UUID  `json:"id"`
+		FullName              string     `json:"fullName"`
+		ShortName             string     `json:"shortName"`
+		Email                 string     `json:"email"`
+		Partner               string     `json:"partner"`
+		ProjectLimit          int        `json:"projectLimit"`
+		ProjectStorageLimit   int64      `json:"projectStorageLimit"`
+		ProjectBandwidthLimit int64      `json:"projectBandwidthLimit"`
+		ProjectSegmentLimit   int64      `json:"projectSegmentLimit"`
+		IsProfessional        bool       `json:"isProfessional"`
+		Position              string     `json:"position"`
+		CompanyName           string     `json:"companyName"`
+		EmployeeCount         string     `json:"employeeCount"`
+		HaveSalesContact      bool       `json:"haveSalesContact"`
+		PaidTier              bool       `json:"paidTier"`
+		MFAEnabled            bool       `json:"isMFAEnabled"`
+		MFARecoveryCodeCount  int        `json:"mfaRecoveryCodeCount"`
+		CreatedAt             time.Time  `json:"createdAt"`
+		PendingVerification   bool       `json:"pendingVerification"`
+		TrialExpiration       *time.Time `json:"trialExpiration"`
+		HasVarPartner         bool       `json:"hasVarPartner"`
 	}
 
 	consoleUser, err := console.GetUser(ctx)
@@ -1324,43 +675,18 @@ func (a *Auth) GetAccount(w http.ResponseWriter, r *http.Request) {
 	user.MFAEnabled = consoleUser.MFAEnabled
 	user.MFARecoveryCodeCount = len(consoleUser.MFARecoveryCodes)
 	user.CreatedAt = consoleUser.CreatedAt
+	user.PendingVerification = consoleUser.Status == console.PendingBotVerification
+	user.TrialExpiration = consoleUser.TrialExpiration
+	user.HasVarPartner, err = a.service.GetUserHasVarPartner(ctx)
+	if err != nil {
+		a.serveJSONError(ctx, w, err)
+		return
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	err = json.NewEncoder(w).Encode(&user)
 	if err != nil {
 		a.log.Error("could not encode user info", zap.Error(ErrAuthAPI.Wrap(err)))
-		return
-	}
-}
-
-// DeleteAccount authorizes user and deletes account by password.
-func (a *Auth) DeleteAccount(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	defer mon.Task()(&ctx)(&errNotImplemented)
-
-	// We do not want to allow account deletion via API currently.
-	a.serveJSONError(ctx, w, errNotImplemented)
-}
-
-// ChangeEmail auth user, changes users email for a new one.
-func (a *Auth) ChangeEmail(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	var err error
-	defer mon.Task()(&ctx)(&err)
-
-	var emailChange struct {
-		NewEmail string `json:"newEmail"`
-	}
-
-	err = json.NewDecoder(r.Body).Decode(&emailChange)
-	if err != nil {
-		a.serveJSONError(ctx, w, err)
-		return
-	}
-
-	err = a.service.ChangeEmail(ctx, emailChange.NewEmail)
-	if err != nil {
-		a.serveJSONError(ctx, w, err)
 		return
 	}
 }
@@ -1380,6 +706,14 @@ func (a *Auth) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		a.serveJSONError(ctx, w, err)
 		return
+	}
+
+	if a.badPasswords != nil {
+		_, exists := a.badPasswords[passwordChange.NewPassword]
+		if exists {
+			a.serveJSONError(ctx, w, console.ErrValidation.Wrap(errs.New("The password you chose is on a list of insecure or breached passwords. Please choose a different one.")))
+			return
+		}
 	}
 
 	err = a.service.ChangePassword(ctx, passwordChange.CurrentPassword, passwordChange.NewPassword)
@@ -1470,7 +804,6 @@ func (a *Auth) ForgotPassword(w http.ResponseWriter, r *http.Request) {
 		[]post.Address{{Address: user.Email, Name: userName}},
 		&console.ForgotPasswordEmail{
 			Origin:                     a.ExternalAddress,
-			UserName:                   userName,
 			ResetLink:                  passwordRecoveryLink,
 			CancelPasswordRecoveryLink: cancelPasswordRecoveryLink,
 			LetUsKnowURL:               letUsKnowURL,
@@ -1515,7 +848,6 @@ func (a *Auth) ResendEmail(w http.ResponseWriter, r *http.Request) {
 			[]post.Address{{Address: verified.Email, Name: userName}},
 			&console.ForgotPasswordEmail{
 				Origin:                     a.ExternalAddress,
-				UserName:                   userName,
 				ResetLink:                  a.PasswordRecoveryURL + "?token=" + recoveryToken,
 				CancelPasswordRecoveryLink: a.CancelPasswordRecoveryURL + "?token=" + recoveryToken,
 				LetUsKnowURL:               a.LetUsKnowURL,
@@ -1527,6 +859,24 @@ func (a *Auth) ResendEmail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	user := unverified[0]
+
+	if a.ActivationCodeEnabled {
+		user, err = a.service.SetActivationCodeAndSignupID(ctx, user)
+		if err != nil {
+			a.serveJSONError(ctx, w, err)
+			return
+		}
+
+		a.mailService.SendRenderedAsync(
+			ctx,
+			[]post.Address{{Address: user.Email}},
+			&console.AccountActivationCodeEmail{
+				ActivationCode: user.ActivationCode,
+			},
+		)
+
+		return
+	}
 
 	token, err := a.service.GenerateActivationToken(ctx, user.ID, user.Email)
 	if err != nil {
@@ -1657,7 +1007,37 @@ func (a *Auth) GenerateMFARecoveryCodes(w http.ResponseWriter, r *http.Request) 
 	var err error
 	defer mon.Task()(&ctx)(&err)
 
-	codes, err := a.service.ResetMFARecoveryCodes(ctx)
+	codes, err := a.service.ResetMFARecoveryCodes(ctx, false, "", "")
+	if err != nil {
+		a.serveJSONError(ctx, w, err)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	err = json.NewEncoder(w).Encode(codes)
+	if err != nil {
+		a.log.Error("could not encode MFA recovery codes", zap.Error(ErrAuthAPI.Wrap(err)))
+		return
+	}
+}
+
+// RegenerateMFARecoveryCodes requires MFA code to create a new set of MFA recovery codes for the user.
+func (a *Auth) RegenerateMFARecoveryCodes(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	var err error
+	defer mon.Task()(&ctx)(&err)
+
+	var data struct {
+		Passcode     string `json:"passcode"`
+		RecoveryCode string `json:"recoveryCode"`
+	}
+	err = json.NewDecoder(r.Body).Decode(&data)
+	if err != nil {
+		a.serveJSONError(ctx, w, err)
+		return
+	}
+
+	codes, err := a.service.ResetMFARecoveryCodes(ctx, true, data.Passcode, data.RecoveryCode)
 	if err != nil {
 		a.serveJSONError(ctx, w, err)
 		return
@@ -1687,6 +1067,14 @@ func (a *Auth) ResetPassword(w http.ResponseWriter, r *http.Request) {
 	err = json.NewDecoder(r.Body).Decode(&resetPassword)
 	if err != nil {
 		a.serveJSONError(ctx, w, err)
+	}
+
+	if a.badPasswords != nil {
+		_, exists := a.badPasswords[resetPassword.NewPassword]
+		if exists {
+			a.serveJSONError(ctx, w, console.ErrValidation.Wrap(errs.New("The password you chose is on a list of insecure or breached passwords. Please choose a different one.")))
+			return
+		}
 	}
 
 	err = a.service.ResetPassword(ctx, resetPassword.RecoveryToken, resetPassword.NewPassword, resetPassword.MFAPasscode, resetPassword.MFARecoveryCode, time.Now())
@@ -1818,11 +1206,12 @@ func (a *Auth) SetUserSettings(w http.ResponseWriter, r *http.Request) {
 	defer mon.Task()(&ctx)(&err)
 
 	var updateInfo struct {
-		OnboardingStart  *bool   `json:"onboardingStart"`
-		OnboardingEnd    *bool   `json:"onboardingEnd"`
-		PassphrasePrompt *bool   `json:"passphrasePrompt"`
-		OnboardingStep   *string `json:"onboardingStep"`
-		SessionDuration  *int64  `json:"sessionDuration"`
+		OnboardingStart  *bool                    `json:"onboardingStart"`
+		OnboardingEnd    *bool                    `json:"onboardingEnd"`
+		PassphrasePrompt *bool                    `json:"passphrasePrompt"`
+		OnboardingStep   *string                  `json:"onboardingStep"`
+		SessionDuration  *int64                   `json:"sessionDuration"`
+		NoticeDismissal  *console.NoticeDismissal `json:"noticeDismissal"`
 	}
 
 	err = json.NewDecoder(r.Body).Decode(&updateInfo)
@@ -1846,6 +1235,7 @@ func (a *Auth) SetUserSettings(w http.ResponseWriter, r *http.Request) {
 		OnboardingStep:   updateInfo.OnboardingStep,
 		PassphrasePrompt: updateInfo.PassphrasePrompt,
 		SessionDuration:  newDuration,
+		NoticeDismissal:  updateInfo.NoticeDismissal,
 	})
 	if err != nil {
 		a.serveJSONError(ctx, w, err)
@@ -1856,6 +1246,23 @@ func (a *Auth) SetUserSettings(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		a.log.Error("could not encode settings", zap.Error(ErrAuthAPI.Wrap(err)))
 		return
+	}
+}
+
+// RequestLimitIncrease handles requesting increase for project limit.
+func (a *Auth) RequestLimitIncrease(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	var err error
+	defer mon.Task()(&ctx)(&err)
+
+	b, err := io.ReadAll(r.Body)
+	if err != nil {
+		a.serveJSONError(ctx, w, err)
+	}
+
+	err = a.service.RequestProjectLimitIncrease(ctx, string(b))
+	if err != nil {
+		a.serveJSONError(ctx, w, err)
 	}
 }
 
@@ -1870,14 +1277,18 @@ func (a *Auth) getStatusCode(err error) int {
 	var maxBytesError *http.MaxBytesError
 
 	switch {
-	case console.ErrValidation.Has(err), console.ErrCaptcha.Has(err), console.ErrMFAMissing.Has(err), console.ErrMFAPasscode.Has(err), console.ErrMFARecoveryCode.Has(err), console.ErrChangePassword.Has(err):
+	case console.ErrValidation.Has(err), console.ErrCaptcha.Has(err), console.ErrMFAMissing.Has(err), console.ErrMFAPasscode.Has(err), console.ErrMFARecoveryCode.Has(err), console.ErrChangePassword.Has(err), console.ErrInvalidProjectLimit.Has(err):
 		return http.StatusBadRequest
-	case console.ErrUnauthorized.Has(err), console.ErrTokenExpiration.Has(err), console.ErrRecoveryToken.Has(err), console.ErrLoginCredentials.Has(err):
+	case console.ErrUnauthorized.Has(err), console.ErrTokenExpiration.Has(err), console.ErrRecoveryToken.Has(err), console.ErrLoginCredentials.Has(err), console.ErrActivationCode.Has(err):
 		return http.StatusUnauthorized
 	case console.ErrEmailUsed.Has(err), console.ErrMFAConflict.Has(err):
 		return http.StatusConflict
+	case console.ErrLoginRestricted.Has(err):
+		return http.StatusForbidden
 	case errors.Is(err, errNotImplemented):
 		return http.StatusNotImplemented
+	case console.ErrNotPaidTier.Has(err):
+		return http.StatusPaymentRequired
 	case errors.As(err, &maxBytesError):
 		return http.StatusRequestEntityTooLarge
 	default:
@@ -1911,13 +1322,17 @@ func (a *Auth) getUserErrorMessage(err error) string {
 		return "The MFA recovery code is not valid or has been previously used"
 	case console.ErrLoginCredentials.Has(err):
 		return "Your login credentials are incorrect, please try again"
-	case console.ErrValidation.Has(err), console.ErrChangePassword.Has(err):
+	case console.ErrLoginRestricted.Has(err):
+		return "You can't be authenticated. Please contact support"
+	case console.ErrValidation.Has(err), console.ErrChangePassword.Has(err), console.ErrInvalidProjectLimit.Has(err), console.ErrNotPaidTier.Has(err):
 		return err.Error()
 	case errors.Is(err, errNotImplemented):
 		return "The server is incapable of fulfilling the request"
 	case errors.As(err, &maxBytesError):
 		return "Request body is too large"
+	case console.ErrActivationCode.Has(err):
+		return "The activation code is invalid"
 	default:
-		return "There was an error processing your request" + err.Error()
+		return "There was an error processing your request"
 	}
 }

@@ -12,7 +12,6 @@ import (
 	"go.uber.org/zap"
 
 	"storj.io/common/bloomfilter"
-	"storj.io/common/memory"
 	"storj.io/common/storj"
 	"storj.io/storj/satellite/metabase/rangedloop"
 	"storj.io/storj/satellite/overlay"
@@ -41,6 +40,8 @@ type Observer struct {
 	retainInfos        map[storj.NodeID]*RetainInfo
 	latestCreationTime time.Time
 	seed               byte
+
+	forcedTableSize int
 }
 
 var _ (rangedloop.Observer) = (*Observer)(nil)
@@ -67,7 +68,7 @@ func (obs *Observer) Start(ctx context.Context, startTime time.Time) (err error)
 	obs.log.Debug("collecting bloom filters started")
 
 	// load last piece counts from overlay db
-	lastPieceCounts, err := obs.overlay.AllPieceCounts(ctx)
+	lastPieceCounts, err := obs.overlay.ActiveNodesPieceCounts(ctx)
 	if err != nil {
 		obs.log.Error("error getting last piece counts", zap.Error(err))
 		err = nil
@@ -88,7 +89,7 @@ func (obs *Observer) Start(ctx context.Context, startTime time.Time) (err error)
 func (obs *Observer) Fork(ctx context.Context) (_ rangedloop.Partial, err error) {
 	defer mon.Task()(&ctx)(&err)
 
-	return newObserverFork(obs.log.Named("gc observer"), obs.config, obs.lastPieceCounts, obs.seed, obs.startTime), nil
+	return newObserverFork(obs.log.Named("gc observer"), obs.config, obs.lastPieceCounts, obs.seed, obs.startTime, obs.forcedTableSize), nil
 }
 
 // Join merges the bloom filters gathered by each Partial.
@@ -134,6 +135,11 @@ func (obs *Observer) TestingRetainInfos() map[storj.NodeID]*RetainInfo {
 	return obs.retainInfos
 }
 
+// TestingForceTableSize sets a fixed size for tables. Used for testing.
+func (obs *Observer) TestingForceTableSize(size int) {
+	obs.forcedTableSize = size
+}
+
 type observerFork struct {
 	log    *zap.Logger
 	config Config
@@ -147,19 +153,21 @@ type observerFork struct {
 	// Because bloom filter service needs to be run against immutable database snapshot
 	// we can set CreationDate for bloom filters as a latest segment CreatedAt value.
 	latestCreationTime time.Time
+
+	forcedTableSize int
 }
 
 // newObserverFork instantiates a new observer fork to process different segment range.
 // The seed is passed so that it can be shared among all parallel forks.
-func newObserverFork(log *zap.Logger, config Config, pieceCounts map[storj.NodeID]int64, seed byte, startTime time.Time) *observerFork {
+func newObserverFork(log *zap.Logger, config Config, pieceCounts map[storj.NodeID]int64, seed byte, startTime time.Time, forcedTableSize int) *observerFork {
 	return &observerFork{
-		log:         log,
-		config:      config,
-		pieceCounts: pieceCounts,
-		seed:        seed,
-		startTime:   startTime,
-
-		retainInfos: make(map[storj.NodeID]*RetainInfo, len(pieceCounts)),
+		log:             log,
+		config:          config,
+		pieceCounts:     pieceCounts,
+		seed:            seed,
+		startTime:       startTime,
+		forcedTableSize: forcedTableSize,
+		retainInfos:     make(map[storj.NodeID]*RetainInfo, len(pieceCounts)),
 	}
 }
 
@@ -197,12 +205,21 @@ func (fork *observerFork) add(nodeID storj.NodeID, pieceID storj.PieceID) {
 	if !ok {
 		// If we know how many pieces a node should be storing, use that number. Otherwise use default.
 		numPieces := fork.config.InitialPieces
-		if pieceCounts := fork.pieceCounts[nodeID]; pieceCounts > 0 {
-			numPieces = pieceCounts
+		if pieceCounts, found := fork.pieceCounts[nodeID]; found {
+			if pieceCounts > 0 {
+				numPieces = pieceCounts
+			}
+		} else {
+			// node was not in pieceCounts which means it was disqalified
+			// and we won't generate bloom filter for it
+			return
 		}
 
-		hashCount, tableSize := bloomfilter.OptimalParameters(numPieces, fork.config.FalsePositiveRate, 2*memory.MiB)
+		hashCount, tableSize := bloomfilter.OptimalParameters(numPieces, fork.config.FalsePositiveRate, fork.config.MaxBloomFilterSize)
 		// limit size of bloom filter to ensure we are under the limit for RPC
+		if fork.forcedTableSize > 0 {
+			tableSize = fork.forcedTableSize
+		}
 		filter := bloomfilter.NewExplicit(fork.seed, hashCount, tableSize)
 		info = &RetainInfo{
 			Filter: filter,

@@ -25,6 +25,7 @@ import (
 	"storj.io/common/sync2"
 	"storj.io/common/testcontext"
 	"storj.io/common/testrand"
+	"storj.io/common/version"
 	"storj.io/storj/private/testplanet"
 	"storj.io/storj/satellite"
 	"storj.io/storj/satellite/nodeselection"
@@ -64,7 +65,7 @@ func TestRefresh(t *testing.T) {
 			lowStaleness,
 			nodeSelectionConfig,
 			nodeselection.NodeFilters{},
-			overlay.NewPlacementRules().CreateFilters,
+			nodeselection.TestPlacementDefinitions(),
 		)
 		require.NoError(t, err)
 
@@ -161,7 +162,7 @@ func TestRefreshConcurrent(t *testing.T) {
 		highStaleness,
 		nodeSelectionConfig,
 		nodeselection.NodeFilters{},
-		overlay.NewPlacementRules().CreateFilters,
+		nodeselection.TestPlacementDefinitions(),
 	)
 	require.NoError(t, err)
 
@@ -188,7 +189,7 @@ func TestRefreshConcurrent(t *testing.T) {
 		lowStaleness,
 		nodeSelectionConfig,
 		nodeselection.NodeFilters{},
-		overlay.NewPlacementRules().CreateFilters,
+		nodeselection.TestPlacementDefinitions(),
 	)
 	require.NoError(t, err)
 	ctx.Go(func() error { return cache.Run(cacheCtx) })
@@ -204,7 +205,7 @@ func TestRefreshConcurrent(t *testing.T) {
 	require.True(t, 1 <= mockDB.callCount && mockDB.callCount <= 2, "calls %d", mockDB.callCount)
 }
 
-func TestGetNodes(t *testing.T) {
+func TestSelectNodes(t *testing.T) {
 	satellitedbtest.Run(t, func(ctx *testcontext.Context, t *testing.T, db satellite.DB) {
 		var nodeSelectionConfig = overlay.NodeSelectionConfig{
 			NewNodeFraction:  0.2,
@@ -213,16 +214,16 @@ func TestGetNodes(t *testing.T) {
 			DistinctIP:       true,
 			MinimumDiskSpace: 100 * memory.MiB,
 		}
-		placementRules := overlay.NewPlacementRules()
+		placementRules := nodeselection.TestPlacementDefinitionsWithFraction(nodeSelectionConfig.NewNodeFraction)
 		placementRules.AddPlacementRule(storj.PlacementConstraint(5), nodeselection.NodeFilters{}.WithCountryFilter(location.NewSet(location.Germany)))
-		placementRules.AddPlacementRule(storj.PlacementConstraint(6), nodeselection.WithAnnotation(nodeselection.NodeFilters{}.WithCountryFilter(location.NewSet(location.Germany)), overlay.AutoExcludeSubnet, overlay.AutoExcludeSubnetOFF))
+		placementRules.AddPlacementRule(storj.PlacementConstraint(6), nodeselection.WithAnnotation(nodeselection.NodeFilters{}.WithCountryFilter(location.NewSet(location.Germany)), nodeselection.AutoExcludeSubnet, nodeselection.AutoExcludeSubnetOFF))
 
 		cache, err := overlay.NewUploadSelectionCache(zap.NewNop(),
 			db.OverlayCache(),
 			lowStaleness,
 			nodeSelectionConfig,
 			nodeselection.NodeFilters{},
-			placementRules.CreateFilters,
+			placementRules,
 		)
 		require.NoError(t, err)
 
@@ -388,7 +389,7 @@ func TestGetNodesConcurrent(t *testing.T) {
 		highStaleness,
 		nodeSelectionConfig,
 		nodeselection.NodeFilters{},
-		overlay.NewPlacementRules().CreateFilters,
+		nodeselection.TestPlacementDefinitionsWithFraction(1),
 	)
 	require.NoError(t, err)
 
@@ -435,7 +436,7 @@ func TestGetNodesConcurrent(t *testing.T) {
 		lowStaleness,
 		nodeSelectionConfig,
 		nodeselection.NodeFilters{},
-		overlay.NewPlacementRules().CreateFilters,
+		nodeselection.TestPlacementDefinitionsWithFraction(1),
 	)
 	require.NoError(t, err)
 
@@ -526,8 +527,8 @@ func TestGetNodesDistinct(t *testing.T) {
 			&mockDB,
 			highStaleness,
 			config,
-			nodeselection.NodeFilters{}.WithAutoExcludeSubnets(),
-			overlay.NewPlacementRules().CreateFilters,
+			nodeselection.NodeFilters{},
+			nodeselection.TestPlacementDefinitions(),
 		)
 		require.NoError(t, err)
 
@@ -568,7 +569,7 @@ func TestGetNodesDistinct(t *testing.T) {
 			highStaleness,
 			config,
 			nodeselection.NodeFilters{},
-			overlay.NewPlacementRules().CreateFilters,
+			nodeselection.TestPlacementDefinitions(),
 		)
 		require.NoError(t, err)
 
@@ -593,7 +594,7 @@ func TestGetNodesError(t *testing.T) {
 		highStaleness,
 		nodeSelectionConfig,
 		nodeselection.NodeFilters{},
-		overlay.NewPlacementRules().CreateFilters,
+		nodeselection.TestPlacementDefinitions(),
 	)
 	require.NoError(t, err)
 
@@ -622,7 +623,7 @@ func TestNewNodeFraction(t *testing.T) {
 			lowStaleness,
 			nodeSelectionConfig,
 			nodeselection.NodeFilters{},
-			overlay.NewPlacementRules().CreateFilters,
+			nodeselection.TestPlacementDefinitionsWithFraction(newNodeFraction),
 		)
 		require.NoError(t, err)
 
@@ -673,7 +674,7 @@ func BenchmarkGetNodes(b *testing.B) {
 	defer cancel()
 	log, err := zap.NewDevelopment()
 	require.NoError(b, err)
-	placement := overlay.NewPlacementRules()
+	placement := nodeselection.TestPlacementDefinitions()
 	placement.AddLegacyStaticRules()
 	defaultFilter := nodeselection.NodeFilters{}
 
@@ -683,7 +684,7 @@ func BenchmarkGetNodes(b *testing.B) {
 	)
 	cache, err := overlay.NewUploadSelectionCache(log, db, 10*time.Minute, overlay.NodeSelectionConfig{
 		NewNodeFraction: 0.1,
-	}, defaultFilter, placement.CreateFilters)
+	}, defaultFilter, placement)
 	require.NoError(b, err)
 
 	go func() {
@@ -745,4 +746,199 @@ func generatedSelectedNodes(b *testing.B, nodeNo int) []*nodeselection.SelectedN
 		nodes[i] = &node
 	}
 	return nodes
+}
+
+// GetOnlineNodesForAuditRepair satisfies nodeevents.DB interface.
+func (m *mockdb) GetOnlineNodesForAuditRepair(ctx context.Context, nodeIDs []storj.NodeID, onlineWindow time.Duration) (map[storj.NodeID]*overlay.NodeReputation, error) {
+	panic("implement me")
+}
+
+// SelectStorageNodes satisfies nodeevents.DB interface.
+func (m *mockdb) SelectStorageNodes(ctx context.Context, totalNeededNodes, newNodeCount int, criteria *overlay.NodeCriteria) ([]*nodeselection.SelectedNode, error) {
+	panic("implement me")
+}
+
+// SelectAllStorageNodesDownload satisfies nodeevents.DB interface.
+func (m *mockdb) SelectAllStorageNodesDownload(ctx context.Context, onlineWindow time.Duration, asOf overlay.AsOfSystemTimeConfig) ([]*nodeselection.SelectedNode, error) {
+	panic("implement me")
+}
+
+// Get satisfies nodeevents.DB interface.
+func (m *mockdb) Get(ctx context.Context, nodeID storj.NodeID) (*overlay.NodeDossier, error) {
+	panic("implement me")
+}
+
+// GetNodes satisfies nodeevents.DB interface.
+func (m *mockdb) GetNodes(ctx context.Context, nodeIDs storj.NodeIDList, onlineWindow, asOfSystemInterval time.Duration) (_ []nodeselection.SelectedNode, err error) {
+	panic("implement me")
+}
+
+// GetParticipatingNodes satisfies nodeevents.DB interface.
+func (m *mockdb) GetParticipatingNodes(ctx context.Context, onlineWindow, asOfSystemInterval time.Duration) (_ []nodeselection.SelectedNode, err error) {
+	panic("implement me")
+}
+
+// KnownReliable satisfies nodeevents.DB interface.
+func (m *mockdb) KnownReliable(ctx context.Context, nodeIDs storj.NodeIDList, onlineWindow, asOfSystemInterval time.Duration) (online []nodeselection.SelectedNode, offline []nodeselection.SelectedNode, err error) {
+	panic("implement me")
+}
+
+// Reliable satisfies nodeevents.DB interface.
+func (m *mockdb) Reliable(ctx context.Context, onlineWindow, asOfSystemInterval time.Duration) (online []nodeselection.SelectedNode, offline []nodeselection.SelectedNode, err error) {
+	panic("implement me")
+}
+
+// UpdateReputation satisfies nodeevents.DB interface.
+func (m *mockdb) UpdateReputation(ctx context.Context, id storj.NodeID, request overlay.ReputationUpdate) error {
+	panic("implement me")
+}
+
+// UpdateNodeInfo satisfies nodeevents.DB interface.
+func (m *mockdb) UpdateNodeInfo(ctx context.Context, node storj.NodeID, nodeInfo *overlay.InfoResponse) (stats *overlay.NodeDossier, err error) {
+	panic("implement me")
+}
+
+// UpdateCheckIn satisfies nodeevents.DB interface.
+func (m *mockdb) UpdateCheckIn(ctx context.Context, node overlay.NodeCheckInInfo, timestamp time.Time, config overlay.NodeSelectionConfig) (err error) {
+	panic("implement me")
+}
+
+// SetNodeContained satisfies nodeevents.DB interface.
+func (m *mockdb) SetNodeContained(ctx context.Context, node storj.NodeID, contained bool) (err error) {
+	panic("implement me")
+}
+
+// SetAllContainedNodes satisfies nodeevents.DB interface.
+func (m *mockdb) SetAllContainedNodes(ctx context.Context, containedNodes []storj.NodeID) (err error) {
+	panic("implement me")
+}
+
+// AllPieceCounts satisfies nodeevents.DB interface.
+func (m *mockdb) ActiveNodesPieceCounts(ctx context.Context) (pieceCounts map[storj.NodeID]int64, err error) {
+	panic("implement me")
+}
+
+// UpdatePieceCounts satisfies nodeevents.DB interface.
+func (m *mockdb) UpdatePieceCounts(ctx context.Context, pieceCounts map[storj.NodeID]int64) (err error) {
+	panic("implement me")
+}
+
+// UpdateExitStatus satisfies nodeevents.DB interface.
+func (m *mockdb) UpdateExitStatus(ctx context.Context, request *overlay.ExitStatusRequest) (_ *overlay.NodeDossier, err error) {
+	panic("implement me")
+}
+
+// GetExitingNodes satisfies nodeevents.DB interface.
+func (m *mockdb) GetExitingNodes(ctx context.Context) (exitingNodes []*overlay.ExitStatus, err error) {
+	panic("implement me")
+}
+
+// GetGracefulExitCompletedByTimeFrame satisfies nodeevents.DB interface.
+func (m *mockdb) GetGracefulExitCompletedByTimeFrame(ctx context.Context, begin, end time.Time) (exitedNodes storj.NodeIDList, err error) {
+	panic("implement me")
+}
+
+// GetGracefulExitIncompleteByTimeFrame satisfies nodeevents.DB interface.
+func (m *mockdb) GetGracefulExitIncompleteByTimeFrame(ctx context.Context, begin, end time.Time) (exitingNodes storj.NodeIDList, err error) {
+	panic("implement me")
+}
+
+// GetExitStatus satisfies nodeevents.DB interface.
+func (m *mockdb) GetExitStatus(ctx context.Context, nodeID storj.NodeID) (exitStatus *overlay.ExitStatus, err error) {
+	panic("implement me")
+}
+
+// GetNodesNetwork satisfies nodeevents.DB interface.
+func (m *mockdb) GetNodesNetwork(ctx context.Context, nodeIDs []storj.NodeID) (nodeNets []string, err error) {
+	panic("implement me")
+}
+
+// GetNodesNetworkInOrder satisfies nodeevents.DB interface.
+func (m *mockdb) GetNodesNetworkInOrder(ctx context.Context, nodeIDs []storj.NodeID) (nodeNets []string, err error) {
+	panic("implement me")
+}
+
+// DisqualifyNode satisfies nodeevents.DB interface.
+func (m *mockdb) DisqualifyNode(ctx context.Context, nodeID storj.NodeID, disqualifiedAt time.Time, reason overlay.DisqualificationReason) (email string, err error) {
+	panic("implement me")
+}
+
+// GetOfflineNodesForEmail satisfies nodeevents.DB interface.
+func (m *mockdb) GetOfflineNodesForEmail(ctx context.Context, offlineWindow time.Duration, cutoff time.Duration, cooldown time.Duration, limit int) (nodes map[storj.NodeID]string, err error) {
+	panic("implement me")
+}
+
+// UpdateLastOfflineEmail satisfies nodeevents.DB interface.
+func (m *mockdb) UpdateLastOfflineEmail(ctx context.Context, nodeIDs storj.NodeIDList, timestamp time.Time) (err error) {
+	panic("implement me")
+}
+
+// DQNodesLastSeenBefore satisfies nodeevents.DB interface.
+func (m *mockdb) DQNodesLastSeenBefore(ctx context.Context, cutoff time.Time, limit int) (nodeEmails map[storj.NodeID]string, count int, err error) {
+	panic("implement me")
+}
+
+// TestSuspendNodeUnknownAudit satisfies nodeevents.DB interface.
+func (m *mockdb) TestSuspendNodeUnknownAudit(ctx context.Context, nodeID storj.NodeID, suspendedAt time.Time) (err error) {
+	panic("implement me")
+}
+
+// TestUnsuspendNodeUnknownAudit satisfies nodeevents.DB interface.
+func (m *mockdb) TestUnsuspendNodeUnknownAudit(ctx context.Context, nodeID storj.NodeID) (err error) {
+	panic("implement me")
+}
+
+// TestVetNode satisfies nodeevents.DB interface.
+func (m *mockdb) TestVetNode(ctx context.Context, nodeID storj.NodeID) (vettedTime *time.Time, err error) {
+	panic("implement me")
+}
+
+// TestUnvetNode satisfies nodeevents.DB interface.
+func (m *mockdb) TestUnvetNode(ctx context.Context, nodeID storj.NodeID) (err error) {
+	panic("implement me")
+}
+
+// TestSuspendNodeOffline satisfies nodeevents.DB interface.
+func (m *mockdb) TestSuspendNodeOffline(ctx context.Context, nodeID storj.NodeID, suspendedAt time.Time) (err error) {
+	panic("implement me")
+}
+
+// TestNodeCountryCode satisfies nodeevents.DB interface.
+func (m *mockdb) TestNodeCountryCode(ctx context.Context, nodeID storj.NodeID, countryCode string) (err error) {
+	panic("implement me")
+}
+
+// TestUpdateCheckInDirectUpdate satisfies nodeevents.DB interface.
+func (m *mockdb) TestUpdateCheckInDirectUpdate(ctx context.Context, node overlay.NodeCheckInInfo, timestamp time.Time, semVer version.SemVer, walletFeatures string) (updated bool, err error) {
+	panic("implement me")
+}
+
+// OneTimeFixLastNets satisfies nodeevents.DB interface.
+func (m *mockdb) OneTimeFixLastNets(ctx context.Context) error {
+	panic("implement me")
+}
+
+// IterateAllContactedNodes satisfies nodeevents.DB interface.
+func (m *mockdb) IterateAllContactedNodes(ctx context.Context, f func(context.Context, *nodeselection.SelectedNode) error) error {
+	panic("implement me")
+}
+
+// IterateAllNodeDossiers satisfies nodeevents.DB interface.
+func (m *mockdb) IterateAllNodeDossiers(ctx context.Context, f func(context.Context, *overlay.NodeDossier) error) error {
+	panic("implement me")
+}
+
+// UpdateNodeTags satisfies nodeevents.DB interface.
+func (m *mockdb) UpdateNodeTags(ctx context.Context, tags nodeselection.NodeTags) error {
+	panic("implement me")
+}
+
+// GetNodeTags satisfies nodeevents.DB interface.
+func (m *mockdb) GetNodeTags(ctx context.Context, id storj.NodeID) (nodeselection.NodeTags, error) {
+	panic("implement me")
+}
+
+// GetLastIPPortByNodeTagNames gets last IP and port from nodes where node exists in node tags with a particular name.
+func (m *mockdb) GetLastIPPortByNodeTagNames(ctx context.Context, ids storj.NodeIDList, tagName []string) (lastIPPorts map[storj.NodeID]*string, err error) {
+	panic("implement me")
 }

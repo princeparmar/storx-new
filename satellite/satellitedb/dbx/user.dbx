@@ -68,6 +68,8 @@ model user (
 
     // verification_reminders counts how many times a verification reminder email has been sent.
     field verification_reminders int ( updatable, default 0 )
+    // trial_notifications counts how many times a trial notification email has been sent.
+    field trial_notifications int ( updatable, default 0 )
 
     // failed_login_count keeps track on how many times login has failed.
     field failed_login_count int ( updatable, nullable )
@@ -79,6 +81,16 @@ model user (
 
     // placement to be used for every new project as default for the buckets.
     field default_placement int (nullable, updatable)
+
+    // activation_code is a code sent to a user's email on signup for account activation.
+    field activation_code     text      ( updatable, nullable )
+    // signup_id is a the request ID associated to a sign up session, used to also verify activation_code.
+    field signup_id     text      ( updatable, nullable )
+
+    // trial_expiration is used to indicate when free trial user should expire.
+    field trial_expiration timestamp ( updatable, nullable )
+    // upgrade_time is used to track when user upgraded to paid tier.
+    field upgrade_time timestamp ( updatable, nullable )
 )
 
 create user ( )
@@ -106,10 +118,36 @@ read one (
     select user.paid_tier
     where user.id = ?
 )
+read one (
+    select user.upgrade_time
+    where user.id = ?
+)
 
 read one (
     select user.project_storage_limit user.project_bandwidth_limit user.project_segment_limit
     where user.id = ?
+)
+
+read count (
+	select user
+	where user.status = ?
+)
+
+read limitoffset (
+	select user.id user.email user.full_name
+	where user.status = ?
+)
+
+read count (
+	select user
+	where user.paid_tier = false
+	where user.trial_expiration < ?
+)
+
+read limitoffset (
+	select user.id user.email
+	where user.paid_tier = false
+	where user.trial_expiration < ?
 )
 
 model webapp_session (
@@ -196,10 +234,13 @@ model account_freeze_event (
 
     // user_id refers to user.id column.
     field user_id blob
-    // event indicates the console.AccountFreezeEventType. Freeze=0, Warning=1.
+    // event indicates the console.AccountFreezeEventType. BillingFreeze=0, BillingWarning=1, ViolationFreeze=2, LegalFreeze=3.
     field event int
     // limits are the limits before the freeze begun.
     field limits json ( nullable, updatable )
+    // days_till_escalation is the number of days till this event is escalated.
+    // e.g. if the user is warned for 15 days, the escalation is billing freeze.
+    field days_till_escalation int ( nullable, updatable )
     // created_at indicates when the freeze was created.
     field created_at timestamp ( default current_timestamp )
 )
@@ -245,6 +286,8 @@ model user_settings (
     field onboarding_end bool ( updatable, default true )
     // onboarding_step indicates the step where a user exited onboarding without finishing.
     field onboarding_step text ( nullable, updatable )
+    // notice_dismissal keeps track of the notices that the user has dismissed or not.
+    field notice_dismissal json ( updatable, default "{}" )
 )
 
 create user_settings ( noreturn )

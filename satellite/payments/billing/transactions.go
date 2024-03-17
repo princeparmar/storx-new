@@ -29,10 +29,10 @@ var ErrNoTransactions = errs.New("no transactions in the database")
 const (
 	// TransactionStatusPending indicates that status of this transaction is pending.
 	TransactionStatusPending = "pending"
-	// TransactionStatusCancelled indicates that status of this transaction is cancelled.
-	TransactionStatusCancelled = "cancelled"
 	// TransactionStatusCompleted indicates that status of this transaction is complete.
 	TransactionStatusCompleted = "complete"
+	// TransactionStatusFailed indicates that status of this transaction is failed.
+	TransactionStatusFailed = "failed"
 )
 
 // TransactionType indicates transaction type.
@@ -57,18 +57,16 @@ type TransactionsDB interface {
 	// but rather to provide an atomic commit of one or more _related_
 	// transactions.
 	Insert(ctx context.Context, primaryTx Transaction, supplementalTx ...Transaction) (txIDs []int64, err error)
-	//boris
-	Inserts(ctx context.Context, primaryTx Transactions) (err error)
-	// UpdateStatus updates the status of the transaction.
-	UpdateStatus(ctx context.Context, txID int64, status TransactionStatus) error
+	// FailPendingInvoiceTokenPayments marks all specified pending invoice token payments as failed, and refunds the pending charges.
+	FailPendingInvoiceTokenPayments(ctx context.Context, txIDs ...int64) error
+	// CompletePendingInvoiceTokenPayments updates the status of the pending invoice token payment to complete.
+	CompletePendingInvoiceTokenPayments(ctx context.Context, txIDs ...int64) error
 	// UpdateMetadata updates the metadata of the transaction.
 	UpdateMetadata(ctx context.Context, txID int64, metadata []byte) error
 	// LastTransaction returns the timestamp and metadata of the last known transaction for given source and type.
 	LastTransaction(ctx context.Context, txSource string, txType TransactionType) (time.Time, []byte, error)
 	// List returns all transactions for the specified user.
 	List(ctx context.Context, userID uuid.UUID) ([]Transaction, error)
-	//boris
-	Lists(ctx context.Context, userID uuid.UUID) ([]Transactions, error)
 	// ListSource returns all transactions for the specified user and source.
 	ListSource(ctx context.Context, userID uuid.UUID, txSource string) ([]Transaction, error)
 	// GetBalance returns the current usable balance for the specified user.
@@ -80,40 +78,33 @@ type TransactionsDB interface {
 // goats. In each case, a source, type, and method to get new transactions must be defined by the service, though
 // metadata specific to each payment type is also supported (i.e. goat hair type).
 type PaymentType interface {
-	// Source the source of the payment
-	Source() string
+	// Sources the supported sources of the payment type
+	Sources() []string
 	// Type the type of the payment
 	Type() TransactionType
-	// GetNewTransactions returns new transactions that occurred after the provided last transaction received.
-	GetNewTransactions(ctx context.Context, lastTransactionTime time.Time, metadata []byte) ([]Transaction, error)
+	// GetNewTransactions returns new transactions for a given source that occurred after the provided last transaction received.
+	GetNewTransactions(ctx context.Context, source string, lastTransactionTime time.Time, metadata []byte) ([]Transaction, error)
 }
 
 // Well-known PaymentType sources.
 const (
-	StripeSource         = "stripe"
-	StorjScanSource      = "storjscan"
-	StorjScanBonusSource = "storjscanbonus"
+	StripeSource            = "stripe"
+	StorjScanEthereumSource = "ethereum"
+	StorjScanZkSyncSource   = "zkSync"
+	StorjScanBonusSource    = "storjscanbonus"
 )
+
+// SourceChainIDs are some well known chain IDs for the above sources.
+var SourceChainIDs = map[string][]int64{
+	StorjScanEthereumSource: {1, 4, 5, 1337, 11155111},
+	StorjScanZkSyncSource:   {300, 324},
+}
 
 // Transaction defines billing related transaction info that is stored in the DB.
 type Transaction struct {
 	ID          int64
 	UserID      uuid.UUID
 	Amount      currency.Amount
-	Description string
-	Source      string
-	Status      TransactionStatus
-	Type        TransactionType
-	Metadata    []byte
-	Timestamp   time.Time
-	CreatedAt   time.Time
-}
-
-// boris
-type Transactions struct {
-	ID          int64
-	UserID      uuid.UUID
-	Amount      float64
 	Description string
 	Source      string
 	Status      TransactionStatus
@@ -135,7 +126,7 @@ func prepareBonusTransaction(bonusRate int64, source string, transaction Transac
 	switch {
 	case bonusRate <= 0:
 		return Transaction{}, false
-	case source != StorjScanSource:
+	case source != StorjScanEthereumSource && source != StorjScanZkSyncSource:
 		return Transaction{}, false
 	case transaction.Type != TransactionTypeCredit:
 		// This is defensive. Storjscan shouldn't provide "debit" transactions.

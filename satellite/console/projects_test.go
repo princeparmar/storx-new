@@ -191,7 +191,7 @@ func TestProjectsList(t *testing.T) {
 			&console.User{
 				ID:           testrand.UUID(),
 				FullName:     "Billy H",
-				Email:        "billyh@example.com",
+				Email:        "billyh@example.test",
 				PasswordHash: []byte("example_password"),
 				Status:       1,
 			},
@@ -258,7 +258,7 @@ func TestProjectsListByOwner(t *testing.T) {
 			&console.User{
 				ID:           testrand.UUID(),
 				FullName:     "Billy H",
-				Email:        "billyh@example.com",
+				Email:        "billyh@example.test",
 				PasswordHash: []byte("example_password"),
 				Status:       1,
 			},
@@ -269,7 +269,7 @@ func TestProjectsListByOwner(t *testing.T) {
 			&console.User{
 				ID:           testrand.UUID(),
 				FullName:     "James H",
-				Email:        "james@example.com",
+				Email:        "james@example.test",
 				PasswordHash: []byte("example_password_2"),
 				Status:       1,
 			},
@@ -442,7 +442,7 @@ func TestRateLimit_ProjectRateLimitZero(t *testing.T) {
 		require.Len(t, projects, 1)
 
 		zeroRateLimit := 0
-		err = satellite.DB.Console().Projects().UpdateRateLimit(ctx, projects[0].ID, zeroRateLimit)
+		err = satellite.DB.Console().Projects().UpdateRateLimit(ctx, projects[0].ID, &zeroRateLimit)
 		require.NoError(t, err)
 
 		var group errs2.Group
@@ -478,7 +478,7 @@ func TestBurstLimit_ProjectBurstLimitZero(t *testing.T) {
 		require.Len(t, projects, 1)
 
 		zeroRateLimit := 0
-		err = satellite.DB.Console().Projects().UpdateBurstLimit(ctx, projects[0].ID, zeroRateLimit)
+		err = satellite.DB.Console().Projects().UpdateBurstLimit(ctx, projects[0].ID, &zeroRateLimit)
 		require.NoError(t, err)
 
 		var group errs2.Group

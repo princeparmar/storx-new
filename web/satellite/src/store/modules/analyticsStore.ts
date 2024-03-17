@@ -1,4 +1,4 @@
-// Copyright (C) 2022 Storx Labs, Inc.
+// Copyright (C) 2022 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 import { defineStore } from 'pinia';

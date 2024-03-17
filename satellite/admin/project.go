@@ -38,14 +38,19 @@ func (server *Server) checkProjectUsage(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	projectUUID, err := uuid.FromString(projectUUIDString)
+	project, err := server.getProjectByAnyID(ctx, projectUUIDString)
+	if errors.Is(err, sql.ErrNoRows) {
+		sendJSONError(w, "project with specified uuid does not exist",
+			"", http.StatusNotFound)
+		return
+	}
 	if err != nil {
-		sendJSONError(w, "invalid project-uuid",
-			err.Error(), http.StatusBadRequest)
+		sendJSONError(w, "error getting project",
+			err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	if !server.checkUsage(ctx, w, projectUUID) {
+	if !server.checkUsage(ctx, w, project.ID) {
 		sendJSONData(w, http.StatusOK, []byte(`{"result":"no project usage exist"}`))
 	}
 }
@@ -61,20 +66,18 @@ func (server *Server) getProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	projectUUID, err := uuid.FromString(projectUUIDString)
-	if err != nil {
-		sendJSONError(w, "invalid project-uuid",
-			err.Error(), http.StatusBadRequest)
-		return
-	}
-
 	if err := r.ParseForm(); err != nil {
 		sendJSONError(w, "invalid form",
 			err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	project, err := server.db.Console().Projects().Get(ctx, projectUUID)
+	project, err := server.getProjectByAnyID(ctx, projectUUIDString)
+	if errors.Is(err, sql.ErrNoRows) {
+		sendJSONError(w, "project with specified uuid does not exist",
+			"", http.StatusNotFound)
+		return
+	}
 	if err != nil {
 		sendJSONError(w, "unable to fetch project details",
 			err.Error(), http.StatusInternalServerError)
@@ -102,14 +105,7 @@ func (server *Server) getProjectLimit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	projectUUID, err := uuid.FromString(projectUUIDString)
-	if err != nil {
-		sendJSONError(w, "invalid project-uuid",
-			err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	project, err := server.db.Console().Projects().Get(ctx, projectUUID)
+	project, err := server.getProjectByAnyID(ctx, projectUUIDString)
 	if errors.Is(err, sql.ErrNoRows) {
 		sendJSONError(w, "project with specified uuid does not exist",
 			"", http.StatusNotFound)
@@ -131,9 +127,10 @@ func (server *Server) getProjectLimit(w http.ResponseWriter, r *http.Request) {
 			Bytes  int64       `json:"bytes"`
 		} `json:"bandwidth"`
 		Rate struct {
-			RPS int `json:"rps"`
+			RPS *int `json:"rps"`
 		} `json:"rate"`
-		Buckets  int   `json:"maxBuckets"`
+		Burst    *int  `json:"burst"`
+		Buckets  *int  `json:"maxBuckets"`
 		Segments int64 `json:"maxSegments"`
 	}
 	if project.StorageLimit != nil {
@@ -144,12 +141,11 @@ func (server *Server) getProjectLimit(w http.ResponseWriter, r *http.Request) {
 		output.Bandwidth.Amount = *project.BandwidthLimit
 		output.Bandwidth.Bytes = project.BandwidthLimit.Int64()
 	}
-	if project.MaxBuckets != nil {
-		output.Buckets = *project.MaxBuckets
-	}
-	if project.RateLimit != nil {
-		output.Rate.RPS = *project.RateLimit
-	}
+
+	output.Buckets = project.MaxBuckets
+	output.Rate.RPS = project.RateLimit
+	output.Burst = project.BurstLimit
+
 	if project.SegmentLimit != nil {
 		output.Segments = *project.SegmentLimit
 	}
@@ -175,13 +171,6 @@ func (server *Server) putProjectLimit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	projectUUID, err := uuid.FromString(projectUUIDString)
-	if err != nil {
-		sendJSONError(w, "invalid project-uuid",
-			err.Error(), http.StatusBadRequest)
-		return
-	}
-
 	var arguments struct {
 		Usage     *memory.Size `schema:"usage"`
 		Bandwidth *memory.Size `schema:"bandwidth"`
@@ -198,7 +187,7 @@ func (server *Server) putProjectLimit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	decoder := schema.NewDecoder()
-	err = decoder.Decode(&arguments, r.Form)
+	err := decoder.Decode(&arguments, r.Form)
 	if err != nil {
 		sendJSONError(w, "invalid arguments",
 			err.Error(), http.StatusBadRequest)
@@ -206,7 +195,7 @@ func (server *Server) putProjectLimit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// check if the project exists.
-	_, err = server.db.Console().Projects().Get(ctx, projectUUID)
+	project, err := server.getProjectByAnyID(ctx, projectUUIDString)
 	if errors.Is(err, sql.ErrNoRows) {
 		sendJSONError(w, "project with specified uuid does not exist",
 			"", http.StatusNotFound)
@@ -225,7 +214,7 @@ func (server *Server) putProjectLimit(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		err = server.db.ProjectAccounting().UpdateProjectUsageLimit(ctx, projectUUID, *arguments.Usage)
+		err = server.db.ProjectAccounting().UpdateProjectUsageLimit(ctx, project.ID, *arguments.Usage)
 		if err != nil {
 			sendJSONError(w, "failed to update usage",
 				err.Error(), http.StatusInternalServerError)
@@ -240,7 +229,7 @@ func (server *Server) putProjectLimit(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		err = server.db.ProjectAccounting().UpdateProjectBandwidthLimit(ctx, projectUUID, *arguments.Bandwidth)
+		err = server.db.ProjectAccounting().UpdateProjectBandwidthLimit(ctx, project.ID, *arguments.Bandwidth)
 		if err != nil {
 			sendJSONError(w, "failed to update bandwidth",
 				err.Error(), http.StatusInternalServerError)
@@ -249,13 +238,12 @@ func (server *Server) putProjectLimit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if arguments.Rate != nil {
+		// Receiving a negative number means to apply defaults, which is indicated in the DB with null.
 		if *arguments.Rate < 0 {
-			sendJSONError(w, "negative rate",
-				fmt.Sprintf("%v", arguments.Rate), http.StatusBadRequest)
-			return
+			arguments.Rate = nil
 		}
 
-		err = server.db.Console().Projects().UpdateRateLimit(ctx, projectUUID, *arguments.Rate)
+		err = server.db.Console().Projects().UpdateRateLimit(ctx, project.ID, arguments.Rate)
 		if err != nil {
 			sendJSONError(w, "failed to update rate",
 				err.Error(), http.StatusInternalServerError)
@@ -264,13 +252,12 @@ func (server *Server) putProjectLimit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if arguments.Burst != nil {
+		// Receiving a negative number means to apply defaults, which is indicated in the DB with null.
 		if *arguments.Burst < 0 {
-			sendJSONError(w, "negative burst rate",
-				fmt.Sprintf("%v", arguments.Burst), http.StatusBadRequest)
-			return
+			arguments.Burst = nil
 		}
 
-		err = server.db.Console().Projects().UpdateBurstLimit(ctx, projectUUID, *arguments.Burst)
+		err = server.db.Console().Projects().UpdateBurstLimit(ctx, project.ID, arguments.Burst)
 		if err != nil {
 			sendJSONError(w, "failed to update burst",
 				err.Error(), http.StatusInternalServerError)
@@ -279,13 +266,12 @@ func (server *Server) putProjectLimit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if arguments.Buckets != nil {
+		// Receiving a negative number means to apply defaults, which is indicated in the DB with null.
 		if *arguments.Buckets < 0 {
-			sendJSONError(w, "negative bucket count",
-				fmt.Sprintf("t: %v", arguments.Buckets), http.StatusBadRequest)
-			return
+			arguments.Buckets = nil
 		}
 
-		err = server.db.Console().Projects().UpdateBucketLimit(ctx, projectUUID, *arguments.Buckets)
+		err = server.db.Console().Projects().UpdateBucketLimit(ctx, project.ID, arguments.Buckets)
 		if err != nil {
 			sendJSONError(w, "failed to update bucket limit",
 				err.Error(), http.StatusInternalServerError)
@@ -300,7 +286,7 @@ func (server *Server) putProjectLimit(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		err = server.db.ProjectAccounting().UpdateProjectSegmentLimit(ctx, projectUUID, *arguments.Segments)
+		err = server.db.ProjectAccounting().UpdateProjectSegmentLimit(ctx, project.ID, *arguments.Segments)
 		if err != nil {
 			sendJSONError(w, "failed to update segments limit",
 				err.Error(), http.StatusInternalServerError)
@@ -386,14 +372,7 @@ func (server *Server) renameProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	projectUUID, err := uuid.FromString(projectUUIDString)
-	if err != nil {
-		sendJSONError(w, "invalid project-uuid",
-			err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	project, err := server.db.Console().Projects().Get(ctx, projectUUID)
+	project, err := server.getProjectByAnyID(ctx, projectUUIDString)
 	if errors.Is(err, sql.ErrNoRows) {
 		sendJSONError(w, "project with specified uuid does not exist",
 			"", http.StatusNotFound)
@@ -454,14 +433,7 @@ func (server *Server) updateProjectsUserAgent(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	projectUUID, err := uuid.FromString(projectUUIDString)
-	if err != nil {
-		sendJSONError(w, "invalid project-uuid",
-			err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	project, err := server.db.Console().Projects().Get(ctx, projectUUID)
+	project, err := server.getProjectByAnyID(ctx, projectUUIDString)
 	if errors.Is(err, sql.ErrNoRows) {
 		sendJSONError(w, "project with specified uuid does not exist",
 			"", http.StatusNotFound)
@@ -530,9 +502,9 @@ func (server *Server) deleteProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	projectUUID, err := uuid.FromString(projectUUIDString)
+	project, err := server.getProjectByAnyID(ctx, projectUUIDString)
 	if err != nil {
-		sendJSONError(w, "invalid project-uuid",
+		sendJSONError(w, "error getting project",
 			err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -544,7 +516,7 @@ func (server *Server) deleteProject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	options := buckets.ListOptions{Limit: 1, Direction: buckets.DirectionForward}
-	buckets, err := server.buckets.ListBuckets(ctx, projectUUID, options, macaroon.AllowedBuckets{All: true})
+	buckets, err := server.buckets.ListBuckets(ctx, project.ID, options, macaroon.AllowedBuckets{All: true})
 	if err != nil {
 		sendJSONError(w, "unable to list buckets",
 			err.Error(), http.StatusInternalServerError)
@@ -556,7 +528,7 @@ func (server *Server) deleteProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	keys, err := server.db.Console().APIKeys().GetPagedByProjectID(ctx, projectUUID, console.APIKeyCursor{Limit: 1, Page: 1})
+	keys, err := server.db.Console().APIKeys().GetPagedByProjectID(ctx, project.ID, console.APIKeyCursor{Limit: 1, Page: 1})
 	if err != nil {
 		sendJSONError(w, "unable to list api-keys",
 			err.Error(), http.StatusInternalServerError)
@@ -569,11 +541,11 @@ func (server *Server) deleteProject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// if usage exist, return error to client and exit
-	if server.checkUsage(ctx, w, projectUUID) {
+	if server.checkUsage(ctx, w, project.ID) {
 		return
 	}
 
-	err = server.db.Console().Projects().Delete(ctx, projectUUID)
+	err = server.db.Console().Projects().Delete(ctx, project.ID)
 	if err != nil {
 		sendJSONError(w, "unable to delete project",
 			err.Error(), http.StatusInternalServerError)
@@ -627,7 +599,9 @@ func (server *Server) checkInvoicing(ctx context.Context, w http.ResponseWriter,
 	// Check if an invoice project record exists already
 	err := server.db.StripeCoinPayments().ProjectRecords().Check(ctx, projectID, firstOfMonth.AddDate(0, -1, 0), firstOfMonth)
 	if errors.Is(err, stripe.ErrProjectRecordExists) {
-		record, err := server.db.StripeCoinPayments().ProjectRecords().Get(ctx, projectID, firstOfMonth.AddDate(0, -1, 0), firstOfMonth)
+		record, err := server.db.StripeCoinPayments().
+			ProjectRecords().
+			Get(ctx, projectID, firstOfMonth.AddDate(0, -1, 0), firstOfMonth)
 		if err != nil {
 			sendJSONError(w, "unable to get project records", err.Error(), http.StatusInternalServerError)
 			return true
@@ -679,14 +653,17 @@ func (server *Server) checkUsage(ctx context.Context, w http.ResponseWriter, pro
 		}
 
 		// check usage for last month, if exists, ensure we have an invoice item created.
-		lastMonthUsage, err := server.db.ProjectAccounting().GetProjectTotal(ctx, projectID, firstOfMonth.AddDate(0, -1, 0), firstOfMonth.AddDate(0, 0, -1))
+		lastMonthUsage, err := server.db.ProjectAccounting().
+			GetProjectTotal(ctx, projectID, firstOfMonth.AddDate(0, -1, 0), firstOfMonth.AddDate(0, 0, -1))
 		if err != nil {
 			sendJSONError(w, "error getting project totals",
 				"", http.StatusInternalServerError)
 			return true
 		}
 		if lastMonthUsage.Storage > 0 || lastMonthUsage.Egress > 0 || lastMonthUsage.SegmentCount > 0 {
-			err = server.db.StripeCoinPayments().ProjectRecords().Check(ctx, projectID, firstOfMonth.AddDate(0, -1, 0), firstOfMonth)
+			err = server.db.StripeCoinPayments().
+				ProjectRecords().
+				Check(ctx, projectID, firstOfMonth.AddDate(0, -1, 0), firstOfMonth)
 			if !errors.Is(err, stripe.ErrProjectRecordExists) {
 				sendJSONError(w, "usage for last month exist, but is not billed yet", "", http.StatusConflict)
 				return true
@@ -709,7 +686,7 @@ func (server *Server) createGeofenceForProject(w http.ResponseWriter, r *http.Re
 }
 
 func (server *Server) deleteGeofenceForProject(w http.ResponseWriter, r *http.Request) {
-	server.setGeofenceForProject(w, r, storj.EveryCountry)
+	server.setGeofenceForProject(w, r, storj.DefaultPlacement)
 }
 
 func (server *Server) setGeofenceForProject(w http.ResponseWriter, r *http.Request, placement storj.PlacementConstraint) {
@@ -723,23 +700,20 @@ func (server *Server) setGeofenceForProject(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	projectUUID, err := uuid.FromString(projectUUIDString)
-	if err != nil {
-		sendJSONError(w, "invalid project-uuid",
-			err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	project, err := server.db.Console().Projects().Get(ctx, projectUUID)
+	project, err := server.getProjectByAnyID(ctx, projectUUIDString)
 	if errors.Is(err, sql.ErrNoRows) {
 		sendJSONError(w, "project with specified uuid does not exist",
 			"", http.StatusNotFound)
 		return
 	}
+	if err != nil {
+		sendJSONError(w, "error getting project",
+			"", http.StatusInternalServerError)
+		return
 
-	project.DefaultPlacement = placement
+	}
 
-	err = server.db.Console().Projects().Update(ctx, project)
+	err = server.db.Console().Projects().UpdateDefaultPlacement(ctx, project.ID, placement)
 	if err != nil {
 		sendJSONError(w, "unable to set geofence for project",
 			err.Error(), http.StatusInternalServerError)
@@ -753,4 +727,24 @@ func bucketNames(buckets []buckets.Bucket) []string {
 		xs = append(xs, b.Name)
 	}
 	return xs
+}
+
+// getProjectByAnyID takes a string version of a project public or private ID. If a valid public or private UUID, the associated project will be returned.
+func (server *Server) getProjectByAnyID(ctx context.Context, projectUUIDString string) (p *console.Project, err error) {
+	projectID, err := uuidFromString(projectUUIDString)
+	if err != nil {
+		return nil, Error.Wrap(err)
+	}
+
+	p, err = server.db.Console().Projects().GetByPublicID(ctx, projectID)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		// if failed to get by public ID, try using provided ID as a private ID
+		p, err = server.db.Console().Projects().Get(ctx, projectID)
+		return p, Error.Wrap(err)
+	case err != nil:
+		return nil, Error.Wrap(err)
+	default:
+		return p, nil
+	}
 }

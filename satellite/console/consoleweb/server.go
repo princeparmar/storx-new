@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"html/template"
 	"io/fs"
-	"mime"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -24,8 +23,6 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
-	"github.com/graphql-go/graphql"
-	"github.com/graphql-go/graphql/gqlerrors"
 	"github.com/spacemonkeygo/monkit/v3"
 	"github.com/zeebo/errs"
 	"go.uber.org/zap"
@@ -41,20 +38,15 @@ import (
 	"storj.io/storj/satellite/analytics"
 	"storj.io/storj/satellite/console"
 	"storj.io/storj/satellite/console/consoleweb/consoleapi"
-	"storj.io/storj/satellite/console/consoleweb/consoleapi/socialmedia"
-	"storj.io/storj/satellite/console/consoleweb/consoleql"
 	"storj.io/storj/satellite/console/consoleweb/consolewebauth"
 	"storj.io/storj/satellite/mailservice"
 	"storj.io/storj/satellite/oidc"
 	"storj.io/storj/satellite/payments/paymentsconfig"
-	"storj.io/storj/satellite/payments/stripe"
 )
 
 const (
-	contentType = "Content-Type"
-
-	applicationJSON    = "application/json"
-	applicationGraphql = "application/graphql"
+	contentType     = "Content-Type"
+	applicationJSON = "application/json"
 )
 
 var (
@@ -66,39 +58,11 @@ var (
 
 // Config contains configuration for console web server.
 type Config struct {
-	Address             string `help:"server address of the graphql api gateway and frontend app" devDefault:"127.0.0.1:0" releaseDefault:":10100"`
+	Address             string `help:"server address of the http api gateway and frontend app" devDefault:"127.0.0.1:0" releaseDefault:":10100"`
 	FrontendAddress     string `help:"server address of the front-end app" devDefault:"127.0.0.1:0" releaseDefault:":10200"`
 	ExternalAddress     string `help:"external endpoint of the satellite if hosted" default:""`
 	FrontendEnable      bool   `help:"feature flag to toggle whether console back-end server should also serve front-end endpoints" default:"true"`
 	BackendReverseProxy string `help:"the target URL of console back-end reverse proxy for local development when running a UI server" default:""`
-
-	PaymentGateway_APIKey                  string `help:"api key for payment gateway" default:""`
-	PaymentGateway_APISecret               string `help:"api secret for payment gateway" default:""`
-	PaymentGateway_Pay_ReqUrl              string `help:"url for payment gateway request" default:""`
-	PaymentGateway_Pay_StatusUrl           string `help:"url for payment gateway status" default:""`
-	PaymentGateway_Pay_Success_RedirectUrl string `help:"url for payment gateway success redirect" default:""`
-	PaymentGateway_Pay_Failed_RedirectUrl  string `help:"url for payment gateway failed redirect" default:""`
-
-	ZohoClientID     string `help:"client id for zoho oauth" default:""`
-	ZohoClientSecret string `help:"client secret for zoho oauth" default:""`
-	ZohoRefreshToken string `help:"refresh token for zoho oauth" default:""`
-
-	ClientOrigin string `help:"client origin for redirection URLs" default:""`
-
-	GoogleClientID               string `help:"client id for google oauth" default:""`
-	GoogleClientSecret           string `help:"client secret for google oauth" default:""`
-	GoogleSigupRedirectURLstring string `help:"redirect url for google oauth" default:""`
-	GoggleLoginRedirectURLstring string `help:"redirect url for google oauth" default:""`
-
-	FacebookClientID               string `help:"client id for facebook oauth" default:""`
-	FacebookClientSecret           string `help:"client secret for facebook oauth" default:""`
-	FacebookSigupRedirectURLstring string `help:"redirect url for facebook oauth" default:""`
-	FacebookLoginRedirectURLstring string `help:"redirect url for facebook oauth" default:""`
-
-	LinkedinClientID               string `help:"client id for linkedin oauth" default:""`
-	LinkedinClientSecret           string `help:"client secret for linkedin oauth" default:""`
-	LinkedinSigupRedirectURLstring string `help:"redirect url for linkedin oauth" default:""`
-	LinkedinLoginRedirectURLstring string `help:"redirect url for linkedin oauth" default:""`
 
 	StaticDir string `help:"path to static resources" default:""`
 	Watch     bool   `help:"whether to load templates on each request" default:"false" devDefault:"true"`
@@ -107,40 +71,43 @@ type Config struct {
 	AuthTokenSecret  string `help:"secret used to sign auth tokens" releaseDefault:"" devDefault:"my-suppa-secret-key"`
 	AuthCookieDomain string `help:"optional domain for cookies to use" default:""`
 
-	ContactInfoURL                  string     `help:"url link to contacts page" default:"https://forum.storj.io"`
-	FrameAncestors                  string     `help:"allow domains to embed the satellite in a frame, space separated" default:"tardigrade.io storj.io"`
-	LetUsKnowURL                    string     `help:"url link to let us know page" default:"https://storjlabs.atlassian.net/servicedesk/customer/portals"`
-	SEO                             string     `help:"used to communicate with web crawlers and other web robots" default:"User-agent: *\nDisallow: \nDisallow: /cgi-bin/"`
-	SatelliteName                   string     `help:"used to display at web satellite console" default:"Storj"`
-	SatelliteOperator               string     `help:"name of organization which set up satellite" default:"Storj Labs" `
-	TermsAndConditionsURL           string     `help:"url link to terms and conditions page" default:"https://www.storj.io/terms-of-service/"`
-	AccountActivationRedirectURL    string     `help:"url link for account activation redirect" default:""`
-	PartneredSatellites             Satellites `help:"names and addresses of partnered satellites in JSON list format" default:"[{\"name\":\"US1\",\"address\":\"https://us1.storj.io\"},{\"name\":\"EU1\",\"address\":\"https://eu1.storj.io\"},{\"name\":\"AP1\",\"address\":\"https://ap1.storj.io\"}]"`
-	GeneralRequestURL               string     `help:"url link to general request page" default:"https://supportdcs.storj.io/hc/en-us/requests/new?ticket_form_id=360000379291"`
-	ProjectLimitsIncreaseRequestURL string     `help:"url link to project limit increase request page" default:"https://supportdcs.storj.io/hc/en-us/requests/new?ticket_form_id=360000683212"`
-	GatewayCredentialsRequestURL    string     `help:"url link for gateway credentials requests" default:"https://auth.storjsatelliteshare.io" devDefault:"http://localhost:8000"`
-	IsBetaSatellite                 bool       `help:"indicates if satellite is in beta" default:"false"`
-	BetaSatelliteFeedbackURL        string     `help:"url link for for beta satellite feedback" default:""`
-	BetaSatelliteSupportURL         string     `help:"url link for for beta satellite support" default:""`
-	DocumentationURL                string     `help:"url link to documentation" default:"https://docs.storj.io/"`
-	CouponCodeBillingUIEnabled      bool       `help:"indicates if user is allowed to add coupon codes to account from billing" default:"false"`
-	CouponCodeSignupUIEnabled       bool       `help:"indicates if user is allowed to add coupon codes to account from signup" default:"false"`
-	FileBrowserFlowDisabled         bool       `help:"indicates if file browser flow is disabled" default:"false"`
-	CSPEnabled                      bool       `help:"indicates if Content Security Policy is enabled" devDefault:"false" releaseDefault:"true"`
-	LinksharingURL                  string     `help:"url link for linksharing requests within the application" default:"https://link.storjsatelliteshare.io" devDefault:"http://localhost:8001"`
-	PublicLinksharingURL            string     `help:"url link for linksharing requests for external sharing" default:"https://link.storjshare.io" devDefault:"http://localhost:8001"`
-	PathwayOverviewEnabled          bool       `help:"indicates if the overview onboarding step should render with pathways" default:"true"`
-	AllProjectsDashboard            bool       `help:"indicates if all projects dashboard should be used" default:"true"`
-	LimitsAreaEnabled               bool       `help:"indicates whether limit card section of the UI is enabled" default:"true"`
-	GeneratedAPIEnabled             bool       `help:"indicates if generated console api should be used" default:"false"`
-	OptionalSignupSuccessURL        string     `help:"optional url to external registration success page" default:""`
-	HomepageURL                     string     `help:"url link to storj.io homepage" default:"https://www.storj.io"`
-	NativeTokenPaymentsEnabled      bool       `help:"indicates if storj native token payments system is enabled" default:"false"`
-	PricingPackagesEnabled          bool       `help:"whether to allow purchasing pricing packages" default:"false" devDefault:"true"`
-	NewUploadModalEnabled           bool       `help:"whether to show new upload modal" default:"false"`
-	GalleryViewEnabled              bool       `help:"whether to show new gallery view" default:"true"`
-	UseVuetifyProject               bool       `help:"whether to use vuetify POC project" default:"false"`
-	VuetifyHost                     string     `help:"the subdomain the vuetify POC project should be hosted on" default:""`
+	ContactInfoURL                  string        `help:"url link to contacts page" default:"https://forum.storj.io"`
+	LetUsKnowURL                    string        `help:"url link to let us know page" default:"https://storjlabs.atlassian.net/servicedesk/customer/portals"`
+	SEO                             string        `help:"used to communicate with web crawlers and other web robots" default:"User-agent: *\nDisallow: \nDisallow: /cgi-bin/"`
+	SatelliteName                   string        `help:"used to display at web satellite console" default:"Storj"`
+	SatelliteOperator               string        `help:"name of organization which set up satellite" default:"Storj Labs" `
+	TermsAndConditionsURL           string        `help:"url link to terms and conditions page" default:"https://www.storj.io/terms-of-service/"`
+	AccountActivationRedirectURL    string        `help:"url link for account activation redirect" default:""`
+	PartneredSatellites             Satellites    `help:"names and addresses of partnered satellites in JSON list format" default:"[{\"name\":\"US1\",\"address\":\"https://us1.storj.io\"},{\"name\":\"EU1\",\"address\":\"https://eu1.storj.io\"},{\"name\":\"AP1\",\"address\":\"https://ap1.storj.io\"}]"`
+	GeneralRequestURL               string        `help:"url link to general request page" default:"https://supportdcs.storj.io/hc/en-us/requests/new?ticket_form_id=360000379291"`
+	ProjectLimitsIncreaseRequestURL string        `help:"url link to project limit increase request page" default:"https://supportdcs.storj.io/hc/en-us/requests/new?ticket_form_id=360000683212"`
+	GatewayCredentialsRequestURL    string        `help:"url link for gateway credentials requests" default:"https://auth.storjsatelliteshare.io" devDefault:"http://localhost:8000"`
+	IsBetaSatellite                 bool          `help:"indicates if satellite is in beta" default:"false"`
+	BetaSatelliteFeedbackURL        string        `help:"url link for for beta satellite feedback" default:""`
+	BetaSatelliteSupportURL         string        `help:"url link for for beta satellite support" default:""`
+	DocumentationURL                string        `help:"url link to documentation" default:"https://docs.storj.io/"`
+	CouponCodeBillingUIEnabled      bool          `help:"indicates if user is allowed to add coupon codes to account from billing" default:"false"`
+	CouponCodeSignupUIEnabled       bool          `help:"indicates if user is allowed to add coupon codes to account from signup" default:"false"`
+	FileBrowserFlowDisabled         bool          `help:"indicates if file browser flow is disabled" default:"false"`
+	LinksharingURL                  string        `help:"url link for linksharing requests within the application" default:"https://link.storjsatelliteshare.io" devDefault:"http://localhost:8001"`
+	PublicLinksharingURL            string        `help:"url link for linksharing requests for external sharing" default:"https://link.storjshare.io" devDefault:"http://localhost:8001"`
+	PathwayOverviewEnabled          bool          `help:"indicates if the overview onboarding step should render with pathways" default:"true"`
+	LimitsAreaEnabled               bool          `help:"indicates whether limit card section of the UI is enabled" default:"true"`
+	GeneratedAPIEnabled             bool          `help:"indicates if generated console api should be used" default:"false"`
+	OptionalSignupSuccessURL        string        `help:"optional url to external registration success page" default:""`
+	HomepageURL                     string        `help:"url link to storj.io homepage" default:"https://www.storj.io"`
+	NativeTokenPaymentsEnabled      bool          `help:"indicates if storj native token payments system is enabled" default:"false"`
+	PricingPackagesEnabled          bool          `help:"whether to allow purchasing pricing packages" default:"false" devDefault:"true"`
+	GalleryViewEnabled              bool          `help:"whether to show new gallery view" default:"true"`
+	ObjectBrowserPaginationEnabled  bool          `help:"whether to use object browser pagination" default:"false"`
+	LimitIncreaseRequestEnabled     bool          `help:"whether to allow request limit increases directly from the UI" default:"false"`
+	AllowedUsageReportDateRange     time.Duration `help:"allowed usage report request date range" default:"9360h"`
+	OnboardingStepperEnabled        bool          `help:"whether the onboarding stepper should be enabled" default:"false"`
+	EnableRegionTag                 bool          `help:"whether to show region tag in UI" default:"false"`
+	EmissionImpactViewEnabled       bool          `help:"whether emission impact view should be shown" default:"false"`
+	ApplicationsPageEnabled         bool          `help:"whether applications page should be shown" default:"false"`
+	DaysBeforeTrialEndNotification  int           `help:"days left before trial end notification" default:"3"`
+	BadPasswordsFile                string        `help:"path to a local file with bad passwords list, empty path == skip check" default:""`
 
 	OauthCodeExpiry         time.Duration `help:"how long oauth authorization codes are issued for" default:"10m"`
 	OauthAccessTokenExpiry  time.Duration `help:"how long oauth access tokens are issued for" default:"24h"`
@@ -148,9 +115,15 @@ type Config struct {
 
 	BodySizeLimit memory.Size `help:"The maximum body size allowed to be received by the API" default:"100.00 KB"`
 
+	// CSP configs
+	CSPEnabled       bool   `help:"indicates if Content Security Policy is enabled" devDefault:"false" releaseDefault:"true"`
+	FrameAncestors   string `help:"allow domains to embed the satellite in a frame, space separated" default:"tardigrade.io storj.io"`
+	ImgSrcSuffix     string `help:"additional values for Content Security Policy img-src, space separated" default:"*.tardigradeshare.io *.storjshare.io *.storjsatelliteshare.io"`
+	ConnectSrcSuffix string `help:"additional values for Content Security Policy connect-src, space separated" default:"*.tardigradeshare.io *.storjshare.io *.storjapi.io *.storjsatelliteshare.io"`
+	MediaSrcSuffix   string `help:"additional values for Content Security Policy media-src, space separated" default:"*.tardigradeshare.io *.storjshare.io *.storjsatelliteshare.io"`
+
 	// RateLimit defines the configuration for the IP and userID rate limiters.
 	RateLimit web.RateLimiterConfig
-
 	ABTesting abtesting.Config
 
 	console.Config
@@ -179,14 +152,11 @@ type Server struct {
 	stripePublicKey                 string
 	neededTokenPaymentConfirmations int
 
+	AnalyticsConfig analytics.Config
+
 	packagePlans paymentsconfig.PackagePlans
 
-	schema graphql.Schema
-
 	errorTemplate *template.Template
-
-	//boris
-	paymentMonitor *consoleapi.Payments
 }
 
 // apiAuth exposes methods to control authentication process for each generated API endpoint.
@@ -246,7 +216,8 @@ func (a *apiAuth) RemoveAuthCookie(w http.ResponseWriter) {
 }
 
 // NewServer creates new instance of console server.
-func NewServer(logger *zap.Logger, config Config, service *console.Service, oidcService *oidc.Service, mailService *mailservice.Service, analytics *analytics.Service, abTesting *abtesting.Service, accountFreezeService *console.AccountFreezeService, listener net.Listener, stripePublicKey string, neededTokenPaymentConfirmations int, nodeURL storj.NodeURL, packagePlans paymentsconfig.PackagePlans, stripe *stripe.Service) *Server {
+func NewServer(logger *zap.Logger, config Config, service *console.Service, oidcService *oidc.Service, mailService *mailservice.Service, analytics *analytics.Service, abTesting *abtesting.Service, accountFreezeService *console.AccountFreezeService, listener net.Listener, stripePublicKey string, neededTokenPaymentConfirmations int, nodeURL storj.NodeURL, analyticsConfig analytics.Config, packagePlans paymentsconfig.PackagePlans) *Server {
+	initAdditionalMimeTypes()
 
 	server := Server{
 		log:                             logger,
@@ -261,6 +232,7 @@ func NewServer(logger *zap.Logger, config Config, service *console.Service, oidc
 		ipRateLimiter:                   web.NewIPRateLimiter(config.RateLimit, logger),
 		userIDRateLimiter:               NewUserIDRateLimiter(config.RateLimit, logger),
 		nodeURL:                         nodeURL,
+		AnalyticsConfig:                 analyticsConfig,
 		packagePlans:                    packagePlans,
 	}
 
@@ -301,9 +273,6 @@ func NewServer(logger *zap.Logger, config Config, service *console.Service, oidc
 	}
 
 	router.Handle("/api/v0/config", server.withCORS(http.HandlerFunc(server.frontendConfigHandler)))
-
-	router.Handle("/api/v0/graphql", server.withCORS(server.withAuth(http.HandlerFunc(server.graphqlHandler))))
-
 	router.HandleFunc("/registrationToken/", server.createRegistrationTokenHandler)
 	router.HandleFunc("/robots.txt", server.seoHandler)
 
@@ -312,68 +281,58 @@ func NewServer(logger *zap.Logger, config Config, service *console.Service, oidc
 	projectsRouter.Use(server.withCORS)
 	projectsRouter.Use(server.withAuth)
 	projectsRouter.Handle("", http.HandlerFunc(projectsController.GetUserProjects)).Methods(http.MethodGet, http.MethodOptions)
+	projectsRouter.Handle("", http.HandlerFunc(projectsController.CreateProject)).Methods(http.MethodPost, http.MethodOptions)
 	projectsRouter.Handle("/paged", http.HandlerFunc(projectsController.GetPagedProjects)).Methods(http.MethodGet, http.MethodOptions)
 	projectsRouter.Handle("/{id}", http.HandlerFunc(projectsController.UpdateProject)).Methods(http.MethodPatch, http.MethodOptions)
+	projectsRouter.Handle("/{id}/limit-increase", http.HandlerFunc(projectsController.RequestLimitIncrease)).Methods(http.MethodPost, http.MethodOptions)
 	projectsRouter.Handle("/{id}/members", http.HandlerFunc(projectsController.DeleteMembersAndInvitations)).Methods(http.MethodDelete, http.MethodOptions)
 	projectsRouter.Handle("/{id}/salt", http.HandlerFunc(projectsController.GetSalt)).Methods(http.MethodGet, http.MethodOptions)
 	projectsRouter.Handle("/{id}/members", http.HandlerFunc(projectsController.GetMembersAndInvitations)).Methods(http.MethodGet, http.MethodOptions)
-	projectsRouter.Handle("/{id}/invite", http.HandlerFunc(projectsController.InviteUsers)).Methods(http.MethodPost, http.MethodOptions)
+	projectsRouter.Handle("/{id}/invite/{email}", server.userIDRateLimiter.Limit(http.HandlerFunc(projectsController.InviteUser))).Methods(http.MethodPost, http.MethodOptions)
+	projectsRouter.Handle("/{id}/reinvite", server.userIDRateLimiter.Limit(http.HandlerFunc(projectsController.ReinviteUsers))).Methods(http.MethodPost, http.MethodOptions)
 	projectsRouter.Handle("/{id}/invite-link", http.HandlerFunc(projectsController.GetInviteLink)).Methods(http.MethodGet, http.MethodOptions)
+	projectsRouter.Handle("/{id}/emission", http.HandlerFunc(projectsController.GetEmissionImpact)).Methods(http.MethodGet, http.MethodOptions)
+	projectsRouter.Handle("/{id}/config", http.HandlerFunc(projectsController.GetConfig)).Methods(http.MethodGet, http.MethodOptions)
 	projectsRouter.Handle("/invitations", http.HandlerFunc(projectsController.GetUserInvitations)).Methods(http.MethodGet, http.MethodOptions)
 	projectsRouter.Handle("/invitations/{id}/respond", http.HandlerFunc(projectsController.RespondToInvitation)).Methods(http.MethodPost, http.MethodOptions)
 
-	usageLimitsController := consoleapi.NewUsageLimits(logger, service)
+	usageLimitsController := consoleapi.NewUsageLimits(logger, service, server.config.AllowedUsageReportDateRange)
 	projectsRouter.Handle("/{id}/usage-limits", http.HandlerFunc(usageLimitsController.ProjectUsageLimits)).Methods(http.MethodGet, http.MethodOptions)
 	projectsRouter.Handle("/usage-limits", http.HandlerFunc(usageLimitsController.TotalUsageLimits)).Methods(http.MethodGet, http.MethodOptions)
-	projectsRouter.Handle("/{id}/daily-usage", http.HandlerFunc(usageLimitsController.DailyUsage)).Methods(http.MethodGet, http.MethodOptions)
+	projectsRouter.Handle("/{id}/daily-usage", server.userIDRateLimiter.Limit(http.HandlerFunc(usageLimitsController.DailyUsage))).Methods(http.MethodGet, http.MethodOptions)
+	projectsRouter.Handle("/usage-report", server.userIDRateLimiter.Limit(http.HandlerFunc(usageLimitsController.UsageReport))).Methods(http.MethodGet, http.MethodOptions)
 
-	// starting zoho refresh token goroutine
-	go consoleapi.ZohoRefreshTokenInit(context.Background(), config.ZohoClientID, config.ZohoClientSecret, config.ZohoRefreshToken, logger)
+	badPasswords, err := server.loadBadPasswords()
+	if err != nil {
+		server.log.Error("unable to load bad passwords list", zap.Error(err))
+	}
 
-	// set social media config
-	socialmedia.SetClientOrigin(config.ClientOrigin)
-	socialmedia.SetGoogleSocialMediaConfig(config.GoogleClientID, config.GoogleClientSecret, config.GoogleSigupRedirectURLstring, config.GoggleLoginRedirectURLstring)
-	socialmedia.SetFacebookSocialMediaConfig(config.FacebookClientID, config.FacebookClientSecret, config.FacebookSigupRedirectURLstring, config.FacebookLoginRedirectURLstring)
-	socialmedia.SetLinkedinSocialMediaConfig(config.LinkedinClientID, config.LinkedinClientSecret, config.LinkedinSigupRedirectURLstring, config.LinkedinLoginRedirectURLstring)
-
-	authController := consoleapi.NewAuth(logger, service, accountFreezeService, mailService, server.cookieAuth, server.analytics, config.SatelliteName, server.config.ExternalAddress, config.LetUsKnowURL, config.TermsAndConditionsURL, config.ContactInfoURL, config.GeneralRequestURL)
+	authController := consoleapi.NewAuth(logger, service, accountFreezeService, mailService, server.cookieAuth, server.analytics, config.SatelliteName, server.config.ExternalAddress, config.LetUsKnowURL, config.TermsAndConditionsURL, config.ContactInfoURL, config.GeneralRequestURL, config.SignupActivationCodeEnabled, badPasswords)
 	authRouter := router.PathPrefix("/api/v0/auth").Subrouter()
 	authRouter.Use(server.withCORS)
-	router.HandleFunc("/registerbutton_facebook", authController.InitFacebookRegister)
-	router.HandleFunc("/facebook_register", authController.HandleFacebookRegister)
-	router.HandleFunc("/loginbutton_facebook", authController.InitFacebookLogin)
-	router.HandleFunc("/facebook_login", authController.HandleFacebookLogin)
-
-	router.HandleFunc("/registerbutton_linkedin", authController.InitLinkedInRegister)
-	router.HandleFunc("/linkedin_register", authController.HandleLinkedInRegister)
-	router.HandleFunc("/loginbutton_linkedin", authController.InitLinkedInLogin)
-	router.HandleFunc("/linkedin_login", authController.HandleLinkedInLogin)
-
 	authRouter.Handle("/account", server.withAuth(http.HandlerFunc(authController.GetAccount))).Methods(http.MethodGet, http.MethodOptions)
 	authRouter.Handle("/account", server.withAuth(http.HandlerFunc(authController.UpdateAccount))).Methods(http.MethodPatch, http.MethodOptions)
-	authRouter.Handle("/account/change-email", server.withAuth(http.HandlerFunc(authController.ChangeEmail))).Methods(http.MethodPost, http.MethodOptions)
+	authRouter.Handle("/account/setup", server.withAuth(http.HandlerFunc(authController.SetupAccount))).Methods(http.MethodPatch, http.MethodOptions)
 	authRouter.Handle("/account/change-password", server.withAuth(server.userIDRateLimiter.Limit(http.HandlerFunc(authController.ChangePassword)))).Methods(http.MethodPost, http.MethodOptions)
 	authRouter.Handle("/account/freezestatus", server.withAuth(http.HandlerFunc(authController.GetFreezeStatus))).Methods(http.MethodGet, http.MethodOptions)
 	authRouter.Handle("/account/settings", server.withAuth(http.HandlerFunc(authController.GetUserSettings))).Methods(http.MethodGet, http.MethodOptions)
 	authRouter.Handle("/account/settings", server.withAuth(http.HandlerFunc(authController.SetUserSettings))).Methods(http.MethodPatch, http.MethodOptions)
 	authRouter.Handle("/account/onboarding", server.withAuth(http.HandlerFunc(authController.SetOnboardingStatus))).Methods(http.MethodPatch, http.MethodOptions)
-	authRouter.Handle("/account/delete", server.withAuth(http.HandlerFunc(authController.DeleteAccount))).Methods(http.MethodPost, http.MethodOptions)
 	authRouter.Handle("/mfa/enable", server.withAuth(http.HandlerFunc(authController.EnableUserMFA))).Methods(http.MethodPost, http.MethodOptions)
 	authRouter.Handle("/mfa/disable", server.withAuth(http.HandlerFunc(authController.DisableUserMFA))).Methods(http.MethodPost, http.MethodOptions)
 	authRouter.Handle("/mfa/generate-secret-key", server.withAuth(http.HandlerFunc(authController.GenerateMFASecretKey))).Methods(http.MethodPost, http.MethodOptions)
 	authRouter.Handle("/mfa/generate-recovery-codes", server.withAuth(http.HandlerFunc(authController.GenerateMFARecoveryCodes))).Methods(http.MethodPost, http.MethodOptions)
+	authRouter.Handle("/mfa/regenerate-recovery-codes", server.withAuth(http.HandlerFunc(authController.RegenerateMFARecoveryCodes))).Methods(http.MethodPost, http.MethodOptions)
 	authRouter.Handle("/logout", server.withAuth(http.HandlerFunc(authController.Logout))).Methods(http.MethodPost, http.MethodOptions)
 	authRouter.Handle("/token", server.ipRateLimiter.Limit(http.HandlerFunc(authController.Token))).Methods(http.MethodPost, http.MethodOptions)
-	authRouter.Handle("/token_google", server.ipRateLimiter.Limit(http.HandlerFunc(authController.TokenGoogleWrapperHandler))).Methods(http.MethodPost, http.MethodOptions)
 	authRouter.Handle("/token-by-api-key", server.ipRateLimiter.Limit(http.HandlerFunc(authController.TokenByAPIKey))).Methods(http.MethodPost, http.MethodOptions)
 	authRouter.Handle("/register", server.ipRateLimiter.Limit(http.HandlerFunc(authController.Register))).Methods(http.MethodPost, http.MethodOptions)
-	authRouter.Handle("/register-google", server.ipRateLimiter.Limit(http.HandlerFunc(authController.RegisterGoogle))).Methods(http.MethodGet, http.MethodOptions)
-	authRouter.Handle("/login-google", server.ipRateLimiter.Limit(http.HandlerFunc(authController.LoginUserConfirm))).Methods(http.MethodGet, http.MethodOptions)
-
+	authRouter.Handle("/code-activation", server.ipRateLimiter.Limit(http.HandlerFunc(authController.ActivateAccount))).Methods(http.MethodPatch, http.MethodOptions)
 	authRouter.Handle("/forgot-password", server.ipRateLimiter.Limit(http.HandlerFunc(authController.ForgotPassword))).Methods(http.MethodPost, http.MethodOptions)
 	authRouter.Handle("/resend-email/{email}", server.ipRateLimiter.Limit(http.HandlerFunc(authController.ResendEmail))).Methods(http.MethodPost, http.MethodOptions)
 	authRouter.Handle("/reset-password", server.ipRateLimiter.Limit(http.HandlerFunc(authController.ResetPassword))).Methods(http.MethodPost, http.MethodOptions)
 	authRouter.Handle("/refresh-session", server.withAuth(http.HandlerFunc(authController.RefreshSession))).Methods(http.MethodPost, http.MethodOptions)
+	authRouter.Handle("/limit-increase", server.withAuth(http.HandlerFunc(authController.RequestLimitIncrease))).Methods(http.MethodPatch, http.MethodOptions)
 
 	if config.ABTesting.Enabled {
 		abController := consoleapi.NewABTesting(logger, abTesting)
@@ -384,44 +343,42 @@ func NewServer(logger *zap.Logger, config Config, service *console.Service, oidc
 		abRouter.Handle("/hit/{action}", http.HandlerFunc(abController.SendHit)).Methods(http.MethodPost, http.MethodOptions)
 	}
 
-	gatewayConfig := consoleapi.NewGatewayConfig(config.PaymentGateway_APIKey, config.PaymentGateway_APISecret,
-		config.PaymentGateway_Pay_ReqUrl, config.PaymentGateway_Pay_StatusUrl, config.PaymentGateway_Pay_Success_RedirectUrl,
-		config.PaymentGateway_Pay_Failed_RedirectUrl)
-
-	paymentController := consoleapi.NewPayments(logger, service, accountFreezeService, packagePlans, stripe, gatewayConfig, mailService)
-	server.paymentMonitor = paymentController
-
-	paymentsRouter := router.PathPrefix("/api/v0/payments").Subrouter()
-	paymentsRouter.Use(server.withCORS)
-	paymentsRouter.Use(server.withAuth)
-	paymentsRouter.Handle("/cards", server.userIDRateLimiter.Limit(http.HandlerFunc(paymentController.AddCreditCard))).Methods(http.MethodPost, http.MethodOptions)
-	paymentsRouter.HandleFunc("/cards", paymentController.MakeCreditCardDefault).Methods(http.MethodPatch, http.MethodOptions)
-	paymentsRouter.HandleFunc("/cards", paymentController.ListCreditCards).Methods(http.MethodGet, http.MethodOptions)
-	paymentsRouter.HandleFunc("/cards/{cardId}", paymentController.RemoveCreditCard).Methods(http.MethodDelete, http.MethodOptions)
-	paymentsRouter.HandleFunc("/account/charges", paymentController.ProjectsCharges).Methods(http.MethodGet, http.MethodOptions)
-	paymentsRouter.HandleFunc("/account/balance", paymentController.AccountBalance).Methods(http.MethodGet, http.MethodOptions)
-	paymentsRouter.HandleFunc("/account", paymentController.SetupAccount).Methods(http.MethodPost, http.MethodOptions)
-	paymentsRouter.HandleFunc("/wallet", paymentController.GetWallet).Methods(http.MethodGet, http.MethodOptions)
-	paymentsRouter.HandleFunc("/wallet", paymentController.ClaimWallet).Methods(http.MethodPost, http.MethodOptions)
-	paymentsRouter.HandleFunc("/wallet/payments", paymentController.WalletPayments).Methods(http.MethodGet, http.MethodOptions)
-	paymentsRouter.HandleFunc("/wallet/payments-with-confirmations", paymentController.WalletPaymentsWithConfirmations).Methods(http.MethodGet, http.MethodOptions)
-	paymentsRouter.HandleFunc("/billing-history", paymentController.BillingHistory).Methods(http.MethodGet, http.MethodOptions)
-	paymentsRouter.Handle("/coupon/apply", server.userIDRateLimiter.Limit(http.HandlerFunc(paymentController.ApplyCouponCode))).Methods(http.MethodPatch, http.MethodOptions)
-	paymentsRouter.HandleFunc("/coupon", paymentController.GetCoupon).Methods(http.MethodGet, http.MethodOptions)
-	paymentsRouter.HandleFunc("/pricing", paymentController.GetProjectUsagePriceModel).Methods(http.MethodGet, http.MethodOptions)
-	if config.PricingPackagesEnabled {
-		paymentsRouter.HandleFunc("/purchase-package", paymentController.PurchasePackage).Methods(http.MethodPost, http.MethodOptions)
-		paymentsRouter.HandleFunc("/package-available", paymentController.PackageAvailable).Methods(http.MethodGet, http.MethodOptions)
+	if config.BillingFeaturesEnabled {
+		paymentController := consoleapi.NewPayments(logger, service, accountFreezeService, packagePlans)
+		paymentsRouter := router.PathPrefix("/api/v0/payments").Subrouter()
+		paymentsRouter.Use(server.withCORS)
+		paymentsRouter.Use(server.withAuth)
+		varBlocker := newVarBlockerMiddleWare(&server, config.VarPartners)
+		paymentsRouter.Use(varBlocker.withVarBlocker)
+		paymentsRouter.Handle("/payment-methods", server.userIDRateLimiter.Limit(http.HandlerFunc(paymentController.AddCardByPaymentMethodID))).Methods(http.MethodPost, http.MethodOptions)
+		paymentsRouter.Handle("/cards", server.userIDRateLimiter.Limit(http.HandlerFunc(paymentController.AddCreditCard))).Methods(http.MethodPost, http.MethodOptions)
+		paymentsRouter.HandleFunc("/cards", paymentController.MakeCreditCardDefault).Methods(http.MethodPatch, http.MethodOptions)
+		paymentsRouter.HandleFunc("/cards", paymentController.ListCreditCards).Methods(http.MethodGet, http.MethodOptions)
+		paymentsRouter.HandleFunc("/cards/{cardId}", paymentController.RemoveCreditCard).Methods(http.MethodDelete, http.MethodOptions)
+		paymentsRouter.HandleFunc("/account/charges", paymentController.ProjectsCharges).Methods(http.MethodGet, http.MethodOptions)
+		paymentsRouter.HandleFunc("/account/balance", paymentController.AccountBalance).Methods(http.MethodGet, http.MethodOptions)
+		paymentsRouter.HandleFunc("/account", paymentController.SetupAccount).Methods(http.MethodPost, http.MethodOptions)
+		paymentsRouter.HandleFunc("/wallet", paymentController.GetWallet).Methods(http.MethodGet, http.MethodOptions)
+		paymentsRouter.HandleFunc("/wallet", paymentController.ClaimWallet).Methods(http.MethodPost, http.MethodOptions)
+		paymentsRouter.HandleFunc("/wallet/payments", paymentController.WalletPayments).Methods(http.MethodGet, http.MethodOptions)
+		paymentsRouter.HandleFunc("/wallet/payments-with-confirmations", paymentController.WalletPaymentsWithConfirmations).Methods(http.MethodGet, http.MethodOptions)
+		paymentsRouter.HandleFunc("/billing-history", paymentController.BillingHistory).Methods(http.MethodGet, http.MethodOptions)
+		paymentsRouter.HandleFunc("/invoice-history", paymentController.InvoiceHistory).Methods(http.MethodGet, http.MethodOptions)
+		paymentsRouter.Handle("/coupon/apply", server.userIDRateLimiter.Limit(http.HandlerFunc(paymentController.ApplyCouponCode))).Methods(http.MethodPatch, http.MethodOptions)
+		paymentsRouter.HandleFunc("/coupon", paymentController.GetCoupon).Methods(http.MethodGet, http.MethodOptions)
+		paymentsRouter.HandleFunc("/pricing", paymentController.GetProjectUsagePriceModel).Methods(http.MethodGet, http.MethodOptions)
+		if config.PricingPackagesEnabled {
+			paymentsRouter.HandleFunc("/purchase-package", paymentController.PurchasePackage).Methods(http.MethodPost, http.MethodOptions)
+			paymentsRouter.HandleFunc("/package-available", paymentController.PackageAvailable).Methods(http.MethodGet, http.MethodOptions)
+		}
 	}
-	//boris
-	paymentsRouter.HandleFunc("/upgradingModule", paymentController.UpgradingModuleReq).Methods(http.MethodPost, http.MethodOptions)
-	paymentsRouter.HandleFunc("/invoice-history", paymentController.BillingTransactionHistory).Methods(http.MethodGet, http.MethodOptions)
 
 	bucketsController := consoleapi.NewBuckets(logger, service)
 	bucketsRouter := router.PathPrefix("/api/v0/buckets").Subrouter()
 	bucketsRouter.Use(server.withCORS)
 	bucketsRouter.Use(server.withAuth)
 	bucketsRouter.HandleFunc("/bucket-names", bucketsController.AllBucketNames).Methods(http.MethodGet, http.MethodOptions)
+	bucketsRouter.HandleFunc("/bucket-placements", bucketsController.GetBucketPlacements).Methods(http.MethodGet, http.MethodOptions)
 	bucketsRouter.HandleFunc("/usage-totals", bucketsController.GetBucketTotals).Methods(http.MethodGet, http.MethodOptions)
 
 	apiKeysController := consoleapi.NewAPIKeys(logger, service)
@@ -447,11 +404,31 @@ func NewServer(logger *zap.Logger, config Config, service *console.Service, oidc
 		server.config.OauthCodeExpiry, server.config.OauthAccessTokenExpiry, server.config.OauthRefreshTokenExpiry,
 	)
 
-	router.HandleFunc("/.well-known/openid-configuration", oidc.WellKnownConfiguration)
-	router.Handle("/oauth/v2/authorize", server.withAuth(http.HandlerFunc(oidc.AuthorizeUser))).Methods(http.MethodPost)
-	router.Handle("/oauth/v2/tokens", server.ipRateLimiter.Limit(http.HandlerFunc(oidc.Tokens))).Methods(http.MethodPost)
-	router.Handle("/oauth/v2/userinfo", server.ipRateLimiter.Limit(http.HandlerFunc(oidc.UserInfo))).Methods(http.MethodGet)
-	router.Handle("/oauth/v2/clients/{id}", server.withAuth(http.HandlerFunc(oidc.GetClient))).Methods(http.MethodGet)
+	router.HandleFunc("/api/v0/.well-known/openid-configuration", oidc.WellKnownConfiguration)
+	router.Handle("/api/v0/oauth/v2/authorize", server.withAuth(http.HandlerFunc(oidc.AuthorizeUser))).Methods(http.MethodPost)
+	router.Handle("/api/v0/oauth/v2/tokens", server.ipRateLimiter.Limit(http.HandlerFunc(oidc.Tokens))).Methods(http.MethodPost)
+	router.Handle("/api/v0/oauth/v2/userinfo", server.ipRateLimiter.Limit(http.HandlerFunc(oidc.UserInfo))).Methods(http.MethodGet)
+	router.Handle("/api/v0/oauth/v2/clients/{id}", server.withAuth(http.HandlerFunc(oidc.GetClient))).Methods(http.MethodGet)
+
+	if server.config.GeneratedAPIEnabled {
+		rawUrl := server.config.ExternalAddress + "public/v1"
+		target, err := url.Parse(rawUrl)
+		if err != nil {
+			server.log.Error("unable to parse satellite address", zap.String("url", rawUrl), zap.Error(err))
+		} else {
+			// this proxy is for backward compatibility with old code that uses the old /api/v0
+			// prefix for the generated API. It proxies these requests to the new /public/v1 prefix.
+			proxy := &httputil.ReverseProxy{
+				Rewrite: func(r *httputil.ProxyRequest) {
+					r.Out.URL.Path = strings.TrimPrefix(r.In.URL.Path, "/api/v0")
+					r.SetURL(target)
+				},
+			}
+			router.PathPrefix(`/api/v0/{*}`).Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				proxy.ServeHTTP(w, r)
+			}))
+		}
+	}
 
 	router.HandleFunc("/invited", server.handleInvited)
 	router.HandleFunc("/activation", server.accountActivationHandler)
@@ -460,15 +437,6 @@ func NewServer(logger *zap.Logger, config Config, service *console.Service, oidc
 	if server.config.StaticDir != "" && server.config.FrontendEnable {
 		fs := http.FileServer(http.Dir(server.config.StaticDir))
 		router.PathPrefix("/static/").Handler(server.withCORS(server.brotliMiddleware(http.StripPrefix("/static", fs))))
-
-		if server.config.UseVuetifyProject {
-			if server.config.VuetifyHost != "" {
-				router.Host(server.config.VuetifyHost).Handler(server.withCORS(http.HandlerFunc(server.vuetifyAppHandler)))
-			} else {
-				// if not using a custom subdomain for vuetify, use a path prefix on the same domain as the production app
-				router.PathPrefix("/vuetifypoc").Handler(server.withCORS(http.HandlerFunc(server.vuetifyAppHandler)))
-			}
-		}
 		router.PathPrefix("/").Handler(server.withCORS(http.HandlerFunc(server.appHandler)))
 	}
 
@@ -483,11 +451,6 @@ func NewServer(logger *zap.Logger, config Config, service *console.Service, oidc
 // Run starts the server that host webapp and api endpoint.
 func (server *Server) Run(ctx context.Context) (err error) {
 	defer mon.Task()(&ctx)(&err)
-
-	server.schema, err = consoleql.CreateSchema(server.log, server.service, server.mailService)
-	if err != nil {
-		return Error.Wrap(err)
-	}
 
 	_, err = server.loadErrorTemplate()
 	if err != nil {
@@ -512,11 +475,6 @@ func (server *Server) Run(ctx context.Context) (err error) {
 		}
 		return err
 	})
-
-	// paymentMonitor should be not nil before calling its methods
-	if server.paymentMonitor != nil {
-		server.paymentMonitor.StartMonitoringUserProjects(ctx)
-	}
 
 	return group.Wait()
 }
@@ -583,11 +541,8 @@ func NewFrontendServer(logger *zap.Logger, config Config, listener net.Listener,
 	router.HandleFunc("/robots.txt", server.seoHandler)
 	router.PathPrefix("/static/").Handler(server.brotliMiddleware(http.StripPrefix("/static", fs)))
 	router.HandleFunc("/config", server.frontendConfigHandler)
+	router.PathPrefix("/").Handler(server.withCORS(http.HandlerFunc(server.appHandler)))
 
-	if server.config.UseVuetifyProject {
-		router.PathPrefix("/vuetifypoc").Handler(http.HandlerFunc(server.vuetifyAppHandler))
-	}
-	router.PathPrefix("/").Handler(http.HandlerFunc(server.appHandler))
 	server.server = http.Server{
 		Handler:        server.withRequest(router),
 		MaxHeaderBytes: ContentLengthLimit.Int(),
@@ -626,16 +581,42 @@ func (server *Server) setAppHeaders(w http.ResponseWriter, r *http.Request) {
 	header := w.Header()
 
 	if server.config.CSPEnabled {
+		connectSrc := fmt.Sprintf("connect-src 'self' %s %s", server.config.ConnectSrcSuffix, server.config.GatewayCredentialsRequestURL)
+		scriptSrc := "script-src 'sha256-wAqYV6m2PHGd1WDyFBnZmSoyfCK0jxFAns0vGbdiWUA=' 'self' *.stripe.com"
+		// Those are hashes of charts custom tooltip inline styles. They have to be updated if styles are updated.
+		styleSrc := "style-src 'unsafe-hashes' 'sha256-7mY2NKmZ4PuyjGUa4FYC5u36SxXdoUM/zxrlr3BEToo=' 'sha256-PRTMwLUW5ce9tdiUrVCGKqj6wPeuOwGogb1pmyuXhgI=' 'sha256-kwpt3lQZ21rs4cld7/uEm9qI5yAbjYzx+9FGm/XmwNU=' 'sha256-Qf4xqtNKtDLwxce6HLtD5Y6BWpOeR7TnDpNSo+Bhb3s=' 'self'"
+		frameSrc := "frame-src 'self' *.stripe.com"
+
+		appendValues := func(str string, vals ...string) string {
+			for _, v := range vals {
+				str = fmt.Sprintf("%s %s", str, v)
+			}
+			return str
+		}
+
+		if server.config.Captcha.Login.Hcaptcha.Enabled || server.config.Captcha.Registration.Hcaptcha.Enabled {
+			hcap := "https://hcaptcha.com *.hcaptcha.com"
+			connectSrc = appendValues(connectSrc, hcap)
+			scriptSrc = appendValues(scriptSrc, hcap)
+			styleSrc = appendValues(styleSrc, hcap)
+			frameSrc = appendValues(frameSrc, hcap)
+		}
+		if server.config.Captcha.Login.Recaptcha.Enabled || server.config.Captcha.Registration.Recaptcha.Enabled {
+			recap := "https://www.google.com/recaptcha/"
+			recapSubdomain := "https://recaptcha.google.com/recaptcha/"
+			gstatic := "https://www.gstatic.com/recaptcha/"
+			scriptSrc = appendValues(scriptSrc, recap, gstatic)
+			frameSrc = appendValues(frameSrc, recap, recapSubdomain)
+		}
 		cspValues := []string{
 			"default-src 'self'",
-			"script-src 'sha256-wAqYV6m2PHGd1WDyFBnZmSoyfCK0jxFAns0vGbdiWUA=' 'self' *.stripe.com https://www.google.com/recaptcha/ https://www.gstatic.com/recaptcha/ https://hcaptcha.com *.hcaptcha.com",
-			"connect-src 'self' *.tardigradeshare.io *.storjshare.io https://hcaptcha.com *.hcaptcha.com " + server.config.GatewayCredentialsRequestURL,
+			connectSrc,
+			scriptSrc,
+			styleSrc,
+			frameSrc,
 			"frame-ancestors " + server.config.FrameAncestors,
-			"frame-src 'self' *.stripe.com https://www.google.com/recaptcha/ https://recaptcha.google.com/recaptcha/ https://hcaptcha.com *.hcaptcha.com",
-			"img-src 'self' data: blob: *.tardigradeshare.io *.storjshare.io *.storjsatelliteshare.io",
-			// Those are hashes of charts custom tooltip inline styles. They have to be updated if styles are updated.
-			"style-src 'unsafe-hashes' 'sha256-7mY2NKmZ4PuyjGUa4FYC5u36SxXdoUM/zxrlr3BEToo=' 'sha256-PRTMwLUW5ce9tdiUrVCGKqj6wPeuOwGogb1pmyuXhgI=' 'sha256-kwpt3lQZ21rs4cld7/uEm9qI5yAbjYzx+9FGm/XmwNU=' 'sha256-Qf4xqtNKtDLwxce6HLtD5Y6BWpOeR7TnDpNSo+Bhb3s=' 'self' https://hcaptcha.com *.hcaptcha.com",
-			"media-src 'self' blob: *.tardigradeshare.io *.storjshare.io *.storjsatelliteshare.io",
+			"img-src 'self' data: blob: " + server.config.ImgSrcSuffix,
+			"media-src 'self' blob: " + server.config.MediaSrcSuffix,
 		}
 
 		header.Set("Content-Security-Policy", strings.Join(cspValues, "; "))
@@ -644,6 +625,26 @@ func (server *Server) setAppHeaders(w http.ResponseWriter, r *http.Request) {
 	header.Set(contentType, "text/html; charset=UTF-8")
 	header.Set("X-Content-Type-Options", "nosniff")
 	header.Set("Referrer-Policy", "same-origin") // Only expose the referring url when navigating around the satellite itself.
+}
+
+// loadBadPasswords loads the bad passwords from a file into a map.
+func (server *Server) loadBadPasswords() (map[string]struct{}, error) {
+	if server.config.BadPasswordsFile == "" {
+		return nil, nil
+	}
+
+	bytes, err := os.ReadFile(server.config.BadPasswordsFile)
+	if err != nil {
+		return nil, err
+	}
+
+	badPasswords := make(map[string]struct{})
+	parsedPasswords := strings.Split(string(bytes), "\n")
+	for _, p := range parsedPasswords {
+		badPasswords[p] = struct{}{}
+	}
+
+	return badPasswords, nil
 }
 
 // appHandler is web app http handler function.
@@ -676,48 +677,52 @@ func (server *Server) appHandler(w http.ResponseWriter, r *http.Request) {
 	http.ServeContent(w, r, path, info.ModTime(), file)
 }
 
-// vuetifyAppHandler is web app http handler function.
-func (server *Server) vuetifyAppHandler(w http.ResponseWriter, r *http.Request) {
-	server.setAppHeaders(w, r)
+// varBlockerMiddleWare is a middleware that blocks requests from VAR partners.
+type varBlockerMiddleWare struct {
+	partners map[string]struct{}
+	server   *Server
+}
 
-	path := filepath.Join(server.config.StaticDir, "dist_vuetify_poc", "index-vuetify.html")
-	file, err := os.Open(path)
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			server.log.Error("index-vuetify.html was not generated. run 'npm run build-vuetify' in the "+server.config.StaticDir+" directory", zap.Error(err))
-		} else {
-			server.log.Error("error loading index-vuetify.html", zap.String("path", path), zap.Error(err))
-		}
-		return
+// newVarBlockerMiddleWare creates a new instance of varBlocker.
+func newVarBlockerMiddleWare(server *Server, varPartners []string) *varBlockerMiddleWare {
+	partners := make(map[string]struct{}, len(varPartners))
+	for _, partner := range varPartners {
+		partners[partner] = struct{}{}
 	}
-
-	defer func() {
-		if err := file.Close(); err != nil {
-			server.log.Error("error closing index-vuetify.html", zap.String("path", path), zap.Error(err))
-		}
-	}()
-
-	info, err := file.Stat()
-	if err != nil {
-		server.log.Error("failed to retrieve index-vuetify.html file info", zap.Error(err))
-		return
+	return &varBlockerMiddleWare{
+		partners: partners,
+		server:   server,
 	}
+}
 
-	http.ServeContent(w, r, path, info.ModTime(), file)
+// withVarBlocker blocks requests from VAR partners.
+func (v *varBlockerMiddleWare) withVarBlocker(handler http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var err error
+		ctx := r.Context()
+
+		defer mon.Task()(&ctx)(&err)
+
+		user, err := console.GetUser(ctx)
+		if _, ok := v.partners[string(user.UserAgent)]; ok {
+			web.ServeJSONError(ctx, v.server.log, w, http.StatusForbidden, errs.New("VAR Partner not supported"))
+			return
+		}
+
+		handler.ServeHTTP(w, r.Clone(ctx))
+	})
 }
 
 // withCORS handles setting CORS-related headers on an http request.
 func (server *Server) withCORS(handler http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		//w.Header().Set("Access-Control-Allow-Origin", strings.Trim(server.config.ExternalAddress, "/"))
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Origin", strings.Trim(server.config.ExternalAddress, "/"))
 		w.Header().Set("Access-Control-Allow-Credentials", "true")
 		w.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization")
 		w.Header().Set("Access-Control-Expose-Headers", "*, Authorization")
 
 		if r.Method == http.MethodOptions {
 			match := &mux.RouteMatch{}
-
 			if server.router.Match(r, match) {
 				methods, err := match.Route.GetMethods()
 				if err == nil && len(methods) > 0 {
@@ -797,7 +802,6 @@ func (server *Server) frontendConfigHandler(w http.ResponseWriter, r *http.Reque
 		DefaultPaidStorageLimit:         server.config.UsageLimits.Storage.Paid,
 		DefaultPaidBandwidthLimit:       server.config.UsageLimits.Bandwidth.Paid,
 		Captcha:                         server.config.Captcha,
-		AllProjectsDashboard:            server.config.AllProjectsDashboard,
 		LimitsAreaEnabled:               server.config.LimitsAreaEnabled,
 		InactivityTimerEnabled:          server.config.Session.InactivityTimerEnabled,
 		InactivityTimerDuration:         server.config.Session.InactivityTimerDuration,
@@ -809,9 +813,24 @@ func (server *Server) frontendConfigHandler(w http.ResponseWriter, r *http.Reque
 		PasswordMaximumLength:           console.PasswordMaximumLength,
 		ABTestingEnabled:                server.config.ABTesting.Enabled,
 		PricingPackagesEnabled:          server.config.PricingPackagesEnabled,
-		NewUploadModalEnabled:           server.config.NewUploadModalEnabled,
 		GalleryViewEnabled:              server.config.GalleryViewEnabled,
 		NeededTransactionConfirmations:  server.neededTokenPaymentConfirmations,
+		ObjectBrowserPaginationEnabled:  server.config.ObjectBrowserPaginationEnabled,
+		BillingFeaturesEnabled:          server.config.BillingFeaturesEnabled,
+		StripePaymentElementEnabled:     server.config.StripePaymentElementEnabled,
+		UnregisteredInviteEmailsEnabled: server.config.UnregisteredInviteEmailsEnabled,
+		FreeTierInvitesEnabled:          server.config.FreeTierInvitesEnabled,
+		UserBalanceForUpgrade:           server.config.UserBalanceForUpgrade,
+		LimitIncreaseRequestEnabled:     server.config.LimitIncreaseRequestEnabled,
+		SignupActivationCodeEnabled:     server.config.SignupActivationCodeEnabled,
+		AllowedUsageReportDateRange:     server.config.AllowedUsageReportDateRange,
+		OnboardingStepperEnabled:        server.config.OnboardingStepperEnabled,
+		EnableRegionTag:                 server.config.EnableRegionTag,
+		EmissionImpactViewEnabled:       server.config.EmissionImpactViewEnabled,
+		ApplicationsPageEnabled:         server.config.ApplicationsPageEnabled,
+		AnalyticsEnabled:                server.AnalyticsConfig.Enabled,
+		PlausibleDomain:                 server.AnalyticsConfig.Plausible.Domain,
+		PlausibleScriptUrl:              server.AnalyticsConfig.Plausible.ScriptUrl,
 	}
 
 	err := json.NewEncoder(w).Encode(&cfg)
@@ -921,7 +940,7 @@ func (server *Server) accountActivationHandler(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	tokenInfo, err := server.service.GenerateSessionToken(ctx, user.ID, user.Email, ip, r.UserAgent())
+	tokenInfo, err := server.service.GenerateSessionToken(ctx, user.ID, user.Email, ip, r.UserAgent(), nil)
 	if err != nil {
 		server.serveError(w, http.StatusInternalServerError)
 		return
@@ -988,147 +1007,12 @@ func (server *Server) handleInvited(w http.ResponseWriter, r *http.Request) {
 			server.serveError(w, http.StatusInternalServerError)
 			return
 		}
-		name := inviter.ShortName
-		if name == "" {
-			name = inviter.FullName
-		}
-		params.Add("inviter", name)
 		params.Add("inviter_email", inviter.Email)
-	}
 
-	proj, err := server.service.GetProjectNoAuth(ctx, invite.ProjectID)
-	if err != nil {
-		server.log.Error("error getting invitation project", zap.Error(err))
-		server.serveError(w, http.StatusInternalServerError)
-		return
+		server.analytics.TrackInviteLinkClicked(inviter.Email, invite.Email)
 	}
-	params.Add("project", proj.Name)
 
 	http.Redirect(w, r, server.config.ExternalAddress+"signup?"+params.Encode(), http.StatusTemporaryRedirect)
-}
-
-// graphqlHandler is graphql endpoint http handler function.
-func (server *Server) graphqlHandler(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	defer mon.Task()(&ctx)(nil)
-
-	handleError := func(code int, err error) {
-		w.WriteHeader(code)
-
-		var jsonError struct {
-			Error     string `json:"error"`
-			RequestID string `json:"requestID"`
-		}
-
-		jsonError.Error = err.Error()
-
-		if requestID := requestid.FromContext(ctx); requestID != "" {
-			jsonError.RequestID = requestID
-		}
-
-		if err := json.NewEncoder(w).Encode(jsonError); err != nil {
-			server.log.Error("error graphql error", zap.Error(err))
-		}
-	}
-
-	w.Header().Set(contentType, applicationJSON)
-
-	query, err := getQuery(w, r)
-	if err != nil {
-		handleError(http.StatusBadRequest, err)
-		return
-	}
-
-	rootObject := make(map[string]interface{})
-
-	rootObject["origin"] = server.config.ExternalAddress
-	rootObject[consoleql.ActivationPath] = "activation?token="
-	rootObject[consoleql.PasswordRecoveryPath] = "password-recovery?token="
-	rootObject[consoleql.CancelPasswordRecoveryPath] = "cancel-password-recovery?token="
-	rootObject[consoleql.SignInPath] = "login"
-	rootObject[consoleql.LetUsKnowURL] = server.config.LetUsKnowURL
-	rootObject[consoleql.ContactInfoURL] = server.config.ContactInfoURL
-	rootObject[consoleql.TermsAndConditionsURL] = server.config.TermsAndConditionsURL
-	rootObject[consoleql.SatelliteRegion] = server.config.SatelliteName
-
-	result := graphql.Do(graphql.Params{
-		Schema:         server.schema,
-		Context:        ctx,
-		RequestString:  query.Query,
-		VariableValues: query.Variables,
-		OperationName:  query.OperationName,
-		RootObject:     rootObject,
-	})
-
-	getGqlError := func(err gqlerrors.FormattedError) error {
-		var gerr *gqlerrors.Error
-		if errors.As(err.OriginalError(), &gerr) {
-			return gerr.OriginalError
-		}
-		return nil
-	}
-
-	parseConsoleError := func(err error) (int, error) {
-		switch {
-		case console.ErrUnauthorized.Has(err):
-			return http.StatusUnauthorized, err
-		case console.Error.Has(err):
-			return http.StatusInternalServerError, err
-		}
-
-		return 0, nil
-	}
-
-	handleErrors := func(code int, errors gqlerrors.FormattedErrors) {
-		w.WriteHeader(code)
-
-		var jsonError struct {
-			Errors    []string `json:"errors"`
-			RequestID string   `json:"requestID"`
-		}
-
-		for _, err := range errors {
-			jsonError.Errors = append(jsonError.Errors, err.Message)
-		}
-
-		if requestID := requestid.FromContext(ctx); requestID != "" {
-			jsonError.RequestID = requestID
-		}
-
-		if err := json.NewEncoder(w).Encode(jsonError); err != nil {
-			server.log.Error("error graphql error", zap.Error(err))
-		}
-	}
-
-	handleGraphqlErrors := func() {
-		for _, err := range result.Errors {
-			gqlErr := getGqlError(err)
-			if gqlErr == nil {
-				continue
-			}
-
-			code, err := parseConsoleError(gqlErr)
-			if err != nil {
-				handleError(code, err)
-				return
-			}
-		}
-
-		handleErrors(http.StatusOK, result.Errors)
-	}
-
-	if result.HasErrors() {
-		handleGraphqlErrors()
-		return
-	}
-
-	err = json.NewEncoder(w).Encode(result)
-	if err != nil {
-		server.log.Error("error encoding grapql result", zap.Error(err))
-		return
-	}
-
-	server.log.Debug(fmt.Sprintf("%s", result))
 }
 
 // serveError serves a static error page.
@@ -1152,7 +1036,7 @@ func (server *Server) serveError(w http.ResponseWriter, status int) {
 func (server *Server) seoHandler(w http.ResponseWriter, req *http.Request) {
 	header := w.Header()
 
-	header.Set(contentType, mime.TypeByExtension(".txt"))
+	header.Set(contentType, typeByExtension(".txt"))
 	header.Set("X-Content-Type-Options", "nosniff")
 
 	_, err := w.Write([]byte(server.config.SEO))
@@ -1180,7 +1064,7 @@ func (server *Server) brotliMiddleware(fn http.Handler) http.Handler {
 		}
 
 		extension := filepath.Ext(info.Name()[:len(info.Name())-3])
-		w.Header().Set(contentType, mime.TypeByExtension(extension))
+		w.Header().Set(contentType, typeByExtension(extension))
 		w.Header().Set("Content-Encoding", "br")
 
 		newRequest := new(http.Request)

@@ -36,10 +36,6 @@ func TestAdminProjectGeofenceAPI(t *testing.T) {
 		project, err := sat.DB.Console().Projects().Get(ctx, uplink.Projects[0].ID)
 		require.NoError(t, err)
 
-		// update project set default placement to EEA
-		project.DefaultPlacement = storj.EEA
-		require.NoError(t, sat.DB.Console().Projects().Update(ctx, project))
-
 		testCases := []struct {
 			name    string
 			project uuid.UUID
@@ -87,9 +83,11 @@ func TestAdminProjectGeofenceAPI(t *testing.T) {
 
 						project, err := sat.DB.Console().Projects().Get(ctx, testCase.project)
 						require.NoError(t, err)
+						require.Equal(t, storj.DefaultPlacement, project.DefaultPlacement)
 
 						expected, err := json.Marshal(project)
 						require.NoError(t, err)
+
 						assertGet(ctx, t, baseURL, string(expected), sat.Config.Console.AuthToken)
 					})
 				}

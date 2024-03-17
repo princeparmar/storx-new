@@ -16,13 +16,13 @@ import (
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 
+	"storj.io/common/cfgstruct"
 	"storj.io/common/errs2"
 	"storj.io/common/identity"
 	"storj.io/common/rpc"
 	"storj.io/common/storj"
 	"storj.io/common/uuid"
-	"storj.io/private/cfgstruct"
-	"storj.io/private/version"
+	"storj.io/common/version"
 	"storj.io/storj/private/revocation"
 	"storj.io/storj/private/server"
 	"storj.io/storj/private/testredis"
@@ -165,10 +165,6 @@ type Satellite struct {
 		Cache accounting.Cache
 	}
 
-	ProjectLimits struct {
-		Cache *accounting.ProjectLimitCache
-	}
-
 	Mail struct {
 		Service *mailservice.Service
 	}
@@ -226,7 +222,7 @@ func (system *Satellite) AddUser(ctx context.Context, newUser console.CreateUser
 	}
 
 	newUser.Password = newUser.FullName
-	user, err := system.API.Console.Service.CreateUser(ctx, newUser, regToken.Secret, false)
+	user, err := system.API.Console.Service.CreateUser(ctx, newUser, regToken.Secret)
 	if err != nil {
 		return nil, errs.Wrap(err)
 	}
@@ -411,6 +407,7 @@ func (planet *Planet) newSatellite(ctx context.Context, prefix string, index int
 	// cfgstruct devDefaults. we need to make sure it's safe to remove
 	// these lines and then remove them.
 	config.Debug.Control = false
+	config.Debug.Addr = ""
 	config.Reputation.AuditHistory.OfflineDQEnabled = false
 	config.Server.Config.Extensions.Revocation = false
 	config.Orders.OrdersSemaphoreSize = 0
@@ -443,8 +440,6 @@ func (planet *Planet) newSatellite(ctx context.Context, prefix string, index int
 	config.Compensation.Rates.GetAuditTB = compensation.Rate{}
 	config.Compensation.WithheldPercents = nil
 	config.Compensation.DisposePercent = 0
-	config.ProjectLimit.CacheCapacity = 0
-	config.ProjectLimit.CacheExpiration = 0
 
 	// Actual testplanet-specific configuration
 	config.Server.Address = planet.NewListenAddress()
@@ -463,6 +458,10 @@ func (planet *Planet) newSatellite(ctx context.Context, prefix string, index int
 	config.Mail.TemplatePath = filepath.Join(developmentRoot, "web/satellite/static/emails")
 	config.Console.StaticDir = filepath.Join(developmentRoot, "web/satellite")
 	config.Payments.Storjscan.DisableLoop = true
+
+	if os.Getenv("STORJ_TEST_DISABLEQUIC") != "" {
+		config.Server.DisableQUIC = true
+	}
 
 	if planet.config.Reconfigure.Satellite != nil {
 		planet.config.Reconfigure.Satellite(log, index, &config)
@@ -645,8 +644,6 @@ func createNewSystem(name string, log *zap.Logger, config satellite.Config, peer
 
 	system.LiveAccounting = peer.LiveAccounting
 
-	system.ProjectLimits.Cache = api.ProjectLimits.Cache
-
 	system.GracefulExit.Endpoint = api.GracefulExit.Endpoint
 
 	return system
@@ -691,7 +688,13 @@ func (planet *Planet) newAdmin(ctx context.Context, index int, identity *identit
 	prefix := "satellite-admin" + strconv.Itoa(index)
 	log := planet.log.Named(prefix)
 
-	return satellite.NewAdmin(log, identity, db, metabaseDB, versionInfo, &config, nil)
+	liveAccounting, err := live.OpenCache(ctx, log.Named("live-accounting"), config.LiveAccounting)
+	if err != nil {
+		return nil, errs.Wrap(err)
+	}
+	planet.databases = append(planet.databases, liveAccounting)
+
+	return satellite.NewAdmin(log, identity, db, metabaseDB, liveAccounting, versionInfo, &config, nil)
 }
 
 func (planet *Planet) newRepairer(ctx context.Context, index int, identity *identity.FullIdentity, db satellite.DB, metabaseDB *metabase.DB, config satellite.Config, versionInfo version.Info) (_ *satellite.Repairer, err error) {

@@ -14,13 +14,13 @@ import (
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 
+	"storj.io/common/debug"
 	"storj.io/common/identity"
 	"storj.io/common/peertls/extensions"
 	"storj.io/common/peertls/tlsopts"
 	"storj.io/common/rpc"
 	"storj.io/common/storj"
-	"storj.io/private/debug"
-	"storj.io/private/version"
+	"storj.io/common/version"
 	"storj.io/storj/private/lifecycle"
 	version_checker "storj.io/storj/private/version/checker"
 	"storj.io/storj/satellite/accounting"
@@ -34,6 +34,7 @@ import (
 	"storj.io/storj/satellite/console/consoleauth"
 	"storj.io/storj/satellite/console/dbcleanup"
 	"storj.io/storj/satellite/console/emailreminders"
+	"storj.io/storj/satellite/emission"
 	"storj.io/storj/satellite/gc/sender"
 	"storj.io/storj/satellite/mailservice"
 	"storj.io/storj/satellite/metabase"
@@ -48,6 +49,7 @@ import (
 	"storj.io/storj/satellite/payments/billing"
 	"storj.io/storj/satellite/payments/storjscan"
 	"storj.io/storj/satellite/payments/stripe"
+	"storj.io/storj/satellite/repair/repairer"
 	"storj.io/storj/satellite/reputation"
 )
 
@@ -147,6 +149,10 @@ type Core struct {
 	GarbageCollection struct {
 		Sender *sender.Service
 	}
+
+	RepairQueueStat struct {
+		Chore *repairer.QueueStat
+	}
 }
 
 // New creates a new satellite.
@@ -165,8 +171,8 @@ func New(log *zap.Logger, full *identity.FullIdentity, db DB,
 
 	{ // setup debug
 		var err error
-		if config.Debug.Address != "" {
-			peer.Debug.Listener, err = net.Listen("tcp", config.Debug.Address)
+		if config.Debug.Addr != "" {
+			peer.Debug.Listener, err = net.Listen("tcp", config.Debug.Addr)
 			if err != nil {
 				withoutStack := errors.New(err.Error())
 				peer.Log.Debug("failed to start debug endpoints", zap.Error(withoutStack))
@@ -247,9 +253,15 @@ func New(log *zap.Logger, full *identity.FullIdentity, db DB,
 		}
 	}
 
+	placement, err := config.Placement.Parse(config.Overlay.Node.CreateDefaultPlacement)
+	if err != nil {
+		return nil, err
+	}
+
 	{ // setup overlay
+
 		peer.Overlay.DB = peer.DB.OverlayCache()
-		peer.Overlay.Service, err = overlay.NewService(peer.Log.Named("overlay"), peer.Overlay.DB, peer.DB.NodeEvents(), config.Placement.CreateFilters, config.Console.ExternalAddress, config.Console.SatelliteName, config.Overlay)
+		peer.Overlay.Service, err = overlay.NewService(peer.Log.Named("overlay"), peer.Overlay.DB, peer.DB.NodeEvents(), placement, config.Console.ExternalAddress, config.Console.SatelliteName, config.Overlay)
 		if err != nil {
 			return nil, errs.Combine(err, peer.Close())
 		}
@@ -481,6 +493,7 @@ func New(log *zap.Logger, full *identity.FullIdentity, db DB,
 			pc.PackagePlans.Packages,
 			pc.BonusRate,
 			peer.Analytics.Service,
+			emission.NewService(config.Emission),
 		)
 		if err != nil {
 			return nil, errs.Combine(err, peer.Close())
@@ -519,8 +532,13 @@ func New(log *zap.Logger, full *identity.FullIdentity, db DB,
 			debug.Cycle("Payments Storjscan", peer.Payments.StorjscanChore.TransactionCycle),
 		)
 
+		freezeService := console.NewAccountFreezeService(peer.DB.Console(), peer.Analytics.Service, config.Console.AccountFreeze)
 		choreObservers := billing.ChoreObservers{
-			UpgradeUser: console.NewUpgradeUserObserver(peer.DB.Console(), peer.DB.Billing(), config.Console.UsageLimits, config.Console.UserBalanceForUpgrade),
+			UpgradeUser: console.NewUpgradeUserObserver(peer.DB.Console(), peer.DB.Billing(), config.Console.UsageLimits, config.Console.UserBalanceForUpgrade, freezeService),
+			PayInvoices: console.NewInvoiceTokenPaymentObserver(
+				peer.DB.Console(), peer.Payments.Accounts.Invoices(),
+				freezeService,
+			),
 		}
 
 		peer.Payments.BillingChore = billing.NewChore(
@@ -548,9 +566,10 @@ func New(log *zap.Logger, full *identity.FullIdentity, db DB,
 				peer.DB.Console().Users(),
 				peer.DB.Wallets(),
 				peer.DB.StorjscanPayments(),
-				console.NewAccountFreezeService(db.Console().AccountFreezeEvents(), db.Console().Users(), db.Console().Projects(), peer.Analytics.Service),
+				console.NewAccountFreezeService(db.Console(), peer.Analytics.Service, config.Console.AccountFreeze),
 				peer.Analytics.Service,
 				config.AccountFreeze,
+				config.Console.Captcha.FlagBotsEnabled,
 			)
 
 			peer.Services.Add(lifecycle.Item{
@@ -574,6 +593,17 @@ func New(log *zap.Logger, full *identity.FullIdentity, db DB,
 			Run:   peer.ConsoleDBCleanup.Chore.Run,
 			Close: peer.ConsoleDBCleanup.Chore.Close,
 		})
+	}
+
+	{
+		if config.RepairQueueCheck.Interval.Seconds() > 0 {
+			peer.RepairQueueStat.Chore = repairer.NewQueueStat(log, monkit.Default, placement.SupportedPlacements(), db.RepairQueue(), config.RepairQueueCheck.Interval)
+
+			peer.Services.Add(lifecycle.Item{
+				Name: "queue-stat",
+				Run:  peer.RepairQueueStat.Chore.Run,
+			})
+		}
 	}
 
 	{ // setup garbage collection

@@ -6,7 +6,7 @@ package metabase
 import (
 	"context"
 
-	"storj.io/private/dbutil"
+	"storj.io/common/dbutil"
 )
 
 const (
@@ -32,18 +32,21 @@ func (db *DB) DeleteBucketObjects(ctx context.Context, opts DeleteBucketObjects)
 
 	deleteBatchSizeLimit.Ensure(&opts.BatchSize)
 
-	for {
+	deletedBatchCount := int64(opts.BatchSize)
+	for deletedBatchCount > 0 {
 		if err := ctx.Err(); err != nil {
 			return deletedObjectCount, err
 		}
 
-		deletedBatchCount, err := db.deleteBucketObjects(ctx, opts)
+		deletedBatchCount, err = db.deleteBucketObjects(ctx, opts)
 		deletedObjectCount += deletedBatchCount
 
-		if err != nil || deletedBatchCount == 0 {
+		if err != nil {
 			return deletedObjectCount, err
 		}
 	}
+
+	return deletedObjectCount, nil
 }
 
 func (db *DB) deleteBucketObjects(ctx context.Context, opts DeleteBucketObjects) (deletedObjectCount int64, err error) {
@@ -56,7 +59,8 @@ func (db *DB) deleteBucketObjects(ctx context.Context, opts DeleteBucketObjects)
 		query = `
 		WITH deleted_objects AS (
 			DELETE FROM objects
-			WHERE project_id = $1 AND bucket_name = $2 LIMIT $3
+			WHERE (project_id, bucket_name) = ($1, $2)
+			LIMIT $3
 			RETURNING objects.stream_id, objects.segment_count
 		), deleted_segments AS (
 			DELETE FROM segments
@@ -71,7 +75,7 @@ func (db *DB) deleteBucketObjects(ctx context.Context, opts DeleteBucketObjects)
 			DELETE FROM objects
 			WHERE stream_id IN (
 				SELECT stream_id FROM objects
-				WHERE project_id = $1 AND bucket_name = $2
+				WHERE (project_id, bucket_name) = ($1, $2)
 				LIMIT $3
 			)
 			RETURNING objects.stream_id, objects.segment_count

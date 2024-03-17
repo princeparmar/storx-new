@@ -1,4 +1,4 @@
-// Copyright (C) 2021 Storx Labs, Inc.
+// Copyright (C) 2021 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 import { TooltipModel, ChartType } from 'chart.js';
@@ -37,8 +37,16 @@ class Styling {
         public element: HTMLElement,
         public topPosition: number,
         public leftPosition: number,
-        public chartPosition: ClientRect,
+        public chartPosition: DOMRect,
     ) {}
+}
+
+/**
+ * TooltipId defines tooltip IDs.
+ */
+export enum TooltipId {
+    Storage = 'storage-tooltip',
+    Bandwidth = 'allocated-bandwidth-tooltip',
 }
 
 /**
@@ -94,7 +102,7 @@ export class Tooltip {
         elemStyling.element.style.opacity = StylingConstants.tooltipOpacity;
         elemStyling.element.style.position = StylingConstants.tooltipPosition;
         elemStyling.element.style.left = `${elemStyling.chartPosition.left + elemStyling.tooltipModel.caretX - elemStyling.leftPosition}px`;
-        elemStyling.element.style.top = `${elemStyling.chartPosition.top + window.pageYOffset + elemStyling.tooltipModel.caretY - elemStyling.topPosition}px`;
+        elemStyling.element.style.top = `${elemStyling.chartPosition.top + window.scrollY + elemStyling.tooltipModel.caretY - elemStyling.topPosition}px`;
     }
 }
 

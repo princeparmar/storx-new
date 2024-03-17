@@ -16,11 +16,11 @@ import (
 	"github.com/zeebo/errs"
 	"go.uber.org/zap"
 
+	"storj.io/common/debug"
 	"storj.io/common/memory"
 	"storj.io/common/peertls/extensions"
 	"storj.io/common/peertls/tlsopts"
 	"storj.io/common/storj"
-	"storj.io/private/debug"
 	"storj.io/storj/cmd/storagenode/internalcmd"
 	"storj.io/storj/private/revocation"
 	"storj.io/storj/private/server"
@@ -31,6 +31,7 @@ import (
 	"storj.io/storj/storagenode/collector"
 	"storj.io/storj/storagenode/console/consoleserver"
 	"storj.io/storj/storagenode/contact"
+	"storj.io/storj/storagenode/forgetsatellite"
 	"storj.io/storj/storagenode/gracefulexit"
 	"storj.io/storj/storagenode/monitor"
 	"storj.io/storj/storagenode/nodestats"
@@ -42,6 +43,7 @@ import (
 	"storj.io/storj/storagenode/retain"
 	"storj.io/storj/storagenode/storagenodedb/storagenodedbtest"
 	"storj.io/storj/storagenode/trust"
+	"storj.io/storj/storagenode/version"
 )
 
 // StorageNode contains all the processes needed to run a full StorageNode setup.
@@ -134,7 +136,7 @@ func (planet *Planet) newStorageNode(ctx context.Context, prefix string, index, 
 			},
 		},
 		Debug: debug.Config{
-			Address: "",
+			Addr: "",
 		},
 		Preflight: preflight.Config{
 			LocalTimeCheck: false,
@@ -201,7 +203,9 @@ func (planet *Planet) newStorageNode(ctx context.Context, prefix string, index, 
 			Status:      retain.Enabled,
 			Concurrency: 5,
 		},
-		Version: planet.NewVersionConfig(),
+		Version: version.Config{
+			Config: planet.NewVersionConfig(),
+		},
 		Bandwidth: bandwidth.Config{
 			Interval: defaultInterval,
 		},
@@ -215,6 +219,14 @@ func (planet *Planet) newStorageNode(ctx context.Context, prefix string, index, 
 			MinBytesPerSecond:      128 * memory.B,
 			MinDownloadTimeout:     2 * time.Minute,
 		},
+		ForgetSatellite: forgetsatellite.Config{
+			ChoreInterval: defaultInterval,
+			NumWorkers:    3,
+		},
+	}
+
+	if os.Getenv("STORJ_TEST_DISABLEQUIC") != "" {
+		config.Server.DisableQUIC = true
 	}
 
 	// enable the lazy filewalker
@@ -293,6 +305,13 @@ func (planet *Planet) newStorageNode(ctx context.Context, prefix string, index, 
 		cmd.Logger = log.Named("gc-filewalker")
 		cmd.Ctx = ctx
 		peer.Storage2.LazyFileWalker.TestingSetGCCmd(cmd)
+	}
+	{
+		// set up the trash cleanup lazyfilewalker filewalker
+		cmd := internalcmd.NewTrashFilewalkerCmd()
+		cmd.Logger = log.Named("trash-filewalker")
+		cmd.Ctx = ctx
+		peer.Storage2.LazyFileWalker.TestingSetTrashCleanupCmd(cmd)
 	}
 
 	return &StorageNode{

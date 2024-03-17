@@ -13,10 +13,10 @@ import (
 	"github.com/zeebo/errs"
 	"go.uber.org/zap/zaptest"
 
+	"storj.io/common/cfgstruct"
+	"storj.io/common/dbutil/pgutil"
 	"storj.io/common/memory"
 	"storj.io/common/testcontext"
-	"storj.io/private/cfgstruct"
-	"storj.io/private/dbutil/pgutil"
 	"storj.io/storj/satellite/metabase"
 	"storj.io/storj/satellite/metainfo"
 	"storj.io/storj/satellite/satellitedb/satellitedbtest"
@@ -84,11 +84,14 @@ func Run(t *testing.T, fn func(ctx *testcontext.Context, t *testing.T, db *metab
 	)
 
 	RunWithConfig(t, metabase.Config{
-		ApplicationName:        "satellite-metabase-test",
-		MinPartSize:            config.MinPartSize,
-		MaxNumberOfParts:       config.MaxNumberOfParts,
+		ApplicationName:  "satellite-metabase-test",
+		MinPartSize:      config.MinPartSize,
+		MaxNumberOfParts: config.MaxNumberOfParts,
+
 		ServerSideCopy:         config.ServerSideCopy,
 		ServerSideCopyDisabled: config.ServerSideCopyDisabled,
+
+		TestingUniqueUnversioned: true,
 	}, fn)
 }
 

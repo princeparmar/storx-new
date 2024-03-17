@@ -7,6 +7,7 @@ import (
 	"context"
 	"time"
 
+	"storj.io/common/storj"
 	"storj.io/common/uuid"
 	"storj.io/storj/satellite/metabase"
 )
@@ -21,6 +22,20 @@ type InjuredSegment struct {
 	AttemptedAt   *time.Time
 	UpdatedAt     time.Time
 	InsertedAt    time.Time
+
+	Placement storj.PlacementConstraint
+}
+
+// Stat contains information about a segment of repair queue.
+type Stat struct {
+	Count            int
+	Placement        storj.PlacementConstraint
+	MaxInsertedAt    time.Time
+	MinInsertedAt    time.Time
+	MaxAttemptedAt   *time.Time
+	MinAttemptedAt   *time.Time
+	MinSegmentHealth float64
+	MaxSegmentHealth float64
 }
 
 // RepairQueue implements queueing for segments that need repairing.
@@ -33,7 +48,7 @@ type RepairQueue interface {
 	// InsertBatch adds multiple injured segments
 	InsertBatch(ctx context.Context, segments []*InjuredSegment) (newlyInsertedSegments []*InjuredSegment, err error)
 	// Select gets an injured segment.
-	Select(ctx context.Context) (*InjuredSegment, error)
+	Select(ctx context.Context, includedPlacements []storj.PlacementConstraint, excludedPlacements []storj.PlacementConstraint) (*InjuredSegment, error)
 	// Delete removes an injured segment.
 	Delete(ctx context.Context, s *InjuredSegment) error
 	// Clean removes all segments last updated before a certain time
@@ -42,6 +57,9 @@ type RepairQueue interface {
 	SelectN(ctx context.Context, limit int) ([]InjuredSegment, error)
 	// Count counts the number of segments in the repair queue.
 	Count(ctx context.Context) (count int, err error)
+
+	// Stat returns stat of the current queue state.
+	Stat(ctx context.Context) ([]Stat, error)
 
 	// TestingSetAttemptedTime sets attempted time for a segment.
 	TestingSetAttemptedTime(ctx context.Context, streamID uuid.UUID, position metabase.SegmentPosition, t time.Time) (rowsAffected int64, err error)

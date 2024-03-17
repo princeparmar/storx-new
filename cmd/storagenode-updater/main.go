@@ -9,10 +9,13 @@ package main
 import (
 	"go.uber.org/zap"
 
-	"storj.io/private/process"
+	"storj.io/common/process"
 )
 
 func main() {
+	logger, _, _ := process.NewLogger("storagenode-updater")
+	zap.ReplaceGlobals(logger)
+
 	loggerFunc := func(logger *zap.Logger) *zap.Logger {
 		return logger.With(zap.String("Process", updaterServiceName))
 	}

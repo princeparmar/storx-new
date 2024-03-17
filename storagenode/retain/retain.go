@@ -118,8 +118,7 @@ func NewService(log *zap.Logger, store *pieces.Store, config Config) *Service {
 }
 
 // Queue adds a retain request to the queue.
-// It discards a request for a satellite that already has a queued request.
-// true is returned if the request is queued and false is returned if it is discarded.
+// true is returned if the request is added to the queue, false if queue is closed.
 func (s *Service) Queue(req Request) bool {
 	s.cond.L.Lock()
 	defer s.cond.L.Unlock()
@@ -304,67 +303,74 @@ func (s *Service) retainPieces(ctx context.Context, req Request) (err error) {
 
 	defer mon.Task()(&ctx, req.SatelliteID, req.CreatedBefore)(&err)
 
-	numDeleted := 0
 	satelliteID := req.SatelliteID
 	filter := req.Filter
 
 	// subtract some time to leave room for clock difference between the satellite and storage node
 	createdBefore := req.CreatedBefore.Add(-s.config.MaxTimeSkew)
-	started := time.Now().UTC()
+	startedAt := time.Now().UTC()
+	numTrashed := 0
 	filterHashCount, _ := req.Filter.Parameters()
 	mon.IntVal("garbage_collection_created_before").Observe(createdBefore.Unix())
 	mon.IntVal("garbage_collection_filter_hash_count").Observe(int64(filterHashCount))
 	mon.IntVal("garbage_collection_filter_size").Observe(filter.Size())
-	mon.IntVal("garbage_collection_started").Observe(started.Unix())
+	mon.IntVal("garbage_collection_started").Observe(startedAt.Unix())
 
 	s.log.Info("Prepared to run a Retain request.",
 		zap.Time("Created Before", createdBefore),
 		zap.Int64("Filter Size", filter.Size()),
 		zap.Stringer("Satellite ID", satelliteID))
 
-	pieceIDs, piecesCount, piecesSkipped, err := s.store.SatellitePiecesToTrash(ctx, satelliteID, createdBefore, filter)
-	if err != nil {
-		return Error.Wrap(err)
-	}
-
-	piecesToDeleteCount := len(pieceIDs)
-
-	for i := range pieceIDs {
-		pieceID := pieceIDs[i]
-		s.log.Debug("About to move piece to trash",
-			zap.Stringer("Satellite ID", satelliteID),
-			zap.Stringer("Piece ID", pieceID),
-			zap.String("Status", s.config.Status.String()))
-
-		// if retain status is enabled, delete pieceid
+	pieceIDs, piecesCount, piecesSkipped, err := s.store.WalkSatellitePiecesToTrash(ctx, satelliteID, createdBefore, filter, func(pieceID storj.PieceID) error {
+		// if retain status is enabled, trash the piece
 		if s.config.Status == Enabled {
-			if err = s.trash(ctx, satelliteID, pieceID); err != nil {
-				s.log.Warn("failed to delete piece",
+			if err := s.trash(ctx, satelliteID, pieceID, startedAt); err != nil {
+				s.log.Warn("failed to trash piece",
 					zap.Stringer("Satellite ID", satelliteID),
 					zap.Stringer("Piece ID", pieceID),
 					zap.Error(err))
 				return nil
 			}
 		}
-		numDeleted++
+
+		numTrashed++
+
+		return nil
+	})
+	if err != nil {
+		return Error.Wrap(err)
 	}
+
+	piecesToDeleteCount := len(pieceIDs)
+
 	mon.IntVal("garbage_collection_pieces_count").Observe(piecesCount)
 	mon.IntVal("garbage_collection_pieces_skipped").Observe(piecesSkipped)
 	mon.IntVal("garbage_collection_pieces_to_delete_count").Observe(int64(piecesToDeleteCount))
-	mon.IntVal("garbage_collection_pieces_deleted").Observe(int64(numDeleted))
-	mon.DurationVal("garbage_collection_loop_duration").Observe(time.Now().UTC().Sub(started))
-	s.log.Info("Moved pieces to trash during retain", zap.Int("num deleted", numDeleted), zap.String("Retain Status", s.config.Status.String()))
+	mon.IntVal("garbage_collection_pieces_deleted").Observe(int64(numTrashed))
+	duration := time.Now().UTC().Sub(startedAt)
+	mon.DurationVal("garbage_collection_loop_duration").Observe(duration)
+	s.log.Info("Moved pieces to trash during retain",
+		zap.Int("Deleted pieces", numTrashed),
+		zap.Int("Failed to delete", piecesToDeleteCount-numTrashed),
+		zap.Int64("Pieces failed to read", piecesSkipped),
+		zap.Int64("Pieces count", piecesCount),
+		zap.Stringer("Satellite ID", satelliteID),
+		zap.Duration("Duration", duration),
+		zap.String("Retain Status", s.config.Status.String()),
+	)
 
 	return nil
 }
 
 // trash wraps retains piece deletion to monitor moving retained piece to trash error during garbage collection.
-func (s *Service) trash(ctx context.Context, satelliteID storj.NodeID, pieceID storj.PieceID) (err error) {
+func (s *Service) trash(ctx context.Context, satelliteID storj.NodeID, pieceID storj.PieceID, timestamp time.Time) (err error) {
 	defer mon.Task()(&ctx, satelliteID)(&err)
-	return s.store.Trash(ctx, satelliteID, pieceID)
+	return s.store.Trash(ctx, satelliteID, pieceID, timestamp)
 }
 
-// HowManyQueued peeks at the number of bloom filters queued.
-func (s *Service) HowManyQueued() int {
+// TestingHowManyQueued peeks at the number of bloom filters queued.
+func (s *Service) TestingHowManyQueued() int {
+	s.cond.L.Lock()
+	defer s.cond.L.Unlock()
 	return len(s.queued)
 }

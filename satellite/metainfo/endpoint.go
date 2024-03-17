@@ -5,11 +5,11 @@ package metainfo
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
-	"github.com/jtolio/eventkit"
 	"github.com/spacemonkeygo/monkit/v3"
 	"github.com/zeebo/errs"
 	"go.uber.org/zap"
@@ -22,6 +22,7 @@ import (
 	"storj.io/common/rpc/rpcstatus"
 	"storj.io/common/signing"
 	"storj.io/common/storj"
+	"storj.io/eventkit"
 	"storj.io/storj/satellite/accounting"
 	"storj.io/storj/satellite/attribution"
 	"storj.io/storj/satellite/buckets"
@@ -71,7 +72,6 @@ type Endpoint struct {
 	attributions           attribution.DB
 	pointerVerification    *pointerverification.Service
 	projectUsage           *accounting.Service
-	projectLimits          *accounting.ProjectLimitCache
 	projects               console.Projects
 	apiKeys                APIKeys
 	satellite              signing.Signer
@@ -80,16 +80,21 @@ type Endpoint struct {
 	encInlineSegmentSize   int64 // max inline segment size + encryption overhead
 	revocations            revocation.DB
 	defaultRS              *pb.RedundancyScheme
-	config                 Config
+	config                 ExtendedConfig
 	versionCollector       *versionCollector
 }
 
 // NewEndpoint creates new metainfo endpoint instance.
 func NewEndpoint(log *zap.Logger, buckets *buckets.Service, metabaseDB *metabase.DB,
 	orders *orders.Service, cache *overlay.Service, attributions attribution.DB, peerIdentities overlay.PeerIdentities,
-	apiKeys APIKeys, projectUsage *accounting.Service, projectLimits *accounting.ProjectLimitCache, projects console.Projects,
+	apiKeys APIKeys, projectUsage *accounting.Service, projects console.Projects,
 	satellite signing.Signer, revocations revocation.DB, config Config) (*Endpoint, error) {
 	// TODO do something with too many params
+
+	extendedConfig, err := NewExtendedConfig(config)
+	if err != nil {
+		return nil, err
+	}
 
 	encInlineSegmentSize, err := encryption.CalcEncryptedSize(config.MaxInlineSegmentSize.Int64(), storj.EncryptionParameters{
 		CipherSuite: storj.EncAESGCM,
@@ -118,7 +123,6 @@ func NewEndpoint(log *zap.Logger, buckets *buckets.Service, metabaseDB *metabase
 		pointerVerification: pointerverification.NewService(peerIdentities),
 		apiKeys:             apiKeys,
 		projectUsage:        projectUsage,
-		projectLimits:       projectLimits,
 		projects:            projects,
 		satellite:           satellite,
 		limiterCache: lrucache.NewOf[*rate.Limiter](lrucache.Options{
@@ -133,7 +137,7 @@ func NewEndpoint(log *zap.Logger, buckets *buckets.Service, metabaseDB *metabase
 		encInlineSegmentSize: encInlineSegmentSize,
 		revocations:          revocations,
 		defaultRS:            defaultRSScheme,
-		config:               config,
+		config:               extendedConfig,
 		versionCollector:     newVersionCollector(log),
 	}, nil
 }
@@ -293,12 +297,16 @@ func (endpoint *Endpoint) unmarshalSatSegmentID(ctx context.Context, segmentID s
 
 // convertMetabaseErr converts domain errors from metabase to appropriate rpc statuses errors.
 func (endpoint *Endpoint) convertMetabaseErr(err error) error {
-	if rpcstatus.Code(err) != rpcstatus.Unknown {
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, context.Canceled):
+		return rpcstatus.Error(rpcstatus.Canceled, "context canceled")
+	case errors.Is(err, context.DeadlineExceeded):
+		return rpcstatus.Error(rpcstatus.DeadlineExceeded, "context deadline exceeded")
+	case rpcstatus.Code(err) != rpcstatus.Unknown:
 		// it's already RPC error
 		return err
-	}
-
-	switch {
 	case metabase.ErrObjectNotFound.Has(err):
 		message := strings.TrimPrefix(err.Error(), string(metabase.ErrObjectNotFound))
 		message = strings.TrimPrefix(message, ": ")
@@ -311,6 +319,8 @@ func (endpoint *Endpoint) convertMetabaseErr(err error) error {
 		return rpcstatus.Error(rpcstatus.NotFound, "segment not found: "+message)
 	case metabase.ErrInvalidRequest.Has(err):
 		return rpcstatus.Error(rpcstatus.InvalidArgument, err.Error())
+	case metabase.ErrFailedPrecondition.Has(err):
+		return rpcstatus.Error(rpcstatus.FailedPrecondition, err.Error())
 	case metabase.ErrObjectAlreadyExists.Has(err):
 		return rpcstatus.Error(rpcstatus.AlreadyExists, err.Error())
 	case metabase.ErrPendingObjectMissing.Has(err):
@@ -319,13 +329,14 @@ func (endpoint *Endpoint) convertMetabaseErr(err error) error {
 		return rpcstatus.Error(rpcstatus.PermissionDenied, err.Error())
 	default:
 		endpoint.log.Error("internal", zap.Error(err))
-		return rpcstatus.Error(rpcstatus.Internal, err.Error())
+		return rpcstatus.Error(rpcstatus.Internal, "internal error")
 	}
 }
 
 func (endpoint *Endpoint) usageTracking(keyInfo *console.APIKeyInfo, header *pb.RequestHeader, name string, tags ...eventkit.Tag) {
 	evs.Event("usage", append([]eventkit.Tag{
 		eventkit.Bytes("project-public-id", keyInfo.ProjectPublicID[:]),
+		eventkit.Bytes("macaroon-head", keyInfo.Head),
 		eventkit.String("user-agent", string(header.UserAgent)),
 		eventkit.String("request", name),
 	}, tags...)...)

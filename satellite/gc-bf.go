@@ -14,9 +14,9 @@ import (
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 
+	"storj.io/common/debug"
 	"storj.io/common/peertls/extensions"
-	"storj.io/private/debug"
-	"storj.io/private/version"
+	"storj.io/common/version"
 	"storj.io/storj/private/lifecycle"
 	"storj.io/storj/satellite/gc/bloomfilter"
 	"storj.io/storj/satellite/metabase"
@@ -65,8 +65,8 @@ func NewGarbageCollectionBF(log *zap.Logger, db DB, metabaseDB *metabase.DB, rev
 
 	{ // setup debug
 		var err error
-		if config.Debug.Address != "" {
-			peer.Debug.Listener, err = net.Listen("tcp", config.Debug.Address)
+		if config.Debug.Addr != "" {
+			peer.Debug.Listener, err = net.Listen("tcp", config.Debug.Addr)
 			if err != nil {
 				withoutStack := errors.New(err.Error())
 				peer.Log.Debug("failed to start debug endpoints", zap.Error(withoutStack))
@@ -91,22 +91,25 @@ func NewGarbageCollectionBF(log *zap.Logger, db DB, metabaseDB *metabase.DB, rev
 		peer.GarbageCollection.Config = config.GarbageCollectionBF
 
 		var observer rangedloop.Observer
-		if config.GarbageCollectionBF.UseSyncObserver {
+		if peer.GarbageCollection.Config.UseSyncObserver {
 			observer = bloomfilter.NewSyncObserver(log.Named("gc-bf"),
-				config.GarbageCollectionBF,
+				peer.GarbageCollection.Config,
 				peer.Overlay.DB,
 			)
 		} else {
 			observer = bloomfilter.NewObserver(log.Named("gc-bf"),
-				config.GarbageCollectionBF,
+				peer.GarbageCollection.Config,
 				peer.Overlay.DB,
 			)
 		}
 
 		provider := rangedloop.NewMetabaseRangeSplitter(metabaseDB, config.RangedLoop.AsOfSystemInterval, config.RangedLoop.BatchSize)
-		peer.RangedLoop.Service = rangedloop.NewService(log.Named("rangedloop"), config.RangedLoop, provider, []rangedloop.Observer{observer})
+		peer.RangedLoop.Service = rangedloop.NewService(log.Named("rangedloop"), config.RangedLoop, provider, []rangedloop.Observer{
+			rangedloop.NewLiveCountObserver(metabaseDB, config.RangedLoop.SuspiciousProcessedRatio, config.RangedLoop.AsOfSystemInterval),
+			observer,
+		})
 
-		if !config.GarbageCollectionBF.RunOnce {
+		if !peer.GarbageCollection.Config.RunOnce {
 			peer.Services.Add(lifecycle.Item{
 				Name:  "garbage-collection-bf",
 				Run:   peer.RangedLoop.Service.Run,

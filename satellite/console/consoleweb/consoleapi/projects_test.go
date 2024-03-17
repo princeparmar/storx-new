@@ -7,7 +7,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -15,12 +14,15 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
 
 	"storj.io/common/memory"
+	"storj.io/common/storj"
 	"storj.io/common/testcontext"
 	"storj.io/common/testrand"
 	"storj.io/common/uuid"
 	"storj.io/storj/private/testplanet"
+	"storj.io/storj/satellite"
 	"storj.io/storj/satellite/console"
 	"storj.io/storj/satellite/console/consoleweb/consoleapi"
 )
@@ -93,17 +95,6 @@ func TestGetProjectMembersAndInvitationsOrdering(t *testing.T) {
 		members, invitees := createTestMembers(ctx, t, sat.DB.Console(), p, &user.ID)
 		members[user.ID] = *user
 
-		tokenInfo, err := sat.API.Console.Service.Token(ctx, console.AuthUser{Email: user.Email, Password: user.FullName})
-		require.NoError(t, err)
-
-		expire := time.Now().AddDate(0, 0, 1)
-		cookie := http.Cookie{
-			Name:    "_tokenKey",
-			Path:    "/",
-			Value:   tokenInfo.Token.String(),
-			Expires: expire,
-		}
-
 		tests := []struct {
 			order, orderDir int
 		}{
@@ -134,24 +125,10 @@ func TestGetProjectMembersAndInvitationsOrdering(t *testing.T) {
 		}
 
 		for _, tt := range tests {
-			addr := planet.Satellites[0].API.Console.Listener.Addr().String()
-
-			url := fmt.Sprintf("http://%s/api/v0/projects/%s/members", addr, p.String())
-			url += fmt.Sprintf("?limit=100&page=1&order=%d&order-direction=%d", tt.order, tt.orderDir)
-
-			req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+			endpoint := fmt.Sprintf("projects/%s/members?limit=100&page=1&order=%d&order-direction=%d", p.String(), tt.order, tt.orderDir)
+			body, status, err := doRequestWithAuth(ctx, t, sat, user, http.MethodGet, endpoint, nil)
 			require.NoError(t, err)
-
-			req.AddCookie(&cookie)
-
-			client := http.Client{}
-			res, err := client.Do(req)
-			require.NoError(t, err)
-			require.NotNil(t, res)
-
-			body, err := io.ReadAll(res.Body)
-			require.NoError(t, err)
-			require.NoError(t, res.Body.Close())
+			require.Equal(t, http.StatusOK, status)
 
 			var membersAndInvitations consoleapi.ProjectMembersPage
 			require.NoError(t, json.Unmarshal(body, &membersAndInvitations))
@@ -163,22 +140,22 @@ func TestGetProjectMembersAndInvitationsOrdering(t *testing.T) {
 				case int(console.Ascending):
 					switch tt.order {
 					case int(console.Name):
-						require.Less(t, members[respMembers[i-1].User.ID].FullName, members[respMembers[i].User.ID].FullName)
+						require.Less(t, members[respMembers[i-1].ID].FullName, members[respMembers[i].ID].FullName)
 					case int(console.Email):
-						require.Less(t, members[respMembers[i-1].User.ID].Email, members[respMembers[i].User.ID].Email)
+						require.Less(t, members[respMembers[i-1].ID].Email, members[respMembers[i].ID].Email)
 					case int(console.Created):
-						require.Less(t, members[respMembers[i-1].User.ID].CreatedAt, members[respMembers[i].User.ID].CreatedAt)
+						require.Less(t, members[respMembers[i-1].ID].CreatedAt, members[respMembers[i].ID].CreatedAt)
 					default:
 						t.Error("invalid order", tt.order)
 					}
 				case int(console.Descending):
 					switch tt.order {
 					case int(console.Name):
-						require.Greater(t, members[respMembers[i-1].User.ID].FullName, members[respMembers[i].User.ID].FullName)
+						require.Greater(t, members[respMembers[i-1].ID].FullName, members[respMembers[i].ID].FullName)
 					case int(console.Email):
-						require.Greater(t, members[respMembers[i-1].User.ID].Email, members[respMembers[i].User.ID].Email)
+						require.Greater(t, members[respMembers[i-1].ID].Email, members[respMembers[i].ID].Email)
 					case int(console.Created):
-						require.Greater(t, members[respMembers[i-1].User.ID].CreatedAt, members[respMembers[i].User.ID].CreatedAt)
+						require.Greater(t, members[respMembers[i-1].ID].CreatedAt, members[respMembers[i].ID].CreatedAt)
 					default:
 						t.Error("invalid order", tt.order)
 					}
@@ -231,17 +208,6 @@ func TestGetProjectMembersAndInvitationsSearch(t *testing.T) {
 		members, invitees := createTestMembers(ctx, t, sat.DB.Console(), p, &user.ID)
 		members[user.ID] = *user
 
-		tokenInfo, err := sat.API.Console.Service.Token(ctx, console.AuthUser{Email: user.Email, Password: user.FullName})
-		require.NoError(t, err)
-
-		expire := time.Now().AddDate(0, 0, 1)
-		cookie := http.Cookie{
-			Name:    "_tokenKey",
-			Path:    "/",
-			Value:   tokenInfo.Token.String(),
-			Expires: expire,
-		}
-
 		tests := []struct {
 			search                            string
 			expectedMembers, expectedInvitees int
@@ -279,26 +245,14 @@ func TestGetProjectMembersAndInvitationsSearch(t *testing.T) {
 		}
 
 		for _, tt := range tests {
-			addr := planet.Satellites[0].API.Console.Listener.Addr().String()
-
-			endpoint := fmt.Sprintf("http://%s/api/v0/projects/%s/members?limit=100&page=1&order=1&order-direction=1&", addr, p.String())
+			endpoint := fmt.Sprintf("projects/%s/members?limit=100&page=1&order=1&order-direction=1&", p.String())
 			params := url.Values{}
 			params.Add("search", tt.search)
 			endpoint += params.Encode()
 
-			req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
+			body, status, err := doRequestWithAuth(ctx, t, sat, user, http.MethodGet, endpoint, nil)
 			require.NoError(t, err)
-
-			req.AddCookie(&cookie)
-
-			client := http.Client{}
-			res, err := client.Do(req)
-			require.NoError(t, err)
-			require.NotNil(t, res)
-
-			body, err := io.ReadAll(res.Body)
-			require.NoError(t, err)
-			require.NoError(t, res.Body.Close())
+			require.Equal(t, http.StatusOK, status)
 
 			var membersAndInvitations consoleapi.ProjectMembersPage
 			require.NoError(t, json.Unmarshal(body, &membersAndInvitations))
@@ -309,7 +263,7 @@ func TestGetProjectMembersAndInvitationsSearch(t *testing.T) {
 			require.Equal(t, tt.expectedInvitees, len(respInvitees))
 			if tt.search != "" {
 				for _, m := range respMembers {
-					containsSearch := strings.Contains(members[m.User.ID].Email, tt.search) || strings.Contains(members[m.User.ID].FullName, tt.search) || strings.Contains(members[m.User.ID].ShortName, tt.search)
+					containsSearch := strings.Contains(members[m.ID].Email, tt.search) || strings.Contains(members[m.ID].FullName, tt.search) || strings.Contains(members[m.ID].ShortName, tt.search)
 					require.True(t, containsSearch)
 				}
 				for _, inv := range respInvitees {
@@ -334,42 +288,19 @@ func TestGetProjectMembersAndInvitationsLimitAndPage(t *testing.T) {
 		members, _ := createTestMembers(ctx, t, sat.DB.Console(), p, &user.ID)
 		members[user.ID] = *user
 
-		tokenInfo, err := sat.API.Console.Service.Token(ctx, console.AuthUser{Email: user.Email, Password: user.FullName})
-		require.NoError(t, err)
-
-		expire := time.Now().AddDate(0, 0, 1)
-		cookie := http.Cookie{
-			Name:    "_tokenKey",
-			Path:    "/",
-			Value:   tokenInfo.Token.String(),
-			Expires: expire,
-		}
-
-		addr := planet.Satellites[0].API.Console.Listener.Addr().String()
-
 		limit := 1
 		page := 1
 		var previousResult console.ProjectMembersPage
 		for i := 0; i < 2; i++ {
-			endpoint := fmt.Sprintf("http://%s/api/v0/projects/%s/members?order=1&order-direction=1&", addr, p.String())
+			endpoint := fmt.Sprintf("projects/%s/members?order=1&order-direction=1&", p.String())
 			params := url.Values{}
 			params.Add("limit", fmt.Sprint(limit))
 			params.Add("page", fmt.Sprint(page))
 			endpoint += params.Encode()
 
-			req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
+			body, status, err := doRequestWithAuth(ctx, t, sat, user, http.MethodGet, endpoint, nil)
 			require.NoError(t, err)
-
-			req.AddCookie(&cookie)
-
-			client := http.Client{}
-			res, err := client.Do(req)
-			require.NoError(t, err)
-			require.NotNil(t, res)
-
-			body, err := io.ReadAll(res.Body)
-			require.NoError(t, err)
-			require.NoError(t, res.Body.Close())
+			require.Equal(t, http.StatusOK, status)
 
 			var membersAndInvitations console.ProjectMembersPage
 			require.NoError(t, json.Unmarshal(body, &membersAndInvitations))
@@ -401,19 +332,6 @@ func TestDeleteProjectMembers(t *testing.T) {
 
 		members, invitees := createTestMembers(ctx, t, sat.DB.Console(), p, &user.ID)
 
-		tokenInfo, err := sat.API.Console.Service.Token(ctx, console.AuthUser{Email: user.Email, Password: user.FullName})
-		require.NoError(t, err)
-
-		expire := time.Now().AddDate(0, 0, 1)
-		cookie := http.Cookie{
-			Name:    "_tokenKey",
-			Path:    "/",
-			Value:   tokenInfo.Token.String(),
-			Expires: expire,
-		}
-
-		addr := planet.Satellites[0].API.Console.Listener.Addr().String()
-
 		var emails string
 		var firstAppendDone bool
 		for _, m := range members {
@@ -431,27 +349,15 @@ func TestDeleteProjectMembers(t *testing.T) {
 			emails += e
 		}
 
-		endpoint := fmt.Sprintf("http://%s/api/v0/projects/%s/members?", addr, p.String())
+		endpoint := fmt.Sprintf("projects/%s/members?", p.String())
 		params := url.Values{}
 		params.Add("emails", emails)
 		endpoint += params.Encode()
 
-		req, err := http.NewRequestWithContext(ctx, "DELETE", endpoint, nil)
+		body, status, err := doRequestWithAuth(ctx, t, sat, user, http.MethodDelete, endpoint, nil)
 		require.NoError(t, err)
-
-		req.AddCookie(&cookie)
-
-		client := http.Client{}
-		res, err := client.Do(req)
-		require.NoError(t, err)
-		require.NotNil(t, res)
-
-		body, err := io.ReadAll(res.Body)
-		require.NoError(t, err)
-		require.NoError(t, res.Body.Close())
+		require.Equal(t, http.StatusOK, status)
 		require.NotContains(t, string(body), "error")
-
-		require.Equal(t, http.StatusOK, res.StatusCode)
 
 		page, err := sat.DB.Console().ProjectMembers().GetPagedWithInvitationsByProjectID(ctx, p, console.ProjectMembersCursor{Limit: 1, Page: 1})
 		require.NoError(t, err)
@@ -459,24 +365,106 @@ func TestDeleteProjectMembers(t *testing.T) {
 		require.Equal(t, user.ID, page.ProjectMembers[0].MemberID)
 
 		// test error
-		endpoint = fmt.Sprintf("http://%s/api/v0/projects/%s/members?", addr, p.String())
+		endpoint = fmt.Sprintf("projects/%s/members?", p.String())
 		params = url.Values{}
 		params.Add("emails", "nonmember@storj.test")
 		endpoint += params.Encode()
 
-		req, err = http.NewRequestWithContext(ctx, "DELETE", endpoint, nil)
+		body, status, err = doRequestWithAuth(ctx, t, sat, user, http.MethodDelete, endpoint, nil)
 		require.NoError(t, err)
-
-		req.AddCookie(&cookie)
-
-		client = http.Client{}
-		res, err = client.Do(req)
-		require.NoError(t, err)
-		require.NotNil(t, res)
-
-		body, err = io.ReadAll(res.Body)
-		require.NoError(t, err)
-		require.NoError(t, res.Body.Close())
+		require.Equal(t, http.StatusInternalServerError, status)
 		require.Contains(t, string(body), "error")
+	})
+}
+
+func TestEdgeURLOverrides(t *testing.T) {
+	var (
+		noOverridePlacementID      storj.PlacementConstraint
+		partialOverridePlacementID storj.PlacementConstraint = 1
+		fullOverridePlacementID    storj.PlacementConstraint = 2
+
+		authServiceURL         = "auth.storj.io"
+		publicLinksharingURL   = "public-link.storj.io"
+		internalLinksharingURL = "link.storj.io"
+	)
+
+	testplanet.Run(t, testplanet.Config{
+		SatelliteCount: 1, UplinkCount: 1,
+		Reconfigure: testplanet.Reconfigure{
+			Satellite: func(log *zap.Logger, index int, config *satellite.Config) {
+				err := config.Console.PlacementEdgeURLOverrides.Set(
+					fmt.Sprintf(
+						`{
+							"%d": {"authService": "%s"},
+							"%d": {
+								"authService": "%s",
+								"publicLinksharing": "%s",
+								"internalLinksharing": "%s"
+							}
+						}`,
+						partialOverridePlacementID, authServiceURL,
+						fullOverridePlacementID, authServiceURL, publicLinksharingURL, internalLinksharingURL,
+					),
+				)
+				require.NoError(t, err)
+			},
+		},
+	}, func(t *testing.T, ctx *testcontext.Context, planet *testplanet.Planet) {
+		sat := planet.Satellites[0]
+
+		project, err := sat.DB.Console().Projects().Get(ctx, planet.Uplinks[0].Projects[0].ID)
+		require.NoError(t, err)
+
+		user, err := sat.API.Console.Service.GetUser(ctx, project.OwnerID)
+		require.NoError(t, err)
+
+		for _, tt := range []struct {
+			name             string
+			placement        *storj.PlacementConstraint
+			expectedEdgeURLs *console.EdgeURLOverrides
+		}{
+			{"nil placement", nil, nil},
+			{"placement with no overrides", &noOverridePlacementID, nil},
+			{
+				"placement with partial override",
+				&partialOverridePlacementID,
+				&console.EdgeURLOverrides{AuthService: authServiceURL},
+			}, {
+				"placement with full override",
+				&fullOverridePlacementID,
+				&console.EdgeURLOverrides{
+					AuthService:         authServiceURL,
+					PublicLinksharing:   publicLinksharingURL,
+					InternalLinksharing: internalLinksharingURL,
+				},
+			},
+		} {
+			t.Run(tt.name, func(t *testing.T) {
+				result, err := sat.DB.Testing().RawDB().ExecContext(ctx,
+					"UPDATE projects SET default_placement = $1 WHERE id = $2",
+					tt.placement, project.ID,
+				)
+				require.NoError(t, err)
+
+				count, err := result.RowsAffected()
+				require.NoError(t, err)
+				require.EqualValues(t, 1, count)
+
+				body, status, err := doRequestWithAuth(ctx, t, sat, user, http.MethodGet, "projects", nil)
+				require.NoError(t, err)
+				require.Equal(t, http.StatusOK, status)
+
+				var infos []console.ProjectInfo
+				require.NoError(t, json.Unmarshal(body, &infos))
+				require.NotEmpty(t, infos)
+
+				if tt.expectedEdgeURLs == nil {
+					require.Nil(t, infos[0].EdgeURLOverrides)
+					return
+				}
+				require.NotNil(t, infos[0].EdgeURLOverrides)
+				require.Equal(t, *tt.expectedEdgeURLs, *infos[0].EdgeURLOverrides)
+			})
+		}
 	})
 }

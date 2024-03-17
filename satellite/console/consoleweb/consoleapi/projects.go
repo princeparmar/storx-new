@@ -19,6 +19,7 @@ import (
 	"storj.io/common/uuid"
 	"storj.io/storj/private/web"
 	"storj.io/storj/satellite/console"
+	"storj.io/storj/satellite/console/consoleweb/consoleapi/utils"
 )
 
 // Projects is an api controller that exposes projects related functionality.
@@ -43,8 +44,11 @@ type ProjectMembersPage struct {
 
 // Member is a project member in a ProjectMembersPage.
 type Member struct {
-	User     *console.User `json:"user"`
-	JoinedAt time.Time     `json:"joinedAt"`
+	ID        uuid.UUID `json:"id"`
+	FullName  string    `json:"fullName"`
+	ShortName string    `json:"shortName"`
+	Email     string    `json:"email"`
+	JoinedAt  time.Time `json:"joinedAt"`
 }
 
 // Invitation is a project invitation in a ProjectMembersPage.
@@ -64,7 +68,6 @@ func NewProjects(log *zap.Logger, service *console.Service) *Projects {
 
 // GetUserProjects returns the user's projects.
 func (p *Projects) GetUserProjects(w http.ResponseWriter, r *http.Request) {
-
 	ctx := r.Context()
 	var err error
 	defer mon.Task()(&ctx)(&err)
@@ -84,7 +87,7 @@ func (p *Projects) GetUserProjects(w http.ResponseWriter, r *http.Request) {
 
 	response := make([]console.ProjectInfo, 0)
 	for _, project := range projects {
-		response = append(response, project.GetMinimal())
+		response = append(response, p.service.GetMinimalProject(&project))
 	}
 
 	err = json.NewEncoder(w).Encode(response)
@@ -157,7 +160,7 @@ func (p *Projects) GetPagedProjects(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for _, project := range projectsPage.Projects {
-		pageToSend.Projects = append(pageToSend.Projects, project.GetMinimal())
+		pageToSend.Projects = append(pageToSend.Projects, p.service.GetMinimalProject(&project))
 	}
 
 	err = json.NewEncoder(w).Encode(pageToSend)
@@ -201,6 +204,63 @@ func (p *Projects) UpdateProject(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		if console.ErrInvalidProjectLimit.Has(err) {
+			p.serveJSONError(ctx, w, http.StatusBadRequest, err)
+			return
+		}
+
+		p.serveJSONError(ctx, w, http.StatusInternalServerError, err)
+	}
+}
+
+// RequestLimitIncrease handles requesting limit increase for projects.
+func (p *Projects) RequestLimitIncrease(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	var err error
+	defer mon.Task()(&ctx)(&err)
+
+	var ok bool
+	var idParam string
+
+	if idParam, ok = mux.Vars(r)["id"]; !ok {
+		p.serveJSONError(ctx, w, http.StatusBadRequest, errs.New("missing project id route param"))
+		return
+	}
+
+	id, err := uuid.FromString(idParam)
+	if err != nil {
+		p.serveJSONError(ctx, w, http.StatusBadRequest, err)
+		return
+	}
+
+	var payload console.LimitRequestInfo
+
+	err = json.NewDecoder(r.Body).Decode(&payload)
+	if err != nil {
+		p.serveJSONError(ctx, w, http.StatusBadRequest, err)
+		return
+	}
+
+	if payload.LimitType == "" {
+		p.serveJSONError(ctx, w, http.StatusBadRequest, errs.New("missing limit type"))
+		return
+	}
+	if payload.DesiredLimit == 0 {
+		p.serveJSONError(ctx, w, http.StatusBadRequest, errs.New("missing desired limit"))
+		return
+	}
+	if payload.CurrentLimit == 0 {
+		p.serveJSONError(ctx, w, http.StatusBadRequest, errs.New("missing current limit"))
+		return
+	}
+
+	err = p.service.RequestLimitIncrease(ctx, id, payload)
+	if err != nil {
+		if console.ErrUnauthorized.Has(err) {
+			p.serveJSONError(ctx, w, http.StatusUnauthorized, err)
+			return
+		}
+
 		p.serveJSONError(ctx, w, http.StatusInternalServerError, err)
 	}
 }
@@ -226,6 +286,11 @@ func (p *Projects) CreateProject(w http.ResponseWriter, r *http.Request) {
 
 	project, err := p.service.CreateProject(ctx, payload)
 	if err != nil {
+		if console.ErrBotUser.Has(err) {
+			p.serveJSONError(ctx, w, http.StatusForbidden, err)
+			return
+		}
+
 		if console.ErrUnauthorized.Has(err) {
 			p.serveJSONError(ctx, w, http.StatusUnauthorized, err)
 			return
@@ -263,6 +328,10 @@ func (p *Projects) GetMembersAndInvitations(w http.ResponseWriter, r *http.Reque
 
 	project, err := p.service.GetProject(ctx, publicID)
 	if err != nil {
+		if console.ErrUnauthorized.Has(err) || console.ErrNoMembership.Has(err) {
+			p.serveJSONError(ctx, w, http.StatusUnauthorized, err)
+			return
+		}
 		p.serveJSONError(ctx, w, http.StatusInternalServerError, err)
 		return
 	}
@@ -341,8 +410,11 @@ func (p *Projects) GetMembersAndInvitations(w http.ResponseWriter, r *http.Reque
 			return
 		}
 		member := Member{
-			User:     user,
-			JoinedAt: m.CreatedAt,
+			ID:        user.ID,
+			FullName:  user.FullName,
+			ShortName: user.ShortName,
+			Email:     user.Email,
+			JoinedAt:  m.CreatedAt,
 		}
 		memberPage.Members = append(memberPage.Members, member)
 	}
@@ -393,11 +465,123 @@ func (p *Projects) GetSalt(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// InviteUsers sends invites to a given project(id) to the given users (emails).
-func (p *Projects) InviteUsers(w http.ResponseWriter, r *http.Request) {
+// GetEmissionImpact returns CO2 emission impact.
+func (p *Projects) GetEmissionImpact(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	var err error
 	defer mon.Task()(&ctx)(&err)
+
+	w.Header().Set("Content-Type", "application/json")
+
+	idParam, ok := mux.Vars(r)["id"]
+	if !ok {
+		p.serveJSONError(ctx, w, http.StatusBadRequest, errs.New("missing id route param"))
+		return
+	}
+
+	id, err := uuid.FromString(idParam)
+	if err != nil {
+		p.serveJSONError(ctx, w, http.StatusBadRequest, err)
+	}
+
+	impact, err := p.service.GetEmissionImpact(ctx, id)
+	if err != nil {
+		if console.ErrUnauthorized.Has(err) || console.ErrNoMembership.Has(err) {
+			p.serveJSONError(ctx, w, http.StatusUnauthorized, err)
+			return
+		}
+		p.serveJSONError(ctx, w, http.StatusInternalServerError, err)
+		return
+	}
+
+	err = json.NewEncoder(w).Encode(impact)
+	if err != nil {
+		p.serveJSONError(ctx, w, http.StatusInternalServerError, err)
+	}
+}
+
+// GetConfig returns config specific to a project.
+func (p *Projects) GetConfig(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	var err error
+	defer mon.Task()(&ctx)(&err)
+
+	w.Header().Set("Content-Type", "application/json")
+
+	idParam, ok := mux.Vars(r)["id"]
+	if !ok {
+		p.serveJSONError(ctx, w, http.StatusBadRequest, errs.New("missing id route param"))
+		return
+	}
+
+	id, err := uuid.FromString(idParam)
+	if err != nil {
+		p.serveJSONError(ctx, w, http.StatusBadRequest, err)
+	}
+
+	config, err := p.service.GetProjectConfig(ctx, id)
+	if err != nil {
+		if console.ErrUnauthorized.Has(err) || console.ErrNoMembership.Has(err) {
+			p.serveJSONError(ctx, w, http.StatusUnauthorized, err)
+			return
+		}
+		p.serveJSONError(ctx, w, http.StatusInternalServerError, err)
+		return
+	}
+
+	err = json.NewEncoder(w).Encode(config)
+	if err != nil {
+		p.serveJSONError(ctx, w, http.StatusInternalServerError, err)
+	}
+}
+
+// InviteUser sends a project invitation to a user.
+func (p *Projects) InviteUser(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	var err error
+	defer mon.Task()(&ctx)(&err)
+
+	idParam, ok := mux.Vars(r)["id"]
+	if !ok {
+		p.serveJSONError(ctx, w, http.StatusBadRequest, errs.New("missing project id route param"))
+		return
+	}
+	id, err := uuid.FromString(idParam)
+	if err != nil {
+		p.serveJSONError(ctx, w, http.StatusBadRequest, err)
+	}
+
+	email, ok := mux.Vars(r)["email"]
+	if !ok {
+		p.serveJSONError(ctx, w, http.StatusBadRequest, errs.New("missing email route param"))
+		return
+	}
+	email = strings.TrimSpace(email)
+
+	isValidEmail := utils.ValidateEmail(email)
+	if !isValidEmail {
+		p.serveJSONError(ctx, w, http.StatusBadRequest, console.ErrValidation.Wrap(errs.New("Invalid email.")))
+		return
+	}
+
+	_, err = p.service.InviteNewProjectMember(ctx, id, email)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if console.ErrUnauthorized.Has(err) || console.ErrNoMembership.Has(err) {
+			status = http.StatusUnauthorized
+		} else if console.ErrNotPaidTier.Has(err) {
+			status = http.StatusPaymentRequired
+		}
+		p.serveJSONError(ctx, w, status, err)
+	}
+}
+
+// ReinviteUsers resends expired project invitations.
+func (p *Projects) ReinviteUsers(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	var err error
+	defer mon.Task()(&ctx)(&err)
+
 	idParam, ok := mux.Vars(r)["id"]
 	if !ok {
 		p.serveJSONError(ctx, w, http.StatusBadRequest, errs.New("missing project id route param"))
@@ -422,9 +606,15 @@ func (p *Projects) InviteUsers(w http.ResponseWriter, r *http.Request) {
 		data.Emails[i] = strings.TrimSpace(email)
 	}
 
-	_, err = p.service.InviteProjectMembers(ctx, id, data.Emails)
+	_, err = p.service.ReinviteProjectMembers(ctx, id, data.Emails)
 	if err != nil {
-		p.serveJSONError(ctx, w, http.StatusInternalServerError, err)
+		status := http.StatusInternalServerError
+		if console.ErrUnauthorized.Has(err) || console.ErrNoMembership.Has(err) {
+			status = http.StatusUnauthorized
+		} else if console.ErrNotPaidTier.Has(err) {
+			status = http.StatusPaymentRequired
+		}
+		p.serveJSONError(ctx, w, status, err)
 	}
 }
 
@@ -482,7 +672,7 @@ func (p *Projects) GetUserInvitations(w http.ResponseWriter, r *http.Request) {
 		CreatedAt          time.Time `json:"createdAt"`
 	}
 
-	response := make([]jsonInvite, 0)
+	response := []jsonInvite{}
 
 	for _, invite := range invites {
 		proj, err := p.service.GetProjectNoAuth(ctx, invite.ProjectID)
@@ -556,6 +746,8 @@ func (p *Projects) RespondToInvitation(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusNotFound
 		case console.ErrValidation.Has(err):
 			status = http.StatusBadRequest
+		case console.ErrBotUser.Has(err):
+			status = http.StatusForbidden
 		}
 		p.serveJSONError(ctx, w, status, err)
 	}
@@ -590,6 +782,10 @@ func (p *Projects) DeleteMembersAndInvitations(w http.ResponseWriter, r *http.Re
 
 	err = p.service.DeleteProjectMembersAndInvitations(ctx, id, emails)
 	if err != nil {
+		if console.ErrUnauthorized.Has(err) || console.ErrNoMembership.Has(err) {
+			p.serveJSONError(ctx, w, http.StatusUnauthorized, err)
+			return
+		}
 		p.serveJSONError(ctx, w, http.StatusInternalServerError, err)
 	}
 }

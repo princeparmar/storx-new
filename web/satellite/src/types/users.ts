@@ -1,4 +1,4 @@
-// Copyright (C) 2019 Storx Labs, Inc.
+// Copyright (C) 2019 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 import { Duration } from '@/utils/time';
@@ -70,6 +70,18 @@ export interface UsersApi {
      * @throws Error
      */
     generateUserMFARecoveryCodes(): Promise<string[]>;
+    /**
+     * Generate user's MFA recovery codes requiring a code.
+     *
+     * @throws Error
+     */
+    regenerateUserMFARecoveryCodes(passcode?: string, recoveryCode?: string): Promise<string[]>;
+    /**
+     * Request increase for user's project limit.
+     *
+     * @throws Error
+     */
+    requestProjectLimitIncrease(limit: string): Promise<void>;
 }
 
 /**
@@ -96,9 +108,12 @@ export class User {
         public haveSalesContact: boolean = false,
         public mfaRecoveryCodeCount: number = 0,
         public _createdAt: string | null = null,
+        public pendingVerification: boolean = false,
+        public trialExpiration: Date | null = null,
+        public hasVarPartner: boolean = false,
         public signupPromoCode: string = '',
         public freezeStatus: FreezeStatus = new FreezeStatus(),
-    ) {}
+    ) { }
 
     public get createdAt(): Date | null {
         if (!this._createdAt) {
@@ -114,6 +129,25 @@ export class User {
     public getFullName(): string {
         return !this.shortName ? this.fullName : this.shortName;
     }
+
+    public getExpirationInfo(daysBeforeNotify: number): ExpirationInfo {
+        if (!this.trialExpiration) return { isCloseToExpiredTrial: false, days: 0 };
+
+        const now = new Date();
+        const diff = this.trialExpiration.getTime() - now.getTime();
+        const millisecondsInDay = 24 * 60 * 60 * 1000;
+        const daysBeforeNotifyInMilliseconds = daysBeforeNotify * millisecondsInDay;
+
+        return {
+            isCloseToExpiredTrial: diff > 0 && diff < daysBeforeNotifyInMilliseconds,
+            days: Math.round(Math.abs(diff) / millisecondsInDay),
+        };
+    }
+}
+
+export type ExpirationInfo = {
+    isCloseToExpiredTrial: boolean;
+    days: number;
 }
 
 /**
@@ -123,7 +157,7 @@ export class UpdatedUser {
     public constructor(
         public fullName: string = '',
         public shortName: string = '',
-    ) {}
+    ) { }
 
     public setFullName(value: string): void {
         this.fullName = value.trim();
@@ -139,13 +173,28 @@ export class UpdatedUser {
 }
 
 /**
+ * Describes data used to set up user account.
+ */
+export interface AccountSetupData {
+    fullName: string
+    isProfessional: boolean
+    haveSalesContact: boolean
+    position?: string
+    companyName?: string
+    employeeCount?: string
+    storageNeeds?: string
+    storageUseCase?: string
+    functionalArea?: string
+}
+
+/**
  * DisableMFARequest represents a request to disable multi-factor authentication.
  */
 export class DisableMFARequest {
     public constructor(
         public passcode: string = '',
         public recoveryCode: string = '',
-    ) {}
+    ) { }
 }
 
 /**
@@ -155,7 +204,7 @@ export class TokenInfo {
     public constructor(
         public token: string,
         public expiresAt: Date,
-    ) {}
+    ) { }
 }
 
 /**
@@ -168,7 +217,8 @@ export class UserSettings {
         public onboardingEnd = false,
         public passphrasePrompt = true,
         public onboardingStep: string | null = null,
-    ) {}
+        public noticeDismissal: NoticeDismissal = { fileGuide: false, serverSideEncryption: false, partnerUpgradeBanner: false, projectMembersPassphrase: false },
+    ) { }
 
     public get sessionDuration(): Duration | null {
         if (this._sessionDuration) {
@@ -178,12 +228,20 @@ export class UserSettings {
     }
 }
 
+export interface NoticeDismissal {
+    fileGuide: boolean
+    serverSideEncryption: boolean
+    partnerUpgradeBanner: boolean
+    projectMembersPassphrase: boolean
+}
+
 export interface SetUserSettingsData {
     onboardingStart?: boolean
     onboardingEnd?: boolean;
     passphrasePrompt?: boolean;
     onboardingStep?: string | null;
     sessionDuration?: number;
+    noticeDismissal?: NoticeDismissal;
 }
 
 /**
@@ -193,5 +251,38 @@ export class FreezeStatus {
     public constructor(
         public frozen = false,
         public warned = false,
-    ) {}
+        public trialExpiredFrozen = false,
+    ) { }
 }
+
+/**
+ * OnboardingStep are the steps in the account setup dialog and onboarding stepper.
+ */
+export enum OnboardingStep {
+    AccountTypeSelection = 'AccountTypeSelection',
+    PersonalAccountForm = 'PersonalAccountForm',
+    PricingPlanSelection = 'PricingPlanSelection',
+    PricingPlan = 'PricingPlan',
+    BusinessAccountForm = 'BusinessAccountForm',
+    SetupComplete = 'SetupComplete',
+    EncryptionPassphrase = 'EncryptionPassphrase',
+    CreateBucket = 'CreateBucket',
+    UploadFiles = 'UploadFiles',
+    CreateAccess = 'CreateAccess',
+}
+
+export const ONBOARDING_STEPPER_STEPS = [
+    OnboardingStep.EncryptionPassphrase,
+    OnboardingStep.CreateBucket,
+    OnboardingStep.UploadFiles,
+    OnboardingStep.CreateAccess,
+];
+
+export const ACCOUNT_SETUP_STEPS = [
+    OnboardingStep.AccountTypeSelection,
+    OnboardingStep.PersonalAccountForm,
+    OnboardingStep.PricingPlanSelection,
+    OnboardingStep.PricingPlan,
+    OnboardingStep.BusinessAccountForm,
+    OnboardingStep.SetupComplete,
+];

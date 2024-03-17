@@ -5,6 +5,7 @@ package consoleweb
 
 import (
 	"encoding/json"
+	"time"
 
 	"storj.io/common/memory"
 	"storj.io/storj/satellite/console"
@@ -32,7 +33,6 @@ type FrontendConfig struct {
 	PublicLinksharingURL            string                `json:"publicLinksharingURL"`
 	PathwayOverviewEnabled          bool                  `json:"pathwayOverviewEnabled"`
 	Captcha                         console.CaptchaConfig `json:"captcha"`
-	AllProjectsDashboard            bool                  `json:"allProjectsDashboard"`
 	LimitsAreaEnabled               bool                  `json:"limitsAreaEnabled"`
 	DefaultPaidStorageLimit         memory.Size           `json:"defaultPaidStorageLimit"`
 	DefaultPaidBandwidthLimit       memory.Size           `json:"defaultPaidBandwidthLimit"`
@@ -46,9 +46,25 @@ type FrontendConfig struct {
 	PasswordMaximumLength           int                   `json:"passwordMaximumLength"`
 	ABTestingEnabled                bool                  `json:"abTestingEnabled"`
 	PricingPackagesEnabled          bool                  `json:"pricingPackagesEnabled"`
-	NewUploadModalEnabled           bool                  `json:"newUploadModalEnabled"`
 	GalleryViewEnabled              bool                  `json:"galleryViewEnabled"`
 	NeededTransactionConfirmations  int                   `json:"neededTransactionConfirmations"`
+	ObjectBrowserPaginationEnabled  bool                  `json:"objectBrowserPaginationEnabled"`
+	BillingFeaturesEnabled          bool                  `json:"billingFeaturesEnabled"`
+	StripePaymentElementEnabled     bool                  `json:"stripePaymentElementEnabled"`
+	UnregisteredInviteEmailsEnabled bool                  `json:"unregisteredInviteEmailsEnabled"`
+	FreeTierInvitesEnabled          bool                  `json:"freeTierInvitesEnabled"`
+	UserBalanceForUpgrade           int64                 `json:"userBalanceForUpgrade"`
+	LimitIncreaseRequestEnabled     bool                  `json:"limitIncreaseRequestEnabled"`
+	SignupActivationCodeEnabled     bool                  `json:"signupActivationCodeEnabled"`
+	AllowedUsageReportDateRange     time.Duration         `json:"allowedUsageReportDateRange"`
+	OnboardingStepperEnabled        bool                  `json:"onboardingStepperEnabled"`
+	EnableRegionTag                 bool                  `json:"enableRegionTag"`
+	EmissionImpactViewEnabled       bool                  `json:"emissionImpactViewEnabled"`
+	ApplicationsPageEnabled         bool                  `json:"applicationsPageEnabled"`
+	DaysBeforeTrialEndNotification  int                   `json:"daysBeforeTrialEndNotification"`
+	AnalyticsEnabled                bool                  `json:"analyticsEnabled"`
+	PlausibleScriptUrl              string                `json:"plausibleScriptUrl"`
+	PlausibleDomain                 string                `json:"plausibleDomain"`
 }
 
 // Satellites is a configuration value that contains a list of satellite names and addresses.

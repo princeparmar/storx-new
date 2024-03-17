@@ -14,34 +14,30 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+
+	"storj.io/storj/storagenode/blobstore"
 )
 
-var errSharingViolation = windows.Errno(32)
-
-func isBusy(err error) bool {
-	err = underlyingError(err)
-	return errors.Is(err, errSharingViolation)
-}
-
-func diskInfoFromPath(path string) (info DiskInfo, err error) {
+func diskInfoFromPath(path string) (info blobstore.DiskInfo, err error) {
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		absPath = path
 	}
 	var filesystemID string
 	var availableSpace int64
+	var totalSpace int64
 
-	availableSpace, err = getDiskFreeSpace(absPath)
+	totalSpace, availableSpace, err = getDiskFreeSpace(absPath)
 	if err != nil {
-		return DiskInfo{"", -1}, err
+		return blobstore.DiskInfo{ID: "", TotalSpace: -1, AvailableSpace: -1}, err
 	}
 
 	filesystemID, err = getVolumeSerialNumber(absPath)
 	if err != nil {
-		return DiskInfo{"", availableSpace}, err
+		return blobstore.DiskInfo{ID: "", TotalSpace: totalSpace, AvailableSpace: availableSpace}, err
 	}
 
-	return DiskInfo{filesystemID, availableSpace}, nil
+	return blobstore.DiskInfo{ID: filesystemID, TotalSpace: totalSpace, AvailableSpace: availableSpace}, nil
 }
 
 var (
@@ -49,16 +45,19 @@ var (
 	procGetDiskFreeSpace = kernel32.MustFindProc("GetDiskFreeSpaceExW")
 )
 
-func getDiskFreeSpace(path string) (int64, error) {
+func getDiskFreeSpace(path string) (total, free int64, err error) {
 	path16, err := windows.UTF16PtrFromString(path)
 	if err != nil {
-		return -1, err
+		return -1, -1, err
 	}
+	// See https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getdiskfreespaceexw
+	_, _, err = procGetDiskFreeSpace.Call(uintptr(unsafe.Pointer(path16)),
+		uintptr(unsafe.Pointer(&free)),
+		uintptr(unsafe.Pointer(&total)),
+		0)
 
-	var bytes int64
-	_, _, err = procGetDiskFreeSpace.Call(uintptr(unsafe.Pointer(path16)), uintptr(unsafe.Pointer(&bytes)), 0, 0)
 	err = ignoreSuccess(err)
-	return bytes, err
+	return total, free, err
 }
 
 func getVolumeSerialNumber(path string) (string, error) {

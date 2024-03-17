@@ -8,10 +8,12 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"golang.org/x/exp/slices"
 
 	"storj.io/common/storj"
 	"storj.io/common/testcontext"
 	"storj.io/common/testrand"
+	"storj.io/common/uuid"
 	"storj.io/storj/satellite/metabase"
 	"storj.io/storj/satellite/metabase/metabasetest"
 )
@@ -90,7 +92,7 @@ func TestGetObjectExactVersion(t *testing.T) {
 					{
 						ObjectStream: obj,
 						CreatedAt:    now,
-						Status:       metabase.Committed,
+						Status:       metabase.CommittedUnversioned,
 
 						Encryption: metabasetest.DefaultEncryption,
 					},
@@ -107,7 +109,6 @@ func TestGetObjectExactVersion(t *testing.T) {
 
 					Encryption: metabasetest.DefaultEncryption,
 				},
-				Version: 1,
 			}.Check(ctx, t, db)
 
 			metabasetest.GetObjectExactVersion{
@@ -148,40 +149,102 @@ func TestGetObjectExactVersion(t *testing.T) {
 				{
 					ObjectStream: obj,
 					CreatedAt:    now,
-					Status:       metabase.Committed,
+					Status:       metabase.CommittedUnversioned,
 					ExpiresAt:    &expiresAt,
 					Encryption:   metabasetest.DefaultEncryption,
 				},
 			}}.Check(ctx, t, db)
 		})
 
-		t.Run("Get object", func(t *testing.T) {
+		t.Run("get committed/deletemarker unversioned/versioned", func(t *testing.T) {
 			defer metabasetest.DeleteAll{}.Check(ctx, t, db)
 
-			metabasetest.CreateObject(ctx, t, db, obj, 0)
+			unversionedLocation := obj
+			unversioned := metabasetest.CreateObject(ctx, t, db, unversionedLocation, 0)
 
 			metabasetest.GetObjectExactVersion{
 				Opts: metabase.GetObjectExactVersion{
-					ObjectLocation: location,
-					Version:        1,
+					ObjectLocation: unversioned.Location(),
+					Version:        unversioned.Version,
 				},
-				Result: metabase.Object{
-					ObjectStream: obj,
-					CreatedAt:    now,
-					Status:       metabase.Committed,
+				Result: unversioned,
+			}.Check(ctx, t, db)
 
-					Encryption: metabasetest.DefaultEncryption,
+			versionedLocation := obj
+			versionedLocation.Version++
+			versioned := metabasetest.CreateObjectVersioned(ctx, t, db, versionedLocation, 0)
+
+			metabasetest.GetObjectExactVersion{
+				Opts: metabase.GetObjectExactVersion{
+					ObjectLocation: versioned.Location(),
+					Version:        versioned.Version,
 				},
+				Result: versioned,
+			}.Check(ctx, t, db)
+
+			markerLocation := obj
+			markerLocation.StreamID = uuid.UUID{}
+			markerLocation.Version = versioned.Version + 1
+			versionedMarker := metabase.Object{
+				ObjectStream: markerLocation,
+				CreatedAt:    time.Now(),
+				Status:       metabase.DeleteMarkerVersioned,
+			}
+
+			// this creates a versioned delete marker
+			metabasetest.DeleteObjectLastCommitted{
+				Opts: metabase.DeleteObjectLastCommitted{
+					ObjectLocation: location,
+					Versioned:      true,
+				},
+				Result: metabase.DeleteObjectResult{
+					Markers: []metabase.Object{versionedMarker},
+				},
+				OutputMarkerStreamID: &versionedMarker.StreamID,
+			}.Check(ctx, t, db)
+
+			metabasetest.GetObjectExactVersion{
+				Opts: metabase.GetObjectExactVersion{
+					ObjectLocation: versionedMarker.Location(),
+					Version:        versionedMarker.Version,
+				},
+				Result: versionedMarker,
+			}.Check(ctx, t, db)
+
+			unversionedMarkerLocation := obj
+			unversionedMarkerLocation.StreamID = uuid.UUID{}
+			unversionedMarkerLocation.Version = versionedMarker.Version + 1
+			unversionedMarker := metabase.Object{
+				ObjectStream: unversionedMarkerLocation,
+				CreatedAt:    time.Now(),
+				Status:       metabase.DeleteMarkerUnversioned,
+			}
+
+			// this creates an unversioned delete marker and replace unversioned object
+			metabasetest.DeleteObjectLastCommitted{
+				Opts: metabase.DeleteObjectLastCommitted{
+					ObjectLocation: location,
+					Suspended:      true,
+				},
+				Result: metabase.DeleteObjectResult{
+					Removed: []metabase.Object{unversioned},
+					Markers: []metabase.Object{unversionedMarker},
+				},
+				OutputMarkerStreamID: &unversionedMarker.StreamID,
+			}.Check(ctx, t, db)
+
+			metabasetest.GetObjectExactVersion{
+				Opts: metabase.GetObjectExactVersion{
+					ObjectLocation: unversionedMarker.Location(),
+					Version:        unversionedMarker.Version,
+				},
+				Result: unversionedMarker,
 			}.Check(ctx, t, db)
 
 			metabasetest.Verify{Objects: []metabase.RawObject{
-				{
-					ObjectStream: obj,
-					CreatedAt:    now,
-					Status:       metabase.Committed,
-
-					Encryption: metabasetest.DefaultEncryption,
-				},
+				metabase.RawObject(versionedMarker),
+				metabase.RawObject(unversionedMarker),
+				metabase.RawObject(versioned),
 			}}.Check(ctx, t, db)
 		})
 	})
@@ -228,7 +291,6 @@ func TestGetObjectLastCommitted(t *testing.T) {
 					ObjectStream: obj,
 					Encryption:   metabasetest.DefaultEncryption,
 				},
-				Version: 1,
 			}.Check(ctx, t, db)
 
 			metabasetest.GetObjectLastCommitted{
@@ -275,7 +337,7 @@ func TestGetObjectLastCommitted(t *testing.T) {
 				Result: metabase.Object{
 					ObjectStream:                  obj,
 					CreatedAt:                     now,
-					Status:                        metabase.Committed,
+					Status:                        metabase.CommittedUnversioned,
 					Encryption:                    metabasetest.DefaultEncryption,
 					EncryptedMetadataNonce:        encryptedMetadataNonce[:],
 					EncryptedMetadata:             encryptedMetadata,
@@ -287,7 +349,7 @@ func TestGetObjectLastCommitted(t *testing.T) {
 				{
 					ObjectStream:                  obj,
 					CreatedAt:                     now,
-					Status:                        metabase.Committed,
+					Status:                        metabase.CommittedUnversioned,
 					Encryption:                    metabasetest.DefaultEncryption,
 					EncryptedMetadataNonce:        encryptedMetadataNonce[:],
 					EncryptedMetadata:             encryptedMetadata,
@@ -321,7 +383,7 @@ func TestGetObjectLastCommitted(t *testing.T) {
 				Result: metabase.Object{
 					ObjectStream: firstObject,
 					CreatedAt:    now,
-					Status:       metabase.Committed,
+					Status:       metabase.CommittedUnversioned,
 					Encryption:   metabasetest.DefaultEncryption,
 				},
 			}.Check(ctx, t, db)
@@ -330,16 +392,85 @@ func TestGetObjectLastCommitted(t *testing.T) {
 				{
 					ObjectStream: firstObject,
 					CreatedAt:    now,
-					Status:       metabase.Committed,
+					Status:       metabase.CommittedUnversioned,
 					Encryption:   metabasetest.DefaultEncryption,
 				},
 				metabase.RawObject(secondObject),
 			}}.Check(ctx, t, db)
 		})
 
+		t.Run("Get object last committed version, multiple versions", func(t *testing.T) {
+			defer metabasetest.DeleteAll{}.Check(ctx, t, db)
+
+			first := obj
+			first.Version = metabase.Version(10)
+			firstObject := metabasetest.CreateObjectVersioned(ctx, t, db, first, 0)
+
+			second := obj
+			second.Version = metabase.Version(11)
+			secondObject := metabasetest.CreateObjectVersioned(ctx, t, db, second, 0)
+
+			metabasetest.GetObjectLastCommitted{
+				Opts: metabase.GetObjectLastCommitted{
+					ObjectLocation: location,
+				},
+				Result: secondObject,
+			}.Check(ctx, t, db)
+
+			metabasetest.Verify{Objects: []metabase.RawObject{
+				metabase.RawObject(firstObject),
+				metabase.RawObject(secondObject),
+			}}.Check(ctx, t, db)
+		})
+
+		t.Run("Get object delete marker, multiple versions", func(t *testing.T) {
+			defer metabasetest.DeleteAll{}.Check(ctx, t, db)
+
+			first := obj
+			first.Version = metabase.Version(5)
+			firstObject := metabasetest.CreateObjectVersioned(ctx, t, db, first, 0)
+
+			second := obj
+			second.Version = metabase.Version(8)
+			secondObject := metabasetest.CreateObjectVersioned(ctx, t, db, second, 0)
+
+			result, err := db.DeleteObjectLastCommitted(ctx, metabase.DeleteObjectLastCommitted{
+				ObjectLocation: second.Location(),
+				Versioned:      true,
+			})
+			require.NoError(t, err)
+
+			metabasetest.GetObjectLastCommitted{
+				Opts: metabase.GetObjectLastCommitted{
+					ObjectLocation: second.Location(),
+				},
+				ErrClass: &metabase.ErrObjectNotFound,
+			}.Check(ctx, t, db)
+
+			third := obj
+			third.Version = metabase.Version(10)
+			thirdObject := metabasetest.CreateObjectVersioned(ctx, t, db, third, 0)
+
+			metabasetest.GetObjectLastCommitted{
+				Opts: metabase.GetObjectLastCommitted{
+					ObjectLocation: second.Location(),
+				},
+				Result: thirdObject,
+			}.Check(ctx, t, db)
+
+			metabasetest.Verify{Objects: []metabase.RawObject{
+				metabase.RawObject(result.Markers[0]),
+				metabase.RawObject(firstObject),
+				metabase.RawObject(secondObject),
+				metabase.RawObject(thirdObject),
+			}}.Check(ctx, t, db)
+		})
+
 		t.Run("Get latest copied object version with duplicate metadata", func(t *testing.T) {
 			defer metabasetest.DeleteAll{}.Check(ctx, t, db)
+
 			copyObjStream := metabasetest.RandObjectStream()
+			copyObjStream.Version = 1 // auto assigned the first available version
 			originalObject := metabasetest.CreateObject(ctx, t, db, obj, 0)
 
 			copiedObj, _, _ := metabasetest.CreateObjectCopy{
@@ -349,11 +480,11 @@ func TestGetObjectLastCommitted(t *testing.T) {
 
 			metabasetest.DeleteObjectExactVersion{
 				Opts: metabase.DeleteObjectExactVersion{
-					Version:        1,
+					Version:        obj.Version,
 					ObjectLocation: obj.Location(),
 				},
 				Result: metabase.DeleteObjectResult{
-					Objects: []metabase.Object{originalObject},
+					Removed: []metabase.Object{originalObject},
 				},
 			}.Check(ctx, t, db)
 
@@ -374,7 +505,7 @@ func TestGetObjectLastCommitted(t *testing.T) {
 						StreamID:   copiedObj.StreamID,
 					},
 					CreatedAt:                     now,
-					Status:                        metabase.Committed,
+					Status:                        metabase.CommittedUnversioned,
 					Encryption:                    metabasetest.DefaultEncryption,
 					EncryptedMetadata:             copiedObj.EncryptedMetadata,
 					EncryptedMetadataNonce:        copiedObj.EncryptedMetadataNonce,
@@ -474,7 +605,7 @@ func TestGetSegmentByPosition(t *testing.T) {
 					{
 						ObjectStream: obj1.ObjectStream,
 						CreatedAt:    now,
-						Status:       metabase.Committed,
+						Status:       metabase.CommittedUnversioned,
 						SegmentCount: 1,
 
 						TotalPlainSize:     512,
@@ -487,7 +618,7 @@ func TestGetSegmentByPosition(t *testing.T) {
 						ObjectStream: obj2.ObjectStream,
 						CreatedAt:    now,
 						ExpiresAt:    obj2.ExpiresAt,
-						Status:       metabase.Committed,
+						Status:       metabase.CommittedUnversioned,
 						SegmentCount: 1,
 
 						TotalPlainSize:     512,
@@ -510,6 +641,7 @@ func TestGetSegmentByPosition(t *testing.T) {
 			objStream := metabasetest.RandObjectStream()
 			copyObjStream := metabasetest.RandObjectStream()
 			copyObjStream.ProjectID = objStream.ProjectID
+			copyObjStream.Version = 1 // auto assigned the first available version
 
 			obj := metabasetest.CreateObject(ctx, t, db, objStream, 1)
 
@@ -607,7 +739,7 @@ func TestGetSegmentByPosition(t *testing.T) {
 					{
 						ObjectStream: obj.ObjectStream,
 						CreatedAt:    now,
-						Status:       metabase.Committed,
+						Status:       metabase.CommittedUnversioned,
 						SegmentCount: 1,
 
 						TotalPlainSize:     512,
@@ -620,7 +752,7 @@ func TestGetSegmentByPosition(t *testing.T) {
 						ObjectStream: copyObjStream,
 						CreatedAt:    now,
 						ExpiresAt:    obj.ExpiresAt,
-						Status:       metabase.Committed,
+						Status:       metabase.CommittedUnversioned,
 						SegmentCount: 1,
 
 						TotalPlainSize:     512,
@@ -645,13 +777,13 @@ func TestGetSegmentByPosition(t *testing.T) {
 			objStream := metabasetest.RandObjectStream()
 			copyObjStream := metabasetest.RandObjectStream()
 			copyObjStream.ProjectID = objStream.ProjectID
+			copyObjStream.Version = 1 // auto assigned the first available version
 
 			metabasetest.BeginObjectExactVersion{
 				Opts: metabase.BeginObjectExactVersion{
 					ObjectStream: objStream,
 					Encryption:   metabasetest.DefaultEncryption,
 				},
-				Version: obj.Version,
 			}.Check(ctx, t, db)
 
 			metabasetest.CommitInlineSegment{
@@ -778,7 +910,7 @@ func TestGetSegmentByPosition(t *testing.T) {
 					{
 						ObjectStream: obj.ObjectStream,
 						CreatedAt:    now,
-						Status:       metabase.Committed,
+						Status:       metabase.CommittedUnversioned,
 						SegmentCount: 1,
 
 						Encryption: metabasetest.DefaultEncryption,
@@ -787,7 +919,7 @@ func TestGetSegmentByPosition(t *testing.T) {
 						ObjectStream: copyObjStream,
 						CreatedAt:    now,
 						ExpiresAt:    obj.ExpiresAt,
-						Status:       metabase.Committed,
+						Status:       metabase.CommittedUnversioned,
 						SegmentCount: 1,
 
 						EncryptedMetadataNonce:        newEncryptedMetadataKeyNonce[:],
@@ -809,13 +941,13 @@ func TestGetSegmentByPosition(t *testing.T) {
 			copyObjStream := metabasetest.RandObjectStream()
 			data := testrand.Bytes(1024)
 			copyObjStream.ProjectID = objStream.ProjectID
+			copyObjStream.Version = 1 // auto assigned the first available version
 
 			metabasetest.BeginObjectExactVersion{
 				Opts: metabase.BeginObjectExactVersion{
 					ObjectStream: objStream,
 					Encryption:   metabasetest.DefaultEncryption,
 				},
-				Version: obj.Version,
 			}.Check(ctx, t, db)
 
 			metabasetest.CommitInlineSegment{
@@ -949,7 +1081,7 @@ func TestGetSegmentByPosition(t *testing.T) {
 					{
 						ObjectStream: obj.ObjectStream,
 						CreatedAt:    now,
-						Status:       metabase.Committed,
+						Status:       metabase.CommittedUnversioned,
 						SegmentCount: 1,
 
 						Encryption: metabasetest.DefaultEncryption,
@@ -960,7 +1092,7 @@ func TestGetSegmentByPosition(t *testing.T) {
 						ObjectStream: copyObjStream,
 						CreatedAt:    now,
 						ExpiresAt:    obj.ExpiresAt,
-						Status:       metabase.Committed,
+						Status:       metabase.CommittedUnversioned,
 						SegmentCount: 1,
 
 						EncryptedMetadataNonce:        newEncryptedMetadataKeyNonce[:],
@@ -1053,7 +1185,7 @@ func TestGetLatestObjectLastSegment(t *testing.T) {
 					{
 						ObjectStream: obj,
 						CreatedAt:    now,
-						Status:       metabase.Committed,
+						Status:       metabase.CommittedUnversioned,
 						SegmentCount: 2,
 
 						TotalPlainSize:     1024,
@@ -1172,6 +1304,7 @@ func TestGetLatestObjectLastSegment(t *testing.T) {
 			objStream := metabasetest.RandObjectStream()
 			copyObjStream := metabasetest.RandObjectStream()
 			copyObjStream.ProjectID = objStream.ProjectID
+			copyObjStream.Version = 1 // auto assigned the first available version
 			objLocation := objStream.Location()
 			copyLocation := copyObjStream.Location()
 
@@ -1180,7 +1313,6 @@ func TestGetLatestObjectLastSegment(t *testing.T) {
 					ObjectStream: objStream,
 					Encryption:   metabasetest.DefaultEncryption,
 				},
-				Version: obj.Version,
 			}.Check(ctx, t, db)
 
 			metabasetest.CommitInlineSegment{
@@ -1302,7 +1434,7 @@ func TestGetLatestObjectLastSegment(t *testing.T) {
 					{
 						ObjectStream: obj.ObjectStream,
 						CreatedAt:    now,
-						Status:       metabase.Committed,
+						Status:       metabase.CommittedUnversioned,
 						SegmentCount: 1,
 
 						Encryption: metabasetest.DefaultEncryption,
@@ -1311,7 +1443,7 @@ func TestGetLatestObjectLastSegment(t *testing.T) {
 						ObjectStream: copyObjStream,
 						CreatedAt:    now,
 						ExpiresAt:    obj.ExpiresAt,
-						Status:       metabase.Committed,
+						Status:       metabase.CommittedUnversioned,
 						SegmentCount: 1,
 
 						EncryptedMetadataNonce:        newEncryptedMetadataKeyNonce[:],
@@ -1333,6 +1465,7 @@ func TestGetLatestObjectLastSegment(t *testing.T) {
 			copyObjStream := metabasetest.RandObjectStream()
 			data := testrand.Bytes(1024)
 			copyObjStream.ProjectID = objStream.ProjectID
+			copyObjStream.Version = 1 // auto assigned the first available version
 			objLocation := objStream.Location()
 			copyLocation := copyObjStream.Location()
 
@@ -1341,7 +1474,6 @@ func TestGetLatestObjectLastSegment(t *testing.T) {
 					ObjectStream: objStream,
 					Encryption:   metabasetest.DefaultEncryption,
 				},
-				Version: obj.Version,
 			}.Check(ctx, t, db)
 
 			metabasetest.CommitInlineSegment{
@@ -1469,7 +1601,7 @@ func TestGetLatestObjectLastSegment(t *testing.T) {
 					{
 						ObjectStream: obj.ObjectStream,
 						CreatedAt:    now,
-						Status:       metabase.Committed,
+						Status:       metabase.CommittedUnversioned,
 						SegmentCount: 1,
 
 						Encryption: metabasetest.DefaultEncryption,
@@ -1480,7 +1612,7 @@ func TestGetLatestObjectLastSegment(t *testing.T) {
 						ObjectStream: copyObjStream,
 						CreatedAt:    now,
 						ExpiresAt:    obj.ExpiresAt,
-						Status:       metabase.Committed,
+						Status:       metabase.CommittedUnversioned,
 						SegmentCount: 1,
 
 						EncryptedMetadataNonce:        newEncryptedMetadataKeyNonce[:],
@@ -1494,6 +1626,141 @@ func TestGetLatestObjectLastSegment(t *testing.T) {
 					metabase.RawSegment(expectedSegment),
 					metabase.RawSegment(expectedCopiedSegmentRaw),
 				},
+			}.Check(ctx, t, db)
+		})
+
+		t.Run("versioned", func(t *testing.T) {
+			defer metabasetest.DeleteAll{}.Check(ctx, t, db)
+
+			object := metabasetest.CreateObjectVersioned(ctx, t, db, obj, 2)
+
+			segments, err := db.TestingAllSegments(ctx)
+			require.NoError(t, err)
+			require.Len(t, segments, 2)
+
+			metabasetest.GetLatestObjectLastSegment{
+				Opts: metabase.GetLatestObjectLastSegment{
+					ObjectLocation: location,
+				},
+				Result: segments[1],
+			}.Check(ctx, t, db)
+
+			metabasetest.Verify{
+				Objects: []metabase.RawObject{
+					metabase.RawObject(object),
+				},
+				Segments: metabasetest.SegmentsToRaw(segments),
+			}.Check(ctx, t, db)
+		})
+
+		t.Run("versioned delete marker", func(t *testing.T) {
+			defer metabasetest.DeleteAll{}.Check(ctx, t, db)
+
+			object := metabasetest.CreateObjectVersioned(ctx, t, db, obj, 2)
+
+			segments, err := db.TestingAllSegments(ctx)
+			require.NoError(t, err)
+			require.Len(t, segments, 2)
+
+			markerLocation := obj
+			markerLocation.StreamID = uuid.UUID{}
+			markerLocation.Version = object.Version + 1
+			marker := metabase.Object{
+				ObjectStream: markerLocation,
+				CreatedAt:    time.Now(),
+				Status:       metabase.DeleteMarkerVersioned,
+			}
+
+			// this creates a versioned delete marker
+			metabasetest.DeleteObjectLastCommitted{
+				Opts: metabase.DeleteObjectLastCommitted{
+					ObjectLocation: location,
+					Versioned:      true,
+				},
+				Result: metabase.DeleteObjectResult{
+					Markers: []metabase.Object{marker},
+				},
+				OutputMarkerStreamID: &marker.StreamID,
+			}.Check(ctx, t, db)
+
+			metabasetest.GetLatestObjectLastSegment{
+				Opts: metabase.GetLatestObjectLastSegment{
+					ObjectLocation: location,
+				},
+				ErrClass: &metabase.ErrObjectNotFound,
+				ErrText:  "metabase: object or segment missing",
+			}.Check(ctx, t, db)
+
+			metabasetest.Verify{
+				Objects: []metabase.RawObject{
+					metabase.RawObject(object),
+					metabase.RawObject(marker),
+				},
+				Segments: metabasetest.SegmentsToRaw(segments),
+			}.Check(ctx, t, db)
+		})
+		t.Run("unversioned delete marker", func(t *testing.T) {
+			defer metabasetest.DeleteAll{}.Check(ctx, t, db)
+
+			unversioned := metabasetest.CreateObject(ctx, t, db, obj, 2)
+			versionedobj := obj
+			versionedobj.Version++
+			versionedobj.StreamID = testrand.UUID()
+			versioned := metabasetest.CreateObjectVersioned(ctx, t, db, versionedobj, 2)
+
+			segments, err := db.TestingAllSegments(ctx)
+			require.NoError(t, err)
+			require.Len(t, segments, 4)
+
+			metabasetest.Verify{
+				Objects: []metabase.RawObject{
+					metabase.RawObject(unversioned),
+					metabase.RawObject(versioned),
+				},
+				Segments: metabasetest.SegmentsToRaw(segments),
+			}.Check(ctx, t, db)
+
+			markerLocation := obj
+			markerLocation.StreamID = uuid.UUID{}
+			markerLocation.Version = unversioned.Version + 2
+			marker := metabase.Object{
+				ObjectStream: markerLocation,
+				CreatedAt:    time.Now(),
+				Status:       metabase.DeleteMarkerUnversioned,
+			}
+
+			// this creates a versioned delete marker
+			metabasetest.DeleteObjectLastCommitted{
+				Opts: metabase.DeleteObjectLastCommitted{
+					ObjectLocation: location,
+					Versioned:      false,
+					Suspended:      true,
+				},
+				Result: metabase.DeleteObjectResult{
+					Markers: []metabase.Object{marker},
+					Removed: []metabase.Object{unversioned},
+				},
+				OutputMarkerStreamID: &marker.StreamID,
+			}.Check(ctx, t, db)
+
+			metabasetest.GetLatestObjectLastSegment{
+				Opts: metabase.GetLatestObjectLastSegment{
+					ObjectLocation: location,
+				},
+				ErrClass: &metabase.ErrObjectNotFound,
+				ErrText:  "metabase: object or segment missing",
+			}.Check(ctx, t, db)
+
+			segments = slices.DeleteFunc(segments, func(seg metabase.Segment) bool {
+				return seg.StreamID == unversioned.StreamID
+			})
+
+			metabasetest.Verify{
+				Objects: []metabase.RawObject{
+					metabase.RawObject(versioned),
+					metabase.RawObject(marker),
+				},
+				Segments: metabasetest.SegmentsToRaw(segments),
 			}.Check(ctx, t, db)
 		})
 	})
@@ -1554,7 +1821,6 @@ func TestBucketEmpty(t *testing.T) {
 
 					Encryption: metabasetest.DefaultEncryption,
 				},
-				Version: 1,
 			}.Check(ctx, t, db)
 
 			metabasetest.BucketEmpty{

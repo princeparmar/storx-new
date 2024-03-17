@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Storx Labs, Inc.
+// Copyright (C) 2023 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 import { computed } from 'vue';
@@ -8,6 +8,7 @@ import { useConfigStore } from '@/store/modules/configStore';
 import { useProjectsStore } from '@/store/modules/projectsStore';
 import { useBucketsStore } from '@/store/modules/bucketsStore';
 import { AccessGrant, EdgeCredentials } from '@/types/accessGrants';
+import { Project } from '@/types/projects';
 
 const WORKER_ERR_MSG = 'Worker is not defined';
 
@@ -19,42 +20,52 @@ export function useLinksharing() {
 
     const worker = computed((): Worker | null => agStore.state.accessGrantsWebWorker);
 
-    async function generateFileOrFolderShareURL(path: string, isFolder = false): Promise<string> {
-        const fullPath = `${bucketsStore.state.fileComponentBucketName}/${path}`;
+    const selectedProject = computed<Project>(() => projectsStore.state.selectedProject);
+
+    const linksharingURL = computed<string>(() => {
+        return selectedProject.value.edgeURLOverrides?.internalLinksharing || configStore.state.config.linksharingURL;
+    });
+
+    const publicLinksharingURL = computed<string>(() => {
+        return selectedProject.value.edgeURLOverrides?.publicLinksharing || configStore.state.config.publicLinksharingURL;
+    });
+
+    async function generateFileOrFolderShareURL(bucketName: string, path: string, isFolder = false): Promise<string> {
+        const fullPath = `${bucketName}/${path}`;
         const type = isFolder ? 'folder' : 'object';
         return generateShareURL(fullPath, type);
     }
 
-    async function generateBucketShareURL(): Promise<string> {
-        return generateShareURL(bucketsStore.state.fileComponentBucketName, 'bucket');
+    async function generateBucketShareURL(bucketName: string): Promise<string> {
+        return generateShareURL(bucketName, 'bucket');
     }
 
     async function generateShareURL(path: string, type: string): Promise<string> {
         if (!worker.value) throw new Error(WORKER_ERR_MSG);
 
         const LINK_SHARING_AG_NAME = `${path}_shared-${type}_${new Date().toISOString()}`;
-        const grant: AccessGrant = await agStore.createAccessGrant(LINK_SHARING_AG_NAME, projectsStore.state.selectedProject.id);
-        const credentials: EdgeCredentials = await generateCredentials(grant.secret, path, null);
+        const grant: AccessGrant = await agStore.createAccessGrant(LINK_SHARING_AG_NAME, selectedProject.value.id);
+        const creds: EdgeCredentials = await generateCredentials(grant.secret, path, null);
 
-        return `${configStore.state.config.publicLinksharingURL}/${credentials.accessKeyId}/${encodeURIComponent(path.trim())}`;
+        return `${publicLinksharingURL.value}/s/${creds.accessKeyId}/${encodeURIComponent(path.trim())}`;
     }
 
-    async function generateObjectPreviewAndMapURL(path: string): Promise<string> {
+    async function generateObjectPreviewAndMapURL(bucketName: string, path: string): Promise<string> {
         if (!worker.value) throw new Error(WORKER_ERR_MSG);
 
-        path = bucketsStore.state.fileComponentBucketName + '/' + path;
+        path = bucketName + '/' + path;
         const now = new Date();
         const inOneDay = new Date(now.setDate(now.getDate() + 1));
         const creds: EdgeCredentials = await generateCredentials(bucketsStore.state.apiKey, path, inOneDay);
 
-        return `${configStore.state.config.linksharingURL}/s/${creds.accessKeyId}/${encodeURIComponent(path.trim())}`;
+        return `${linksharingURL.value}/s/${creds.accessKeyId}/${encodeURIComponent(path.trim())}`;
     }
 
     async function generateCredentials(cleanAPIKey: string, path: string, expiration: Date | null): Promise<EdgeCredentials> {
         if (!worker.value) throw new Error(WORKER_ERR_MSG);
 
         const satelliteNodeURL = configStore.state.config.satelliteNodeURL;
-        const salt = await projectsStore.getProjectSalt(projectsStore.state.selectedProject.id);
+        const salt = await projectsStore.getProjectSalt(selectedProject.value.id);
 
         worker.value.postMessage({
             'type': 'GenerateAccess',
@@ -100,7 +111,7 @@ export function useLinksharing() {
             throw new Error(data.error);
         }
 
-        return agStore.getEdgeCredentials(data.value, undefined, true);
+        return agStore.getEdgeCredentials(data.value, true);
     }
 
     return {

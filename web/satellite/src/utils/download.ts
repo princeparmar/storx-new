@@ -1,4 +1,4 @@
-// Copyright (C) 2021 Storx Labs, Inc.
+// Copyright (C) 2021 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 /**
@@ -13,5 +13,11 @@ export class Download {
         document.body.appendChild(elem);
         elem.click();
         document.body.removeChild(elem);
+    }
+
+    public static fileByLink(link: string): void {
+        const elem = window.document.createElement('a');
+        elem.href = link;
+        elem.click();
     }
 }

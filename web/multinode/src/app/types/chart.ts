@@ -32,7 +32,7 @@ export class DiskStatChartData {
 export class DiskStatDataSet {
     public constructor(
         public label: string = '',
-        public backgroundColor: string[] = ['#D6D6D6', '#b32006', '#8FA7C6'],
+        public backgroundColor: string[] = ['#D6D6D6', '#0059D0', '#8FA7C6'],
         public data: number[] = [],
     ) {}
 }

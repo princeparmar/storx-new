@@ -6,7 +6,6 @@ package overlay_test
 import (
 	"context"
 	"fmt"
-	"sort"
 	"testing"
 	"time"
 
@@ -74,7 +73,7 @@ func testCache(ctx *testcontext.Context, t *testing.T, store overlay.DB, nodeEve
 
 	serviceCtx, serviceCancel := context.WithCancel(ctx)
 	defer serviceCancel()
-	service, err := overlay.NewService(zaptest.NewLogger(t), store, nodeEvents, overlay.NewPlacementRules().CreateFilters, "", "", serviceConfig)
+	service, err := overlay.NewService(zaptest.NewLogger(t), store, nodeEvents, nodeselection.TestPlacementDefinitions(), "", "", serviceConfig)
 	require.NoError(t, err)
 	ctx.Go(func() error { return service.Run(serviceCtx) })
 	defer ctx.Check(service.Close)
@@ -372,7 +371,6 @@ func TestNodeInfo(t *testing.T) {
 
 		dossier := planet.StorageNodes[0].Contact.Service.Local()
 
-		assert.Equal(t, pb.NodeType_STORAGE, node.Type)
 		assert.NotEmpty(t, node.Operator.Email)
 		assert.NotEmpty(t, node.Operator.Wallet)
 		assert.Equal(t, dossier.Operator, node.Operator)
@@ -383,7 +381,7 @@ func TestNodeInfo(t *testing.T) {
 	})
 }
 
-func TestKnownReliable(t *testing.T) {
+func TestGetNodes(t *testing.T) {
 	testplanet.Run(t, testplanet.Config{
 		SatelliteCount: 1, StorageNodeCount: 6, UplinkCount: 1,
 		Reconfigure: testplanet.Reconfigure{
@@ -428,8 +426,8 @@ func TestKnownReliable(t *testing.T) {
 		err = oc.TestSuspendNodeOffline(ctx, planet.StorageNodes[3].ID(), time.Now())
 		require.NoError(t, err)
 
-		// Check that only storage nodes #4 and #5 are reliable
-		online, _, err := service.KnownReliable(ctx, []storj.NodeID{
+		// Check that the results of GetNodes match expectations.
+		selectedNodes, err := service.GetNodes(ctx, []storj.NodeID{
 			planet.StorageNodes[0].ID(),
 			planet.StorageNodes[1].ID(),
 			planet.StorageNodes[2].ID(),
@@ -438,20 +436,26 @@ func TestKnownReliable(t *testing.T) {
 			planet.StorageNodes[5].ID(),
 		})
 		require.NoError(t, err)
-		require.Len(t, online, 2)
+		require.Len(t, selectedNodes, 6)
+		require.False(t, selectedNodes[0].Online)
+		require.Zero(t, selectedNodes[0]) // node was disqualified
+		require.False(t, selectedNodes[1].Online)
+		require.False(t, selectedNodes[1].Suspended)
+		require.True(t, selectedNodes[2].Online)
+		require.True(t, selectedNodes[2].Suspended)
+		require.True(t, selectedNodes[3].Online)
+		require.True(t, selectedNodes[3].Suspended)
+		require.True(t, selectedNodes[4].Online)
+		require.False(t, selectedNodes[4].Suspended)
+		require.True(t, selectedNodes[5].Online)
+		require.False(t, selectedNodes[5].Suspended)
 
-		// Sort the storage nodes for predictable checks
-		expectedReliable := []storj.NodeURL{
-			planet.StorageNodes[4].NodeURL(),
-			planet.StorageNodes[5].NodeURL(),
-		}
-		sort.Slice(expectedReliable, func(i, j int) bool { return expectedReliable[i].ID.Less(expectedReliable[j].ID) })
-		sort.Slice(online, func(i, j int) bool { return online[i].ID.Less(online[j].ID) })
-
-		// Assert the reliable nodes are the expected ones
-		for i, node := range online {
-			assert.Equal(t, expectedReliable[i].ID, node.ID)
-			assert.Equal(t, expectedReliable[i].Address, node.Address.Address)
+		// Assert the returned nodes are the expected ones
+		for i, node := range selectedNodes {
+			if i == 0 {
+				continue
+			}
+			assert.Equal(t, planet.StorageNodes[i].ID(), node.ID)
 		}
 	})
 }
@@ -491,7 +495,6 @@ func TestUpdateCheckIn(t *testing.T) {
 					Address: info.Address.GetAddress(),
 				},
 			},
-			Type: pb.NodeType_STORAGE,
 			Operator: pb.NodeOperator{
 				Email:          info.Operator.GetEmail(),
 				Wallet:         info.Operator.GetWallet(),
@@ -998,5 +1001,80 @@ func TestUpdateCheckInBelowMinVersionEvent(t *testing.T) {
 
 		ne2 := getNE()
 		require.True(t, ne2.CreatedAt.After(ne1.CreatedAt))
+	})
+}
+
+func TestInsertOfflineNodeEvents(t *testing.T) {
+	tagName := "test-tag-name"
+	testplanet.Run(t, testplanet.Config{
+		SatelliteCount: 1, StorageNodeCount: 2, UplinkCount: 0,
+		Reconfigure: testplanet.Reconfigure{
+			Satellite: func(log *zap.Logger, index int, config *satellite.Config) {
+				config.Overlay.SendNodeEmails = true
+				// testplanet storagenode default version is "v0.0.1".
+				// set this as minimum version so storagenode doesn't start below it.
+				config.Overlay.Node.MinimumVersion = "v0.0.1"
+				config.Overlay.NodeTagsIPPortEmails = []string{tagName}
+			},
+		},
+	}, func(t *testing.T, ctx *testcontext.Context, planet *testplanet.Planet) {
+		service := planet.Satellites[0].Overlay.Service
+		node1 := planet.StorageNodes[0]
+		node2 := planet.StorageNodes[1]
+		node1.Contact.Chore.Pause(ctx)
+		node2.Contact.Chore.Pause(ctx)
+
+		require.NoError(t, service.UpdateNodeTags(ctx, []nodeselection.NodeTag{
+			{
+				NodeID:   node1.ID(),
+				SignedAt: time.Now(),
+				Signer:   node1.ID(),
+				Name:     tagName,
+				Value:    []byte{1, 2, 3},
+			},
+		}))
+
+		n1LastIPPort := "127.0.0.1:1234"
+
+		for i := 0; i < 2; i++ {
+			n := planet.StorageNodes[i]
+			lastIPPort := n1LastIPPort
+			if i == 1 {
+				lastIPPort = ""
+			}
+			require.NoError(t, planet.Satellites[0].DB.OverlayCache().UpdateCheckIn(ctx, overlay.NodeCheckInInfo{
+				NodeID:     n.ID(),
+				IsUp:       true,
+				LastIPPort: lastIPPort,
+				Address:    &pb.NodeAddress{Address: "127.0.0.1"},
+				Operator: &pb.NodeOperator{
+					Email: n.Config.Operator.Email,
+				},
+				Version: &pb.NodeVersion{Version: "v1.1.1"},
+			}, time.Now().Add(-48*time.Hour), overlay.NodeSelectionConfig{}))
+		}
+
+		n, err := service.Get(ctx, node1.ID())
+		require.NoError(t, err)
+		require.NotNil(t, n)
+
+		count, err := service.InsertOfflineNodeEvents(ctx, 0, 72*time.Hour, 3)
+		require.NoError(t, err)
+		require.Equal(t, 2, count)
+
+		ne, err := planet.Satellites[0].DB.NodeEvents().GetLatestByEmailAndEvent(ctx, node1.Config.Operator.Email, nodeevents.Offline)
+		require.NoError(t, err)
+		require.Equal(t, node1.ID(), ne.NodeID)
+		require.Equal(t, node1.Config.Operator.Email, ne.Email)
+		require.Equal(t, nodeevents.Offline, ne.Event)
+		require.NotNil(t, ne.LastIPPort)
+		require.Equal(t, n1LastIPPort, *ne.LastIPPort)
+
+		ne, err = planet.Satellites[0].DB.NodeEvents().GetLatestByEmailAndEvent(ctx, node2.Config.Operator.Email, nodeevents.Offline)
+		require.NoError(t, err)
+		require.Equal(t, node2.ID(), ne.NodeID)
+		require.Equal(t, node2.Config.Operator.Email, ne.Email)
+		require.Equal(t, nodeevents.Offline, ne.Event)
+		require.Nil(t, ne.LastIPPort)
 	})
 }

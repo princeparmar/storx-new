@@ -9,6 +9,7 @@ import (
 	"crypto/subtle"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"net/http"
 	"strings"
@@ -19,8 +20,10 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"storj.io/common/errs2"
+	"storj.io/storj/private/emptyfs"
 	"storj.io/storj/satellite/accounting"
-	adminui "storj.io/storj/satellite/admin/ui"
+	backoffice "storj.io/storj/satellite/admin/back-office"
+	"storj.io/storj/satellite/analytics"
 	"storj.io/storj/satellite/attribution"
 	"storj.io/storj/satellite/buckets"
 	"storj.io/storj/satellite/console"
@@ -31,23 +34,28 @@ import (
 	"storj.io/storj/satellite/payments/stripe"
 )
 
+// Assets contains either the built admin/back-office/ui or it is nil.
+var Assets fs.FS = emptyfs.FS{}
+
 const (
-	// UnauthorizedThroughOauth - message for full accesses through Oauth.
-	UnauthorizedThroughOauth = "This operation is not authorized through oauth."
 	// UnauthorizedNotInGroup - message for when api user is not part of a required access group.
 	UnauthorizedNotInGroup = "User must be a member of one of these groups to conduct this operation: %s"
 	// AuthorizationNotEnabled - message for when authorization is disabled.
 	AuthorizationNotEnabled = "Authorization not enabled."
+
+	// BackOfficePathPrefix is the path prefix used for the back office router.
+	BackOfficePathPrefix = "/back-office"
 )
 
 // Config defines configuration for debug server.
 type Config struct {
-	Address          string `help:"admin peer http listening address" releaseDefault:"" devDefault:""`
+	Address          string `help:"admin peer http listening address"                                                                              releaseDefault:"" devDefault:""`
 	StaticDir        string `help:"an alternate directory path which contains the static assets to serve. When empty, it uses the embedded assets" releaseDefault:"" devDefault:""`
 	AllowedOauthHost string `help:"the oauth host allowed to bypass token authentication."`
 	Groups           Groups
 
 	AuthorizationToken string `internal:"true"`
+	BackOffice         backoffice.Config
 }
 
 // Groups defines permission groups.
@@ -82,6 +90,7 @@ type Server struct {
 	payments       payments.Accounts
 	buckets        *buckets.Service
 	restKeys       *restkeys.Service
+	analytics      *analytics.Service
 	freezeAccounts *console.AccountFreezeService
 
 	nowFn func() time.Time
@@ -91,7 +100,19 @@ type Server struct {
 }
 
 // NewServer returns a new administration Server.
-func NewServer(log *zap.Logger, listener net.Listener, db DB, buckets *buckets.Service, restKeys *restkeys.Service, freezeAccounts *console.AccountFreezeService, accounts payments.Accounts, console consoleweb.Config, config Config) *Server {
+func NewServer(
+	log *zap.Logger,
+	listener net.Listener,
+	db DB,
+	buckets *buckets.Service,
+	restKeys *restkeys.Service,
+	freezeAccounts *console.AccountFreezeService,
+	analyticsService *analytics.Service,
+	accounts payments.Accounts,
+	backOfficeService *backoffice.Service,
+	console consoleweb.Config,
+	config Config,
+) *Server {
 	server := &Server{
 		log: log,
 
@@ -101,6 +122,7 @@ func NewServer(log *zap.Logger, listener net.Listener, db DB, buckets *buckets.S
 		payments:       accounts,
 		buckets:        buckets,
 		restKeys:       restKeys,
+		analytics:      analyticsService,
 		freezeAccounts: freezeAccounts,
 
 		nowFn: time.Now,
@@ -117,14 +139,17 @@ func NewServer(log *zap.Logger, listener net.Listener, db DB, buckets *buckets.S
 
 	// prod owners only
 	fullAccessAPI := api.NewRoute().Subrouter()
-	fullAccessAPI.Use(server.withAuth(nil))
+	fullAccessAPI.Use(server.withAuth([]string{config.Groups.LimitUpdate}, true))
 	fullAccessAPI.HandleFunc("/users", server.addUser).Methods("POST")
 	fullAccessAPI.HandleFunc("/users/{useremail}", server.updateUser).Methods("PUT")
 	fullAccessAPI.HandleFunc("/users/{useremail}", server.deleteUser).Methods("DELETE")
 	fullAccessAPI.HandleFunc("/users/{useremail}/mfa", server.disableUserMFA).Methods("DELETE")
+	fullAccessAPI.HandleFunc("/users/{useremail}/activate-account/disable-bot-restriction", server.disableBotRestriction).
+		Methods("PATCH")
 	fullAccessAPI.HandleFunc("/users/{useremail}/useragent", server.updateUsersUserAgent).Methods("PATCH")
 	fullAccessAPI.HandleFunc("/users/{useremail}/geofence", server.createGeofenceForAccount).Methods("PATCH")
 	fullAccessAPI.HandleFunc("/users/{useremail}/geofence", server.deleteGeofenceForAccount).Methods("DELETE")
+	fullAccessAPI.HandleFunc("/users/{useremail}/trial-expiration", server.updateFreeTrialExpiration).Methods("PATCH")
 	fullAccessAPI.HandleFunc("/oauth/clients", server.createOAuthClient).Methods("POST")
 	fullAccessAPI.HandleFunc("/oauth/clients/{id}", server.updateOAuthClient).Methods("PUT")
 	fullAccessAPI.HandleFunc("/oauth/clients/{id}", server.deleteOAuthClient).Methods("DELETE")
@@ -134,7 +159,7 @@ func NewServer(log *zap.Logger, listener net.Listener, db DB, buckets *buckets.S
 	fullAccessAPI.HandleFunc("/projects/{project}", server.getProject).Methods("GET")
 	fullAccessAPI.HandleFunc("/projects/{project}/apikeys", server.addAPIKey).Methods("POST")
 	fullAccessAPI.HandleFunc("/projects/{project}/apikeys", server.listAPIKeys).Methods("GET")
-	fullAccessAPI.HandleFunc("/projects/{project}/apikeys/{name}", server.deleteAPIKeyByName).Methods("DELETE")
+	fullAccessAPI.HandleFunc("/projects/{project}/apikeys", server.deleteAPIKeyByName).Methods("DELETE").Queries("name", "")
 	fullAccessAPI.HandleFunc("/projects/{project}/buckets/{bucket}", server.getBucketInfo).Methods("GET")
 	fullAccessAPI.HandleFunc("/projects/{project}/buckets/{bucket}/geofence", server.createGeofenceForBucket).Methods("POST")
 	fullAccessAPI.HandleFunc("/projects/{project}/buckets/{bucket}/geofence", server.deleteGeofenceForBucket).Methods("DELETE")
@@ -149,20 +174,37 @@ func NewServer(log *zap.Logger, listener net.Listener, db DB, buckets *buckets.S
 
 	// limit update access required
 	limitUpdateAPI := api.NewRoute().Subrouter()
-	limitUpdateAPI.Use(server.withAuth([]string{config.Groups.LimitUpdate}))
+	limitUpdateAPI.Use(server.withAuth([]string{config.Groups.LimitUpdate}, false))
 	limitUpdateAPI.HandleFunc("/users/{useremail}", server.userInfo).Methods("GET")
 	limitUpdateAPI.HandleFunc("/users/{useremail}/limits", server.userLimits).Methods("GET")
 	limitUpdateAPI.HandleFunc("/users/{useremail}/limits", server.updateLimits).Methods("PUT")
-	limitUpdateAPI.HandleFunc("/users/{useremail}/freeze", server.freezeUser).Methods("PUT")
-	limitUpdateAPI.HandleFunc("/users/{useremail}/freeze", server.unfreezeUser).Methods("DELETE")
-	limitUpdateAPI.HandleFunc("/users/{useremail}/warning", server.unWarnUser).Methods("DELETE")
+	limitUpdateAPI.HandleFunc("/users/{useremail}/billing-freeze", server.billingFreezeUser).Methods("PUT")
+	limitUpdateAPI.HandleFunc("/users/{useremail}/billing-freeze", server.billingUnfreezeUser).Methods("DELETE")
+	limitUpdateAPI.HandleFunc("/users/{useremail}/billing-warning", server.billingUnWarnUser).Methods("DELETE")
+	limitUpdateAPI.HandleFunc("/users/{useremail}/violation-freeze", server.violationFreezeUser).Methods("PUT")
+	limitUpdateAPI.HandleFunc("/users/{useremail}/violation-freeze", server.violationUnfreezeUser).Methods("DELETE")
+	limitUpdateAPI.HandleFunc("/users/{useremail}/legal-freeze", server.legalFreezeUser).Methods("PUT")
+	limitUpdateAPI.HandleFunc("/users/{useremail}/legal-freeze", server.legalUnfreezeUser).Methods("DELETE")
+	limitUpdateAPI.HandleFunc("/users/{useremail}/trial-expiration-freeze", server.trialExpirationFreezeUser).Methods("PUT")
+	limitUpdateAPI.HandleFunc("/users/{useremail}/trial-expiration-freeze", server.trialExpirationUnfreezeUser).Methods("DELETE")
+	limitUpdateAPI.HandleFunc("/users/pending-deletion", server.usersPendingDeletion).Methods("GET")
 	limitUpdateAPI.HandleFunc("/projects/{project}/limit", server.getProjectLimit).Methods("GET")
-	limitUpdateAPI.HandleFunc("/projects/{project}/limit", server.putProjectLimit).Methods("PUT", "POST")
+	limitUpdateAPI.HandleFunc("/projects/{project}/limit", server.putProjectLimit).Methods("PUT")
+
+	// NewServer adds the backoffice.PahtPrefix for the static assets, but not for the API because the
+	// generator already add the PathPrefix to router when the API handlers are hooked.
+	_ = backoffice.NewServer(
+		log.Named("back-office"),
+		nil,
+		backOfficeService,
+		root,
+		config.BackOffice,
+	)
 
 	// This handler must be the last one because it uses the root as prefix,
 	// otherwise will try to serve all the handlers set after this one.
 	if config.StaticDir == "" {
-		root.PathPrefix("/").Handler(http.FileServer(http.FS(adminui.Assets))).Methods("GET")
+		root.PathPrefix("/").Handler(http.FileServer(http.FS(Assets))).Methods("GET")
 	} else {
 		root.PathPrefix("/").Handler(http.FileServer(http.Dir(config.StaticDir))).Methods("GET")
 	}
@@ -211,37 +253,26 @@ func (server *Server) SetAllowedOauthHost(host string) {
 // withAuth checks if the requester is authorized to perform an operation. If the request did not come from the oauth proxy, verify the auth token.
 // Otherwise, check that the user has the required permissions to conduct the operation. `allowedGroups` is a list of groups that are authorized.
 // If it is nil, then the api method is not accessible from the oauth proxy.
-func (server *Server) withAuth(allowedGroups []string) func(next http.Handler) http.Handler {
+func (server *Server) withAuth(allowedGroups []string, requireAPIKey bool) func(next http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if server.config.AuthorizationToken == "" {
+				sendJSONError(w, AuthorizationNotEnabled, "", http.StatusForbidden)
+				return
+			}
 
 			if r.Host != server.config.AllowedOauthHost {
 				// not behind the proxy; use old authentication method.
-				if server.config.AuthorizationToken == "" {
-					sendJSONError(w, AuthorizationNotEnabled, "", http.StatusForbidden)
-					return
-				}
-
-				equality := subtle.ConstantTimeCompare(
-					[]byte(r.Header.Get("Authorization")),
-					[]byte(server.config.AuthorizationToken),
-				)
-				if equality != 1 {
-					sendJSONError(w, "Forbidden",
-						"", http.StatusForbidden)
+				if !validateAPIKey(server.config.AuthorizationToken, r.Header.Get("Authorization")) {
+					sendJSONError(w, "Forbidden", "required a valid authorization token", http.StatusForbidden)
 					return
 				}
 			} else {
-				// request made from oauth proxy. Check user groups against allowedGroups.
-				if allowedGroups == nil {
-					// Endpoint is a full access endpoint, and requires token auth.
-					sendJSONError(w, "Forbidden", UnauthorizedThroughOauth, http.StatusForbidden)
-					return
-				}
-
 				var allowed bool
 				userGroupsString := r.Header.Get("X-Forwarded-Groups")
 				userGroups := strings.Split(userGroupsString, ",")
+
+			AUTHENTICATED:
 				for _, userGroup := range userGroups {
 					if userGroup == "" {
 						continue
@@ -249,16 +280,23 @@ func (server *Server) withAuth(allowedGroups []string) func(next http.Handler) h
 					for _, permGroup := range allowedGroups {
 						if userGroup == permGroup {
 							allowed = true
-							break
+							break AUTHENTICATED
 						}
-					}
-					if allowed {
-						break
 					}
 				}
 
 				if !allowed {
 					sendJSONError(w, "Forbidden", fmt.Sprintf(UnauthorizedNotInGroup, allowedGroups), http.StatusForbidden)
+					return
+				}
+
+				// The operation requires to provide a valid authorization token.
+				if requireAPIKey && !validateAPIKey(server.config.AuthorizationToken, r.Header.Get("Authorization")) {
+					sendJSONError(
+						w, "Forbidden",
+						"you are part of one of the authorized groups, but this operation requires a valid authorization token",
+						http.StatusForbidden,
+					)
 					return
 				}
 			}
@@ -275,4 +313,9 @@ func (server *Server) withAuth(allowedGroups []string) func(next http.Handler) h
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+func validateAPIKey(configured, sent string) bool {
+	equality := subtle.ConstantTimeCompare([]byte(sent), []byte(configured))
+	return equality == 1
 }

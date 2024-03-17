@@ -1,7 +1,6 @@
 // bucket_metainfo contains information about a bucket in a project.
 model bucket_metainfo (
-	key    id
-	unique project_id name
+	key project_id name
 
 	// id is an UUID for the bucket.
 	field id             blob
@@ -14,6 +13,13 @@ model bucket_metainfo (
 	// unless the user signed up with a specific partner.
 	// note: this field is duplicated in value_attribution.user_agent.
 	field user_agent     blob   (nullable, updatable)
+
+	// versioning is the versioning state of the bucket.
+	//    0 - unsupported (represents a bucket where versioning is not supported)
+	//    1 - unversioned (represents a bucket where versioning has never been enabled)
+	//    2 - enabled (represents a bucket where versioning is enabled)
+	//    3 - suspended (represents a bucket where versioning is currently suspended)
+	field versioning    int (updatable, default 0)
 
 	// path_cipher is denotes how the paths have been encoded.
 	// The corresponding type storj.CipherSuite contains the relevant values.
@@ -71,6 +77,12 @@ update bucket_metainfo (
 	where bucket_metainfo.name = ?
 )
 
+update bucket_metainfo (
+	where bucket_metainfo.project_id = ?
+	where bucket_metainfo.name = ?
+	where bucket_metainfo.versioning >= ?
+)
+
 read one (
 	select bucket_metainfo
 	where bucket_metainfo.project_id = ?
@@ -84,12 +96,6 @@ read one (
 )
 
 read one (
-	select bucket_metainfo.id
-	where bucket_metainfo.project_id = ?
-	where bucket_metainfo.name = ?
-)
-
-read one (
     select bucket_metainfo.placement
 	where bucket_metainfo.project_id = ?
 	where bucket_metainfo.name = ?
@@ -97,6 +103,12 @@ read one (
 
 read one (
     select bucket_metainfo.user_agent
+	where bucket_metainfo.project_id = ?
+	where bucket_metainfo.name = ?
+)
+
+read one (
+    select bucket_metainfo.versioning
 	where bucket_metainfo.project_id = ?
 	where bucket_metainfo.name = ?
 )
@@ -131,6 +143,11 @@ read count (
 	where bucket_metainfo.project_id = ?
 )
 
+read paged (
+	select bucket_metainfo.project_id bucket_metainfo.name
+)
+
+
 // value_attribution table contains information about which user-agent
 // is used to create the project. It's being stored outside of the projects
 // table because this information can be still needed after deleting the
@@ -149,8 +166,6 @@ model value_attribution (
 	// unless the user signed up with a specific partner.
 	// note: this field is duplicated in bucket_metainfo.user_agent.
 	field user_agent	blob       ( updatable, nullable )
-	// TODO remove as part of release 1.81 or after
-	field partner_id blob (nullable, default null)
 	// last_updated is updated whenever the row changes.
 	field last_updated 	timestamp  ( autoinsert, autoupdate )
 )

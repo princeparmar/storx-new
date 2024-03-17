@@ -6,7 +6,9 @@ package apigen
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"time"
 
@@ -21,7 +23,14 @@ import (
 func (api *API) MustWriteDocs(path string) {
 	docs := api.generateDocumentation()
 
-	err := os.WriteFile(path, []byte(docs), 0644)
+	rootDir := api.outputRootDir()
+	fullpath := filepath.Join(rootDir, path)
+	err := os.MkdirAll(filepath.Dir(fullpath), 0700)
+	if err != nil {
+		panic(errs.Wrap(err))
+	}
+
+	err = os.WriteFile(fullpath, []byte(docs), 0644)
 	if err != nil {
 		panic(errs.Wrap(err))
 	}
@@ -34,14 +43,39 @@ func (api *API) generateDocumentation() string {
 	wf := func(format string, args ...any) { _, _ = fmt.Fprintf(&doc, format, args...) }
 
 	wf("# API Docs\n\n")
-	wf("**Description:** %s\n\n", api.Description)
-	wf("**Version:** `%s`\n\n", api.Version)
+	if api.Description != "" {
+		wf("**Description:** %s\n\n", api.Description)
+	}
+
+	if api.Version != "" {
+		wf("**Version:** `%s`\n\n", api.Version)
+	}
+
+	wf("<h2 id='list-of-endpoints'>List of Endpoints</h2>\n\n")
+	getEndpointLink := func(group, endpoint string) string {
+		fullName := group + "-" + endpoint
+		fullName = strings.ReplaceAll(fullName, " ", "-")
+		nonAlphanumericRegex := regexp.MustCompile(`[^a-zA-Z0-9-]+`)
+		fullName = nonAlphanumericRegex.ReplaceAllString(fullName, "")
+		return strings.ToLower(fullName)
+	}
+	for _, group := range api.EndpointGroups {
+		wf("* %s\n", group.Name)
+		for _, endpoint := range group.endpoints {
+			wf("  * [%s](#%s)\n", endpoint.Name, getEndpointLink(group.Name, endpoint.Name))
+		}
+	}
+	wf("\n")
 
 	for _, group := range api.EndpointGroups {
 		for _, endpoint := range group.endpoints {
-			wf("## %s\n\n", endpoint.Name)
+			wf(
+				"<h3 id='%s'>%s (<a href='#list-of-endpoints'>go to full list</a>)</h3>\n\n",
+				getEndpointLink(group.Name, endpoint.Name),
+				endpoint.Name,
+			)
 			wf("%s\n\n", endpoint.Description)
-			wf("`%s /%s%s`\n\n", endpoint.Method, group.Prefix, endpoint.Path)
+			wf("`%s %s/%s%s`\n\n", endpoint.Method, api.endpointBasePath(), group.Prefix, endpoint.Path)
 
 			if len(endpoint.QueryParams) > 0 {
 				wf("**Query Params:**\n\n")
@@ -66,13 +100,13 @@ func (api *API) generateDocumentation() string {
 			requestType := reflect.TypeOf(endpoint.Request)
 			if requestType != nil {
 				wf("**Request body:**\n\n")
-				wf("```json\n%s\n```\n\n", getTypeNameRecursively(requestType, 0))
+				wf("```typescript\n%s\n```\n\n", getTypeNameRecursively(requestType, 0))
 			}
 
 			responseType := reflect.TypeOf(endpoint.Response)
 			if responseType != nil {
 				wf("**Response body:**\n\n")
-				wf("```json\n%s\n```\n\n", getTypeNameRecursively(responseType, 0))
+				wf("```typescript\n%s\n```\n\n", getTypeNameRecursively(responseType, 0))
 			}
 		}
 	}
@@ -123,7 +157,6 @@ func getTypeNameRecursively(t reflect.Type, level int) string {
 		elemType := t.Elem()
 		if elemType.Kind() == reflect.Uint8 { // treat []byte as string in docs
 			return prefix + "string"
-
 		}
 		return fmt.Sprintf("%s[\n%s\n%s]\n", prefix, getTypeNameRecursively(elemType, level+1), prefix)
 	case reflect.Struct:
@@ -132,25 +165,23 @@ func getTypeNameRecursively(t reflect.Type, level int) string {
 		if typeName != "unknown" {
 			toReturn := typeName
 			if len(elaboration) > 0 {
-				toReturn += " (" + elaboration + ")"
+				toReturn += " // " + elaboration
 			}
 			return toReturn
 		}
 
-		var fields []string
-		for i := 0; i < t.NumField(); i++ {
-			field := t.Field(i)
-			jsonTag := field.Tag.Get("json")
-			if jsonTag != "" && jsonTag != "-" {
-				fields = append(fields, prefix+"\t"+jsonTag+": "+getTypeNameRecursively(field.Type, level+1))
-			}
+		cfields := GetClassFieldsFromStruct(t)
+		fields := make([]string, 0, len(cfields))
+		for _, f := range cfields {
+			fields = append(fields, prefix+"\t"+f.Name+": "+getTypeNameRecursively(f.Type, level+1))
 		}
+
 		return fmt.Sprintf("%s{\n%s\n%s}\n", prefix, strings.Join(fields, "\n"), prefix)
 	default:
 		typeName, elaboration := getDocType(t)
 		toReturn := typeName
 		if len(elaboration) > 0 {
-			toReturn += " (" + elaboration + ")"
+			toReturn += " // " + elaboration
 		}
 		return toReturn
 	}

@@ -16,12 +16,14 @@ import (
 
 	"github.com/gorilla/mux"
 	"github.com/zeebo/errs"
+	"go.uber.org/zap"
 	"golang.org/x/crypto/bcrypt"
 
 	"storj.io/common/memory"
 	"storj.io/common/storj"
 	"storj.io/common/uuid"
 	"storj.io/storj/satellite/console"
+	"storj.io/storj/satellite/payments"
 )
 
 func (server *Server) addUser(w http.ResponseWriter, r *http.Request) {
@@ -50,7 +52,7 @@ func (server *Server) addUser(w http.ResponseWriter, r *http.Request) {
 		SignupPromoCode: input.SignupPromoCode,
 	}
 
-	err = user.IsValid()
+	err = user.IsValid(false)
 	if err != nil {
 		sendJSONError(w, "user data is not valid",
 			err.Error(), http.StatusBadRequest)
@@ -165,9 +167,11 @@ func (server *Server) userInfo(w http.ResponseWriter, r *http.Request) {
 		Email        string                    `json:"email"`
 		ProjectLimit int                       `json:"projectLimit"`
 		Placement    storj.PlacementConstraint `json:"placement"`
+		PaidTier     bool                      `json:"paidTier"`
 	}
 	type Project struct {
 		ID          uuid.UUID `json:"id"`
+		PublicID    uuid.UUID `json:"publicId"`
 		Name        string    `json:"name"`
 		Description string    `json:"description"`
 		OwnerID     uuid.UUID `json:"ownerId"`
@@ -184,10 +188,12 @@ func (server *Server) userInfo(w http.ResponseWriter, r *http.Request) {
 		Email:        user.Email,
 		ProjectLimit: user.ProjectLimit,
 		Placement:    user.DefaultPlacement,
+		PaidTier:     user.PaidTier,
 	}
 	for _, p := range projects {
 		output.Projects = append(output.Projects, Project{
 			ID:          p.ID,
+			PublicID:    p.PublicID,
 			Name:        p.Name,
 			Description: p.Description,
 			OwnerID:     p.OwnerID,
@@ -195,6 +201,96 @@ func (server *Server) userInfo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data, err := json.Marshal(output)
+	if err != nil {
+		sendJSONError(w, "json encoding failed",
+			err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	sendJSONData(w, http.StatusOK, data)
+}
+
+func (server *Server) usersPendingDeletion(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	type User struct {
+		ID       uuid.UUID `json:"id"`
+		FullName string    `json:"fullName"`
+		Email    string    `json:"email"`
+	}
+
+	query := r.URL.Query()
+
+	limitParam := query.Get("limit")
+	if limitParam == "" {
+		sendJSONError(w, "Bad request", "parameter 'limit' can't be empty", http.StatusBadRequest)
+		return
+	}
+
+	limit, err := strconv.ParseUint(limitParam, 10, 32)
+	if err != nil {
+		sendJSONError(w, "Bad request", err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	pageParam := query.Get("page")
+	if pageParam == "" {
+		sendJSONError(w, "Bad request", "parameter 'page' can't be empty", http.StatusBadRequest)
+		return
+	}
+
+	page, err := strconv.ParseUint(pageParam, 10, 32)
+	if err != nil {
+		sendJSONError(w, "Bad request", err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	var sendingPage struct {
+		Users       []User `json:"users"`
+		PageCount   uint   `json:"pageCount"`
+		CurrentPage uint   `json:"currentPage"`
+		TotalCount  uint64 `json:"totalCount"`
+		HasMore     bool   `json:"hasMore"`
+	}
+	usersPage, err := server.db.Console().Users().GetByStatus(
+		ctx, console.PendingDeletion, console.UserCursor{
+			Limit: uint(limit),
+			Page:  uint(page),
+		},
+	)
+	if err != nil {
+		sendJSONError(w, "failed retrieving a usersPage of users", err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	sendingPage.PageCount = usersPage.PageCount
+	sendingPage.CurrentPage = usersPage.CurrentPage
+	sendingPage.TotalCount = usersPage.TotalCount
+	sendingPage.Users = make([]User, 0, len(usersPage.Users))
+
+	if sendingPage.PageCount > sendingPage.CurrentPage {
+		sendingPage.HasMore = true
+	}
+
+	for _, user := range usersPage.Users {
+		invoices, err := server.payments.Invoices().ListFailed(ctx, &user.ID)
+		if err != nil {
+			sendJSONError(w, "getting invoices failed",
+				err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if len(invoices) != 0 {
+			sendingPage.TotalCount--
+			continue
+		}
+		sendingPage.Users = append(sendingPage.Users, User{
+			ID:       user.ID,
+			FullName: user.FullName,
+			Email:    user.Email,
+		})
+	}
+
+	data, err := json.Marshal(sendingPage)
 	if err != nil {
 		sendJSONError(w, "json encoding failed",
 			err.Error(), http.StatusInternalServerError)
@@ -339,6 +435,11 @@ func (server *Server) updateUser(w http.ResponseWriter, r *http.Request) {
 		}
 
 		updateRequest.PaidTier = &status
+
+		if status {
+			now := server.nowFn()
+			updateRequest.UpgradeTime = &now
+		}
 	}
 
 	err = server.db.Console().Users().Update(ctx, user.ID, updateRequest)
@@ -533,7 +634,6 @@ func (server *Server) updateLimits(w http.ResponseWriter, r *http.Request) {
 				err.Error(), http.StatusInternalServerError)
 		}
 	}
-
 }
 
 func (server *Server) disableUserMFA(w http.ResponseWriter, r *http.Request) {
@@ -575,7 +675,7 @@ func (server *Server) disableUserMFA(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (server *Server) freezeUser(w http.ResponseWriter, r *http.Request) {
+func (server *Server) billingFreezeUser(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	vars := mux.Vars(r)
@@ -597,14 +697,14 @@ func (server *Server) freezeUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = server.freezeAccounts.FreezeUser(ctx, u.ID)
+	err = server.freezeAccounts.BillingFreezeUser(ctx, u.ID)
 	if err != nil {
-		sendJSONError(w, "failed to freeze user",
+		sendJSONError(w, "failed to billing freeze user",
 			err.Error(), http.StatusInternalServerError)
 	}
 }
 
-func (server *Server) unfreezeUser(w http.ResponseWriter, r *http.Request) {
+func (server *Server) billingUnfreezeUser(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	vars := mux.Vars(r)
@@ -626,14 +726,234 @@ func (server *Server) unfreezeUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err = server.freezeAccounts.UnfreezeUser(ctx, u.ID); err != nil {
-		sendJSONError(w, "failed to unfreeze user",
+	err = server.freezeAccounts.BillingUnfreezeUser(ctx, u.ID)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errs.Is(err, console.ErrNoFreezeStatus) {
+			status = http.StatusNotFound
+		}
+		sendJSONError(w, "failed to billing unfreeze user",
+			err.Error(), status)
+		return
+	}
+}
+
+func (server *Server) billingUnWarnUser(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	vars := mux.Vars(r)
+	userEmail, ok := vars["useremail"]
+	if !ok {
+		sendJSONError(w, "user-email missing", "", http.StatusBadRequest)
+		return
+	}
+
+	u, err := server.db.Console().Users().GetByEmail(ctx, userEmail)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			sendJSONError(w, fmt.Sprintf("user with email %q does not exist", userEmail),
+				"", http.StatusNotFound)
+			return
+		}
+		sendJSONError(w, "failed to get user details",
+			err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if err = server.freezeAccounts.BillingUnWarnUser(ctx, u.ID); err != nil {
+		status := http.StatusInternalServerError
+		if errs.Is(err, console.ErrNoFreezeStatus) {
+			status = http.StatusNotFound
+		}
+		sendJSONError(w, "failed to billing unwarn user",
+			err.Error(), status)
+		return
+	}
+}
+
+func (server *Server) violationFreezeUser(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	vars := mux.Vars(r)
+	userEmail, ok := vars["useremail"]
+	if !ok {
+		sendJSONError(w, "user-email missing", "", http.StatusBadRequest)
+		return
+	}
+
+	u, err := server.db.Console().Users().GetByEmail(ctx, userEmail)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			sendJSONError(w, fmt.Sprintf("user with email %q does not exist", userEmail),
+				"", http.StatusNotFound)
+			return
+		}
+		sendJSONError(w, "failed to get user details",
+			err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	err = server.freezeAccounts.ViolationFreezeUser(ctx, u.ID)
+	if err != nil {
+		sendJSONError(w, "failed to violation freeze user",
+			err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	invoices, err := server.payments.Invoices().List(ctx, u.ID)
+	if err != nil {
+		server.log.Error("failed to get invoices for violation frozen user", zap.Error(err))
+		return
+	}
+
+	for _, invoice := range invoices {
+		if invoice.Status == payments.InvoiceStatusOpen {
+			server.analytics.TrackViolationFrozenUnpaidInvoice(invoice.ID, u.ID, u.Email)
+		}
+	}
+}
+
+func (server *Server) violationUnfreezeUser(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	vars := mux.Vars(r)
+	userEmail, ok := vars["useremail"]
+	if !ok {
+		sendJSONError(w, "user-email missing", "", http.StatusBadRequest)
+		return
+	}
+
+	u, err := server.db.Console().Users().GetByEmail(ctx, userEmail)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			sendJSONError(w, fmt.Sprintf("user with email %q does not exist", userEmail),
+				"", http.StatusNotFound)
+			return
+		}
+		sendJSONError(w, "failed to get user details",
+			err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	err = server.freezeAccounts.ViolationUnfreezeUser(ctx, u.ID)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errs.Is(err, console.ErrNoFreezeStatus) {
+			status = http.StatusNotFound
+		}
+		sendJSONError(w, "failed to violation unfreeze user",
+			err.Error(), status)
+		return
+	}
+}
+
+func (server *Server) legalFreezeUser(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	vars := mux.Vars(r)
+	userEmail, ok := vars["useremail"]
+	if !ok {
+		sendJSONError(w, "user-email missing", "", http.StatusBadRequest)
+		return
+	}
+
+	u, err := server.db.Console().Users().GetByEmail(ctx, userEmail)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			sendJSONError(w, fmt.Sprintf("user with email %q does not exist", userEmail),
+				"", http.StatusNotFound)
+			return
+		}
+		sendJSONError(w, "failed to get user details",
+			err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	err = server.freezeAccounts.LegalFreezeUser(ctx, u.ID)
+	if err != nil {
+		sendJSONError(w, "failed to legal freeze user",
+			err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	invoices, err := server.payments.Invoices().List(ctx, u.ID)
+	if err != nil {
+		server.log.Error("failed to get invoices for legal frozen user", zap.Error(err))
+		return
+	}
+
+	for _, invoice := range invoices {
+		if invoice.Status == payments.InvoiceStatusOpen {
+			server.analytics.TrackLegalHoldUnpaidInvoice(invoice.ID, u.ID, u.Email)
+		}
+	}
+}
+
+func (server *Server) legalUnfreezeUser(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	vars := mux.Vars(r)
+	userEmail, ok := vars["useremail"]
+	if !ok {
+		sendJSONError(w, "user-email missing", "", http.StatusBadRequest)
+		return
+	}
+
+	u, err := server.db.Console().Users().GetByEmail(ctx, userEmail)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			sendJSONError(w, fmt.Sprintf("user with email %q does not exist", userEmail),
+				"", http.StatusNotFound)
+			return
+		}
+		sendJSONError(w, "failed to get user details",
+			err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	err = server.freezeAccounts.LegalUnfreezeUser(ctx, u.ID)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errs.Is(err, console.ErrNoFreezeStatus) {
+			status = http.StatusNotFound
+		}
+		sendJSONError(w, "failed to legal unfreeze user",
+			err.Error(), status)
+		return
+	}
+}
+
+func (server *Server) trialExpirationFreezeUser(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	vars := mux.Vars(r)
+	userEmail, ok := vars["useremail"]
+	if !ok {
+		sendJSONError(w, "user-email missing", "", http.StatusBadRequest)
+		return
+	}
+
+	u, err := server.db.Console().Users().GetByEmail(ctx, userEmail)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			sendJSONError(w, fmt.Sprintf("user with email %q does not exist", userEmail),
+				"", http.StatusNotFound)
+			return
+		}
+		sendJSONError(w, "failed to get user details",
+			err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	err = server.freezeAccounts.TrialExpirationFreezeUser(ctx, u.ID)
+	if err != nil {
+		sendJSONError(w, "failed to trial expiration freeze user",
 			err.Error(), http.StatusInternalServerError)
 		return
 	}
 }
 
-func (server *Server) unWarnUser(w http.ResponseWriter, r *http.Request) {
+func (server *Server) trialExpirationUnfreezeUser(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	vars := mux.Vars(r)
@@ -655,9 +975,14 @@ func (server *Server) unWarnUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err = server.freezeAccounts.UnWarnUser(ctx, u.ID); err != nil {
-		sendJSONError(w, "failed to unwarn user",
-			err.Error(), http.StatusInternalServerError)
+	err = server.freezeAccounts.TrialExpirationUnfreezeUser(ctx, u.ID)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errs.Is(err, console.ErrNoFreezeStatus) {
+			status = http.StatusNotFound
+		}
+		sendJSONError(w, "failed to legal unfreeze user",
+			err.Error(), status)
 		return
 	}
 }
@@ -685,7 +1010,7 @@ func (server *Server) deleteUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Ensure user has no own projects any longer
-	projects, err := server.db.Console().Projects().GetByUserID(ctx, user.ID)
+	projects, err := server.db.Console().Projects().GetOwn(ctx, user.ID)
 	if err != nil {
 		sendJSONError(w, "unable to list projects",
 			err.Error(), http.StatusInternalServerError)
@@ -802,8 +1127,46 @@ func (server *Server) createGeofenceForAccount(w http.ResponseWriter, r *http.Re
 	server.setGeofenceForUser(w, r, placement)
 }
 
+func (server *Server) disableBotRestriction(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	vars := mux.Vars(r)
+	userEmail, ok := vars["useremail"]
+	if !ok {
+		sendJSONError(w, "user-email missing", "", http.StatusBadRequest)
+		return
+	}
+
+	user, err := server.db.Console().Users().GetByEmail(ctx, userEmail)
+	if errors.Is(err, sql.ErrNoRows) {
+		sendJSONError(w, fmt.Sprintf("user with email %q does not exist", userEmail),
+			"", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		sendJSONError(w, "failed to get user details",
+			err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if user.Status != console.PendingBotVerification {
+		sendJSONError(w, fmt.Sprintf("user with email %q must have PendingBotVerification status to disable bot restriction", userEmail),
+			"", http.StatusBadRequest)
+		return
+	}
+
+	err = server.freezeAccounts.BotUnfreezeUser(ctx, user.ID)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errs.Is(err, console.ErrNoFreezeStatus) {
+			status = http.StatusConflict
+		}
+		sendJSONError(w, "failed to unfreeze bot user", err.Error(), status)
+	}
+}
+
 func (server *Server) deleteGeofenceForAccount(w http.ResponseWriter, r *http.Request) {
-	server.setGeofenceForUser(w, r, storj.EveryCountry)
+	server.setGeofenceForUser(w, r, storj.DefaultPlacement)
 }
 
 func (server *Server) setGeofenceForUser(w http.ResponseWriter, r *http.Request, placement storj.PlacementConstraint) {
@@ -834,13 +1197,58 @@ func (server *Server) setGeofenceForUser(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	err = server.db.Console().Users().Update(ctx, user.ID, console.UpdateUserRequest{
-		Email:            &user.Email,
-		DefaultPlacement: placement,
-	})
-
-	if err != nil {
+	if err = server.db.Console().Users().UpdateDefaultPlacement(ctx, user.ID, placement); err != nil {
 		sendJSONError(w, "unable to set geofence for user",
+			err.Error(), http.StatusInternalServerError)
+		return
+	}
+}
+
+func (server *Server) updateFreeTrialExpiration(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	vars := mux.Vars(r)
+	userEmail, ok := vars["useremail"]
+	if !ok {
+		sendJSONError(w, "user-email missing",
+			"", http.StatusBadRequest)
+		return
+	}
+
+	user, err := server.db.Console().Users().GetByEmail(ctx, userEmail)
+	if errors.Is(err, sql.ErrNoRows) {
+		sendJSONError(w, fmt.Sprintf("user with email %q does not exist", userEmail),
+			"", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		sendJSONError(w, "failed to get user",
+			err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		sendJSONError(w, "failed to read body",
+			err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	var input struct {
+		TrialExpiration *time.Time `json:"trialExpiration"`
+	}
+
+	err = json.Unmarshal(body, &input)
+	if err != nil {
+		sendJSONError(w, "failed to unmarshal request",
+			err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	expirationPtr := input.TrialExpiration
+	err = server.db.Console().Users().Update(ctx, user.ID, console.UpdateUserRequest{TrialExpiration: &expirationPtr})
+	if err != nil {
+		sendJSONError(w, "failed to update user",
 			err.Error(), http.StatusInternalServerError)
 		return
 	}

@@ -6,19 +6,31 @@ package apigen
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 
 	"github.com/zeebo/errs"
 )
 
-// MustWriteTS writes generated TypeScript code into a file.
+// MustWriteTS writes generated TypeScript code into a file indicated by path.
+// The generated code is an API client to run in the browser.
+//
+// If an error occurs, it panics.
 func (a *API) MustWriteTS(path string) {
-	f := newTSGenFile(path, a)
+
+	rootDir := a.outputRootDir()
+	fullpath := filepath.Join(rootDir, path)
+	err := os.MkdirAll(filepath.Dir(fullpath), 0700)
+	if err != nil {
+		panic(errs.Wrap(err))
+	}
+
+	f := newTSGenFile(fullpath, a)
 
 	f.generateTS()
 
-	err := f.write()
+	err = f.write()
 	if err != nil {
 		panic(errs.Wrap(err))
 	}
@@ -57,8 +69,18 @@ func (f *tsGenFile) generateTS() {
 	f.registerTypes()
 	f.result += f.types.GenerateTypescriptDefinitions()
 
+	f.result += `
+class APIError extends Error {
+	constructor(
+		public readonly msg: string,
+		public readonly responseStatusCode?: number,
+	) {
+		super(msg);
+	}
+}
+`
+
 	for _, group := range f.api.EndpointGroups {
-		// Not sure if this is a good name
 		f.createAPIClient(group)
 	}
 }
@@ -83,45 +105,50 @@ func (f *tsGenFile) registerTypes() {
 }
 
 func (f *tsGenFile) createAPIClient(group *EndpointGroup) {
-	f.pf("\nexport class %sHttpApi%s {", group.Prefix, strings.ToUpper(f.api.Version))
+	f.pf("\nexport class %sHttpApi%s {", capitalize(group.Name), strings.ToUpper(f.api.Version))
 	f.pf("\tprivate readonly http: HttpClient = new HttpClient();")
-	f.pf("\tprivate readonly ROOT_PATH: string = '/api/%s/%s';", f.api.Version, group.Prefix)
+	f.pf("\tprivate readonly ROOT_PATH: string = '%s/%s';", f.api.endpointBasePath(), strings.ToLower(group.Prefix))
 	for _, method := range group.endpoints {
 		f.pf("")
 
-		funcArgs, path := f.getArgsAndPath(method)
+		funcArgs, path := f.getArgsAndPath(method, group)
 
 		returnStmt := "return"
 		returnType := "void"
 		if method.Response != nil {
-			returnType = TypescriptTypeName(getElementaryType(reflect.TypeOf(method.Response)))
-			if v := reflect.ValueOf(method.Response); v.Kind() == reflect.Array || v.Kind() == reflect.Slice {
-				returnType = fmt.Sprintf("Array<%s>", returnType)
-			}
+			returnType = TypescriptTypeName(reflect.TypeOf(method.Response))
 			returnStmt += fmt.Sprintf(" response.json().then((body) => body as %s)", returnType)
 		}
 		returnStmt += ";"
 
-		f.pf("\tpublic async %s(%s): Promise<%s> {", method.RequestName, funcArgs, returnType)
-		f.pf("\t\tconst path = `%s`;", path)
+		f.pf("\tpublic async %s(%s): Promise<%s> {", method.TypeScriptName, funcArgs, returnType)
+		if len(method.QueryParams) > 0 {
+			f.pf("\t\tconst u = new URL(`%s`, window.location.href);", path)
+			for _, p := range method.QueryParams {
+				f.pf("\t\tu.searchParams.set('%s', %s);", p.Name, p.Name)
+			}
+			f.pf("\t\tconst fullPath = u.toString();")
+		} else {
+			f.pf("\t\tconst fullPath = `%s`;", path)
+		}
 
 		if method.Request != nil {
-			f.pf("\t\tconst response = await this.http.%s(path, JSON.stringify(request));", strings.ToLower(method.Method))
+			f.pf("\t\tconst response = await this.http.%s(fullPath, JSON.stringify(request));", strings.ToLower(method.Method))
 		} else {
-			f.pf("\t\tconst response = await this.http.%s(path);", strings.ToLower(method.Method))
+			f.pf("\t\tconst response = await this.http.%s(fullPath);", strings.ToLower(method.Method))
 		}
 
 		f.pf("\t\tif (response.ok) {")
 		f.pf("\t\t\t%s", returnStmt)
 		f.pf("\t\t}")
 		f.pf("\t\tconst err = await response.json();")
-		f.pf("\t\tthrow new Error(err.error);")
+		f.pf("\t\tthrow new APIError(err.error, response.status);")
 		f.pf("\t}")
 	}
 	f.pf("}")
 }
 
-func (f *tsGenFile) getArgsAndPath(method *fullEndpoint) (funcArgs, path string) {
+func (f *tsGenFile) getArgsAndPath(method *FullEndpoint, group *EndpointGroup) (funcArgs, path string) {
 	// remove path parameter placeholders
 	path = method.Path
 	i := strings.Index(path, "{")
@@ -131,8 +158,7 @@ func (f *tsGenFile) getArgsAndPath(method *fullEndpoint) (funcArgs, path string)
 	path = "${this.ROOT_PATH}" + path
 
 	if method.Request != nil {
-		t := getElementaryType(reflect.TypeOf(method.Request))
-		funcArgs += fmt.Sprintf("request: %s, ", TypescriptTypeName(t))
+		funcArgs += fmt.Sprintf("request: %s, ", TypescriptTypeName(reflect.TypeOf(method.Request)))
 	}
 
 	for _, p := range method.PathParams {
@@ -140,15 +166,8 @@ func (f *tsGenFile) getArgsAndPath(method *fullEndpoint) (funcArgs, path string)
 		path += fmt.Sprintf("/${%s}", p.Name)
 	}
 
-	for i, p := range method.QueryParams {
-		if i == 0 {
-			path += "?"
-		} else {
-			path += "&"
-		}
-
+	for _, p := range method.QueryParams {
 		funcArgs += fmt.Sprintf("%s: %s, ", p.Name, TypescriptTypeName(p.Type))
-		path += fmt.Sprintf("%s=${%s}", p.Name, p.Name)
 	}
 
 	path = strings.ReplaceAll(path, "//", "/")

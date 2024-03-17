@@ -14,17 +14,20 @@ import (
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 
+	"storj.io/common/debug"
 	"storj.io/common/identity"
 	"storj.io/common/storj"
-	"storj.io/private/debug"
-	"storj.io/private/version"
+	"storj.io/common/version"
 	"storj.io/storj/private/lifecycle"
 	"storj.io/storj/private/version/checker"
+	"storj.io/storj/satellite/accounting"
 	"storj.io/storj/satellite/admin"
+	backoffice "storj.io/storj/satellite/admin/back-office"
 	"storj.io/storj/satellite/analytics"
 	"storj.io/storj/satellite/buckets"
 	"storj.io/storj/satellite/console"
 	"storj.io/storj/satellite/console/restkeys"
+	"storj.io/storj/satellite/emission"
 	"storj.io/storj/satellite/metabase"
 	"storj.io/storj/satellite/payments"
 	"storj.io/storj/satellite/payments/stripe"
@@ -66,6 +69,7 @@ type Admin struct {
 	Admin struct {
 		Listener net.Listener
 		Server   *admin.Server
+		Service  *backoffice.Service
 	}
 
 	Buckets struct {
@@ -79,11 +83,19 @@ type Admin struct {
 	FreezeAccounts struct {
 		Service *console.AccountFreezeService
 	}
+
+	LiveAccounting struct {
+		Cache accounting.Cache
+	}
+
+	Accounting struct {
+		Service *accounting.Service
+	}
 }
 
 // NewAdmin creates a new satellite admin peer.
 func NewAdmin(log *zap.Logger, full *identity.FullIdentity, db DB, metabaseDB *metabase.DB,
-	versionInfo version.Info, config *Config, atomicLogLevel *zap.AtomicLevel) (*Admin, error) {
+	liveAccounting accounting.Cache, versionInfo version.Info, config *Config, atomicLogLevel *zap.AtomicLevel) (*Admin, error) {
 	peer := &Admin{
 		Log:        log,
 		Identity:   full,
@@ -104,8 +116,8 @@ func NewAdmin(log *zap.Logger, full *identity.FullIdentity, db DB, metabaseDB *m
 
 	{ // setup debug
 		var err error
-		if config.Debug.Address != "" {
-			peer.Debug.Listener, err = net.Listen("tcp", config.Debug.Address)
+		if config.Debug.Addr != "" {
+			peer.Debug.Listener, err = net.Listen("tcp", config.Debug.Addr)
 			if err != nil {
 				withoutStack := errors.New(err.Error())
 				peer.Log.Debug("failed to start debug endpoints", zap.Error(withoutStack))
@@ -178,10 +190,9 @@ func NewAdmin(log *zap.Logger, full *identity.FullIdentity, db DB, metabaseDB *m
 		}
 
 		peer.FreezeAccounts.Service = console.NewAccountFreezeService(
-			db.Console().AccountFreezeEvents(),
-			db.Console().Users(),
-			db.Console().Projects(),
+			db.Console(),
 			peer.Analytics.Service,
+			config.Console.AccountFreeze,
 		)
 
 		peer.Payments.Service, err = stripe.NewService(
@@ -199,6 +210,7 @@ func NewAdmin(log *zap.Logger, full *identity.FullIdentity, db DB, metabaseDB *m
 			pc.PackagePlans.Packages,
 			pc.BonusRate,
 			peer.Analytics.Service,
+			emission.NewService(config.Emission),
 		)
 
 		if err != nil {
@@ -209,17 +221,62 @@ func NewAdmin(log *zap.Logger, full *identity.FullIdentity, db DB, metabaseDB *m
 		peer.Payments.Accounts = peer.Payments.Service.Accounts()
 	}
 
-	{ // setup admin endpoint
+	{ // setup live accounting
+		peer.LiveAccounting.Cache = liveAccounting
+	}
+
+	{ // setup accounting project usage
+		peer.Accounting.Service = accounting.NewService(
+			peer.DB.ProjectAccounting(),
+			peer.LiveAccounting.Cache,
+			*metabaseDB,
+			config.LiveAccounting.BandwidthCacheTTL,
+			config.Console.Config.UsageLimits.Storage.Free,
+			config.Console.Config.UsageLimits.Bandwidth.Free,
+			config.Console.Config.UsageLimits.Segment.Free,
+			config.LiveAccounting.AsOfSystemInterval,
+		)
+	}
+
+	{ // setup admin
 		var err error
 		peer.Admin.Listener, err = net.Listen("tcp", config.Admin.Address)
 		if err != nil {
 			return nil, err
 		}
 
+		placement, err := config.Placement.Parse(config.Overlay.Node.CreateDefaultPlacement)
+		if err != nil {
+			return nil, err
+		}
+
+		peer.Admin.Service = backoffice.NewService(
+			log.Named("back-office:service"),
+			peer.DB.Console(),
+			peer.DB.ProjectAccounting(),
+			peer.Accounting.Service,
+			placement,
+			config.Metainfo.ProjectLimits.MaxBuckets,
+			config.Metainfo.RateLimiter.Rate,
+		)
+
 		adminConfig := config.Admin
 		adminConfig.AuthorizationToken = config.Console.AuthToken
 
-		peer.Admin.Server = admin.NewServer(log.Named("admin"), peer.Admin.Listener, peer.DB, peer.Buckets.Service, peer.REST.Keys, peer.FreezeAccounts.Service, peer.Payments.Accounts, config.Console, adminConfig)
+		peer.Admin.Server = admin.NewServer(
+			log.Named("admin"),
+			peer.Admin.Listener,
+			peer.DB,
+			peer.Buckets.Service,
+			peer.REST.Keys,
+			peer.FreezeAccounts.Service,
+			peer.Analytics.Service,
+			peer.Payments.Accounts,
+			peer.Admin.Service,
+			config.Console,
+			adminConfig,
+		)
+
 		peer.Servers.Add(lifecycle.Item{
 			Name:  "admin",
 			Run:   peer.Admin.Server.Run,

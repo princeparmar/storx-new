@@ -24,7 +24,7 @@ type SlowDB struct {
 }
 
 // NewSlowDB creates a new slow storage node DB wrapping the provided db.
-// Use SetLatency to dynamically configure the latency of all piece operations.
+// Use SetLatency to dynamically configure the latency of all blob operations.
 func NewSlowDB(log *zap.Logger, db storagenode.DB) *SlowDB {
 	return &SlowDB{
 		DB:    db,
@@ -38,7 +38,7 @@ func (slow *SlowDB) Pieces() blobstore.Blobs {
 	return slow.blobs
 }
 
-// SetLatency enables a sleep for delay duration for all piece operations.
+// SetLatency enables a sleep for delay duration for all blob operations.
 // A zero or negative delay means no sleep.
 func (slow *SlowDB) SetLatency(delay time.Duration) {
 	slow.blobs.SetLatency(delay)
@@ -92,11 +92,11 @@ func (slow *SlowBlobs) OpenWithStorageFormat(ctx context.Context, ref blobstore.
 }
 
 // Trash deletes the blob with the namespace and key.
-func (slow *SlowBlobs) Trash(ctx context.Context, ref blobstore.BlobRef) error {
+func (slow *SlowBlobs) Trash(ctx context.Context, ref blobstore.BlobRef, timestamp time.Time) error {
 	if err := slow.sleep(ctx); err != nil {
 		return errs.Wrap(err)
 	}
-	return slow.blobs.Trash(ctx, ref)
+	return slow.blobs.Trash(ctx, ref, timestamp)
 }
 
 // RestoreTrash restores all files in the trash.
@@ -139,6 +139,14 @@ func (slow *SlowBlobs) DeleteNamespace(ctx context.Context, ref []byte) (err err
 	return slow.blobs.DeleteNamespace(ctx, ref)
 }
 
+// DeleteTrashNamespace deletes the trash folder for the specified namespace.
+func (slow *SlowBlobs) DeleteTrashNamespace(ctx context.Context, namespace []byte) error {
+	if err := slow.sleep(ctx); err != nil {
+		return err
+	}
+	return slow.blobs.DeleteTrashNamespace(ctx, namespace)
+}
+
 // Stat looks up disk metadata on the blob file.
 func (slow *SlowBlobs) Stat(ctx context.Context, ref blobstore.BlobRef) (blobstore.BlobInfo, error) {
 	if err := slow.sleep(ctx); err != nil {
@@ -155,6 +163,14 @@ func (slow *SlowBlobs) StatWithStorageFormat(ctx context.Context, ref blobstore.
 		return nil, errs.Wrap(err)
 	}
 	return slow.blobs.StatWithStorageFormat(ctx, ref, formatVer)
+}
+
+// TryRestoreTrashBlob attempts to restore a blob from trash.
+func (slow *SlowBlobs) TryRestoreTrashBlob(ctx context.Context, ref blobstore.BlobRef) error {
+	if err := slow.sleep(ctx); err != nil {
+		return errs.Wrap(err)
+	}
+	return slow.blobs.TryRestoreTrashBlob(ctx, ref)
 }
 
 // WalkNamespace executes walkFunc for each locally stored blob in the given namespace.
@@ -178,6 +194,14 @@ func (slow *SlowBlobs) FreeSpace(ctx context.Context) (int64, error) {
 		return 0, errs.Wrap(err)
 	}
 	return slow.blobs.FreeSpace(ctx)
+}
+
+// DiskInfo returns the disk space information.
+func (slow *SlowBlobs) DiskInfo(ctx context.Context) (blobstore.DiskInfo, error) {
+	if err := slow.sleep(ctx); err != nil {
+		return blobstore.DiskInfo{}, errs.Wrap(err)
+	}
+	return slow.blobs.DiskInfo(ctx)
 }
 
 // SpaceUsedForBlobs adds up how much is used in all namespaces.

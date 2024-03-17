@@ -7,8 +7,11 @@ import (
 	"context"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/zeebo/errs"
+	"go.uber.org/zap"
 
+	"storj.io/common/dbutil/pgxutil"
 	"storj.io/common/storj"
 	"storj.io/common/uuid"
 )
@@ -32,25 +35,6 @@ type RawObject struct {
 	TotalEncryptedSize int64
 	// FixedSegmentSize is 0 for a migrated object.
 	FixedSegmentSize int32
-
-	Encryption storj.EncryptionParameters
-
-	// ZombieDeletionDeadline defines when the pending raw object should be deleted from the database.
-	// This is as a safeguard against objects that failed to upload and the client has not indicated
-	// whether they want to continue uploading or delete the already uploaded data.
-	ZombieDeletionDeadline *time.Time
-}
-
-// RawPendingObject defines the full pending object that is stored in the database. It should be rarely used directly.
-type RawPendingObject struct {
-	PendingObjectStream
-
-	CreatedAt time.Time
-	ExpiresAt *time.Time
-
-	EncryptedMetadataNonce        []byte
-	EncryptedMetadata             []byte
-	EncryptedMetadataEncryptedKey []byte
 
 	Encryption storj.EncryptionParameters
 
@@ -96,9 +80,8 @@ type RawCopy struct {
 
 // RawState contains full state of a table.
 type RawState struct {
-	Objects        []RawObject
-	PendingObjects []RawPendingObject
-	Segments       []RawSegment
+	Objects  []RawObject
+	Segments []RawSegment
 }
 
 // TestingGetState returns the state of the database.
@@ -106,11 +89,6 @@ func (db *DB) TestingGetState(ctx context.Context) (_ *RawState, err error) {
 	state := &RawState{}
 
 	state.Objects, err = db.testingGetAllObjects(ctx)
-	if err != nil {
-		return nil, Error.New("GetState: %w", err)
-	}
-
-	state.PendingObjects, err = db.testingGetAllPendingObjects(ctx)
 	if err != nil {
 		return nil, Error.New("GetState: %w", err)
 	}
@@ -127,7 +105,6 @@ func (db *DB) TestingGetState(ctx context.Context) (_ *RawState, err error) {
 func (db *DB) TestingDeleteAll(ctx context.Context) (err error) {
 	_, err = db.db.ExecContext(ctx, `
 		WITH ignore_full_scan_for_test AS (SELECT 1) DELETE FROM objects;
-		WITH ignore_full_scan_for_test AS (SELECT 1) DELETE FROM pending_objects;
 		WITH ignore_full_scan_for_test AS (SELECT 1) DELETE FROM segments;
 		WITH ignore_full_scan_for_test AS (SELECT 1) DELETE FROM node_aliases;
 		WITH ignore_full_scan_for_test AS (SELECT 1) SELECT setval('node_alias_seq', 1, false);
@@ -198,56 +175,109 @@ func (db *DB) testingGetAllObjects(ctx context.Context) (_ []RawObject, err erro
 	return objs, nil
 }
 
-// testingGetAllPendingObjects returns the state of the database.
-func (db *DB) testingGetAllPendingObjects(ctx context.Context) (_ []RawPendingObject, err error) {
-	objs := []RawPendingObject{}
+// TestingBatchInsertObjects batch inserts objects for testing.
+// This implementation does no verification on the correctness of objects.
+func (db *DB) TestingBatchInsertObjects(ctx context.Context, objects []RawObject) (err error) {
+	const maxRowsPerCopy = 250000
 
-	rows, err := db.db.QueryContext(ctx, `
-		WITH ignore_full_scan_for_test AS (SELECT 1)
-		SELECT
-			project_id, bucket_name, object_key, stream_id,
-			created_at, expires_at,
-			encrypted_metadata_nonce, encrypted_metadata, encrypted_metadata_encrypted_key,
-			encryption, zombie_deletion_deadline
-		FROM pending_objects
-		ORDER BY project_id ASC, bucket_name ASC, object_key ASC, stream_id ASC
-	`)
-	if err != nil {
-		return nil, Error.New("testingGetAllPendingObjects query: %w", err)
-	}
-	defer func() { err = errs.Combine(err, rows.Close()) }()
-	for rows.Next() {
-		var obj RawPendingObject
-		err := rows.Scan(
-			&obj.ProjectID,
-			&obj.BucketName,
-			&obj.ObjectKey,
-			&obj.StreamID,
+	return Error.Wrap(pgxutil.Conn(ctx, db.db,
+		func(conn *pgx.Conn) error {
+			progress, total := 0, len(objects)
+			for len(objects) > 0 {
+				batch := objects
+				if len(batch) > maxRowsPerCopy {
+					batch = batch[:maxRowsPerCopy]
+				}
+				objects = objects[len(batch):]
 
-			&obj.CreatedAt,
-			&obj.ExpiresAt,
+				source := newCopyFromRawObjects(batch)
+				_, err := conn.CopyFrom(ctx, pgx.Identifier{"objects"}, source.Columns(), source)
+				if err != nil {
+					return err
+				}
 
-			&obj.EncryptedMetadataNonce,
-			&obj.EncryptedMetadata,
-			&obj.EncryptedMetadataEncryptedKey,
-
-			encryptionParameters{&obj.Encryption},
-			&obj.ZombieDeletionDeadline,
-		)
-		if err != nil {
-			return nil, Error.New("testingGetAllPendingObjects scan failed: %w", err)
-		}
-		objs = append(objs, obj)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, Error.New("testingGetAllPendingObjects scan failed: %w", err)
-	}
-
-	if len(objs) == 0 {
-		return nil, nil
-	}
-	return objs, nil
+				progress += len(batch)
+				db.log.Info("batch insert", zap.Int("progress", progress), zap.Int("total", total))
+			}
+			return err
+		}))
 }
+
+type copyFromRawObjects struct {
+	idx  int
+	rows []RawObject
+	row  []any
+}
+
+func newCopyFromRawObjects(rows []RawObject) *copyFromRawObjects {
+	return &copyFromRawObjects{
+		rows: rows,
+		idx:  -1,
+	}
+}
+
+func (ctr *copyFromRawObjects) Next() bool {
+	ctr.idx++
+	return ctr.idx < len(ctr.rows)
+}
+
+func (ctr *copyFromRawObjects) Columns() []string {
+	return []string{
+		"project_id",
+		"bucket_name",
+		"object_key",
+		"version",
+		"stream_id",
+
+		"created_at",
+		"expires_at",
+
+		"status",
+		"segment_count",
+
+		"encrypted_metadata_nonce",
+		"encrypted_metadata",
+		"encrypted_metadata_encrypted_key",
+
+		"total_plain_size",
+		"total_encrypted_size",
+		"fixed_segment_size",
+
+		"encryption",
+		"zombie_deletion_deadline",
+	}
+}
+
+func (ctr *copyFromRawObjects) Values() ([]any, error) {
+	obj := &ctr.rows[ctr.idx]
+	ctr.row = append(ctr.row[:0],
+		obj.ProjectID.Bytes(),
+		[]byte(obj.BucketName),
+		[]byte(obj.ObjectKey),
+		obj.Version,
+		obj.StreamID.Bytes(),
+
+		obj.CreatedAt,
+		obj.ExpiresAt,
+
+		obj.Status, // TODO: fix encoding
+		obj.SegmentCount,
+
+		obj.EncryptedMetadataNonce,
+		obj.EncryptedMetadata,
+		obj.EncryptedMetadataEncryptedKey,
+
+		obj.TotalPlainSize,
+		obj.TotalEncryptedSize,
+		obj.FixedSegmentSize,
+
+		encryptionParameters{&obj.Encryption},
+		obj.ZombieDeletionDeadline,
+	)
+	return ctr.row, nil
+}
+
+func (ctr *copyFromRawObjects) Err() error { return nil }
 
 // testingGetAllSegments returns the state of the database.
 func (db *DB) testingGetAllSegments(ctx context.Context) (_ []RawSegment, err error) {
@@ -271,6 +301,7 @@ func (db *DB) testingGetAllSegments(ctx context.Context) (_ []RawSegment, err er
 	if err != nil {
 		return nil, Error.New("testingGetAllSegments query: %w", err)
 	}
+
 	defer func() { err = errs.Combine(err, rows.Close()) }()
 	for rows.Next() {
 		var seg RawSegment

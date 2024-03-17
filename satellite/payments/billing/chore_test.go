@@ -12,6 +12,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/stripe/stripe-go/v75"
 	"github.com/zeebo/errs"
 	"go.uber.org/zap/zaptest"
 
@@ -19,6 +20,7 @@ import (
 	"storj.io/common/testcontext"
 	"storj.io/common/testrand"
 	"storj.io/common/uuid"
+	"storj.io/storj/private/blockchain"
 	"storj.io/storj/private/testplanet"
 	"storj.io/storj/satellite/console"
 	"storj.io/storj/satellite/payments/billing"
@@ -40,10 +42,10 @@ func TestChore(t *testing.T) {
 			robert: "robert",
 		}
 
-		mike1   = makeFakeTransaction(mike, billing.StorjScanSource, billing.TransactionTypeCredit, 1000, ts, `{"fake": "mike1"}`)
-		mike2   = makeFakeTransaction(mike, billing.StorjScanSource, billing.TransactionTypeCredit, 2000, ts.Add(time.Second*2), `{"fake": "mike2"}`)
-		joe1    = makeFakeTransaction(joe, billing.StorjScanSource, billing.TransactionTypeCredit, 500, ts.Add(time.Second), `{"fake": "joe1"}`)
-		joe2    = makeFakeTransaction(joe, billing.StorjScanSource, billing.TransactionTypeDebit, -100, ts.Add(time.Second), `{"fake": "joe1"}`)
+		mike1   = makeFakeTransaction(mike, billing.StorjScanEthereumSource, billing.TransactionTypeCredit, 1000, ts, `{"fake": "mike1"}`)
+		mike2   = makeFakeTransaction(mike, billing.StorjScanEthereumSource, billing.TransactionTypeCredit, 2000, ts.Add(time.Second*2), `{"fake": "mike2"}`)
+		joe1    = makeFakeTransaction(joe, billing.StorjScanEthereumSource, billing.TransactionTypeCredit, 500, ts.Add(time.Second), `{"fake": "joe1"}`)
+		joe2    = makeFakeTransaction(joe, billing.StorjScanEthereumSource, billing.TransactionTypeDebit, -100, ts.Add(time.Second), `{"fake": "joe1"}`)
 		robert1 = makeFakeTransaction(robert, otherSource, billing.TransactionTypeCredit, 3000, ts.Add(time.Second), `{"fake": "robert1"}`)
 
 		mike1Bonus = makeBonusTransaction(mike, 100, mike1.Timestamp, mike1.Metadata)
@@ -74,9 +76,9 @@ func TestChore(t *testing.T) {
 		assert.Equal(t, expected, actual, "unexpected balance for user %s (%q)", userID, names[userID])
 	}
 
-	runTest := func(ctx *testcontext.Context, t *testing.T, consoleDB console.DB, db billing.TransactionsDB, bonusRate int64, mikeTXs, joeTXs, robertTXs []billing.Transaction, mikeBalance, joeBalance, robertBalance currency.Amount, usageLimitsConfig console.UsageLimitsConfig, userBalanceForUpgrade int64) {
+	runTest := func(ctx *testcontext.Context, t *testing.T, consoleDB console.DB, db billing.TransactionsDB, bonusRate int64, mikeTXs, joeTXs, robertTXs []billing.Transaction, mikeBalance, joeBalance, robertBalance currency.Amount, usageLimitsConfig console.UsageLimitsConfig, userBalanceForUpgrade int64, freezeService *console.AccountFreezeService) {
 		paymentTypes := []billing.PaymentType{
-			newFakePaymentType(billing.StorjScanSource,
+			newFakePaymentType(billing.StorjScanEthereumSource,
 				[]billing.Transaction{mike1, joe1, joe2},
 				[]billing.Transaction{mike2},
 			),
@@ -86,7 +88,7 @@ func TestChore(t *testing.T) {
 		}
 
 		choreObservers := billing.ChoreObservers{
-			UpgradeUser: console.NewUpgradeUserObserver(consoleDB, db, usageLimitsConfig, userBalanceForUpgrade),
+			UpgradeUser: console.NewUpgradeUserObserver(consoleDB, db, usageLimitsConfig, userBalanceForUpgrade, freezeService),
 		}
 
 		chore := billing.NewChore(zaptest.NewLogger(t), paymentTypes, db, time.Hour, false, bonusRate, choreObservers)
@@ -116,6 +118,8 @@ func TestChore(t *testing.T) {
 			sat := planet.Satellites[0]
 			db := sat.DB
 
+			freezeService := console.NewAccountFreezeService(db.Console(), sat.Core.Analytics.Service, sat.Config.Console.AccountFreeze)
+
 			runTest(ctx, t, db.Console(), db.Billing(), 0,
 				[]billing.Transaction{mike2, mike1},
 				[]billing.Transaction{joe1, joe2},
@@ -125,6 +129,7 @@ func TestChore(t *testing.T) {
 				currency.AmountFromBaseUnits(30000000, currency.USDollarsMicro),
 				sat.Config.Console.UsageLimits,
 				sat.Config.Console.UserBalanceForUpgrade,
+				freezeService,
 			)
 		})
 	})
@@ -136,6 +141,8 @@ func TestChore(t *testing.T) {
 			sat := planet.Satellites[0]
 			db := sat.DB
 
+			freezeService := console.NewAccountFreezeService(db.Console(), sat.Core.Analytics.Service, sat.Config.Console.AccountFreeze)
+
 			runTest(ctx, t, db.Console(), db.Billing(), 10,
 				[]billing.Transaction{mike2, mike2Bonus, mike1, mike1Bonus},
 				[]billing.Transaction{joe1, joe1Bonus, joe2},
@@ -145,6 +152,7 @@ func TestChore(t *testing.T) {
 				currency.AmountFromBaseUnits(30000000, currency.USDollarsMicro),
 				sat.Config.Console.UsageLimits,
 				sat.Config.Console.UserBalanceForUpgrade,
+				freezeService,
 			)
 		})
 	})
@@ -159,9 +167,23 @@ func TestChore_UpgradeUserObserver(t *testing.T) {
 		usageLimitsConfig := sat.Config.Console.UsageLimits
 		ts := makeTimestamp()
 
+		freezeService := console.NewAccountFreezeService(db.Console(), sat.Core.Analytics.Service, sat.Config.Console.AccountFreeze)
+
 		user, err := sat.AddUser(ctx, console.CreateUser{
 			FullName: "Test User",
 			Email:    "choreobserver@mail.test",
+		}, 1)
+		require.NoError(t, err)
+
+		user2, err := sat.AddUser(ctx, console.CreateUser{
+			FullName: "Test User",
+			Email:    "choreobserver2@mail.test",
+		}, 1)
+		require.NoError(t, err)
+
+		user3, err := sat.AddUser(ctx, console.CreateUser{
+			FullName: "Test User",
+			Email:    "choreobserver3@mail.test",
 		}, 1)
 		require.NoError(t, err)
 
@@ -169,18 +191,23 @@ func TestChore_UpgradeUserObserver(t *testing.T) {
 		require.NoError(t, err)
 
 		choreObservers := billing.ChoreObservers{
-			UpgradeUser: console.NewUpgradeUserObserver(db.Console(), db.Billing(), sat.Config.Console.UsageLimits, sat.Config.Console.UserBalanceForUpgrade),
+			UpgradeUser: console.NewUpgradeUserObserver(db.Console(), db.Billing(), sat.Config.Console.UsageLimits, sat.Config.Console.UserBalanceForUpgrade, freezeService),
 		}
 
 		amount1 := int64(200) // $2
 		amount2 := int64(800) // $8
-		transaction1 := makeFakeTransaction(user.ID, billing.StorjScanSource, billing.TransactionTypeCredit, amount1, ts, `{"fake": "transaction1"}`)
-		transaction2 := makeFakeTransaction(user.ID, billing.StorjScanSource, billing.TransactionTypeCredit, amount2, ts.Add(time.Second*2), `{"fake": "transaction2"}`)
+		transaction1 := makeFakeTransaction(user.ID, billing.StorjScanEthereumSource, billing.TransactionTypeCredit, amount1, ts, `{"fake": "transaction1"}`)
+		transaction2 := makeFakeTransaction(user.ID, billing.StorjScanEthereumSource, billing.TransactionTypeCredit, amount2, ts.Add(time.Second*2), `{"fake": "transaction2"}`)
+		transaction3 := makeFakeTransaction(user2.ID, billing.StorjScanEthereumSource, billing.TransactionTypeCredit, amount1+amount2, ts, `{"fake": "transaction3"}`)
+		transaction4 := makeFakeTransaction(user3.ID, billing.StorjScanEthereumSource, billing.TransactionTypeCredit, amount1+amount2, ts.Add(time.Second*2), `{"fake": "transaction4"}`)
 		paymentTypes := []billing.PaymentType{
-			newFakePaymentType(billing.StorjScanSource,
+			newFakePaymentType(billing.StorjScanEthereumSource,
 				[]billing.Transaction{transaction1},
 				[]billing.Transaction{},
 				[]billing.Transaction{transaction2},
+				[]billing.Transaction{},
+				[]billing.Transaction{transaction3},
+				[]billing.Transaction{transaction4},
 				[]billing.Transaction{},
 			),
 		}
@@ -214,6 +241,11 @@ func TestChore_UpgradeUserObserver(t *testing.T) {
 				require.Equal(t, usageLimitsConfig.Segment.Free, *p.SegmentLimit)
 			}
 
+			now := time.Now()
+			choreObservers.UpgradeUser.TestSetNow(func() time.Time {
+				return now
+			})
+
 			chore.TransactionCycle.TriggerWait()
 			chore.TransactionCycle.Pause()
 
@@ -225,6 +257,7 @@ func TestChore_UpgradeUserObserver(t *testing.T) {
 			user, err = db.Console().Users().Get(ctx, user.ID)
 			require.NoError(t, err)
 			require.True(t, user.PaidTier)
+			require.WithinDuration(t, now, *user.UpgradeTime, time.Minute)
 			require.Equal(t, usageLimitsConfig.Storage.Paid.Int64(), user.ProjectStorageLimit)
 			require.Equal(t, usageLimitsConfig.Bandwidth.Paid.Int64(), user.ProjectBandwidthLimit)
 			require.Equal(t, usageLimitsConfig.Segment.Paid, user.ProjectSegmentLimit)
@@ -239,6 +272,157 @@ func TestChore_UpgradeUserObserver(t *testing.T) {
 				require.Equal(t, usageLimitsConfig.Segment.Paid, *p.SegmentLimit)
 			}
 		})
+
+		t.Run("no upgrade for legal/violation freeze", func(t *testing.T) {
+			require.NoError(t, freezeService.LegalFreezeUser(ctx, user2.ID))
+			require.NoError(t, freezeService.ViolationFreezeUser(ctx, user3.ID))
+
+			chore.TransactionCycle.TriggerWait()
+			chore.TransactionCycle.Pause()
+
+			expected := currency.AmountFromBaseUnits((amount1+amount2)*int64(10000), currency.USDollarsMicro)
+
+			chore.TransactionCycle.TriggerWait()
+			chore.TransactionCycle.Pause()
+
+			balance, err := db.Billing().GetBalance(ctx, user2.ID)
+			require.NoError(t, err)
+			require.True(t, expected.Equal(balance))
+
+			chore.TransactionCycle.TriggerWait()
+
+			balance, err = db.Billing().GetBalance(ctx, user3.ID)
+			require.NoError(t, err)
+			require.True(t, expected.Equal(balance))
+
+			// users should not be upgraded though they have enough balance
+			// since they are in legal/violation freeze.
+			user, err = db.Console().Users().Get(ctx, user2.ID)
+			require.NoError(t, err)
+			require.False(t, user.PaidTier)
+
+			user, err = db.Console().Users().Get(ctx, user3.ID)
+			require.NoError(t, err)
+			require.False(t, user.PaidTier)
+		})
+	})
+}
+
+func TestChore_PayInvoiceObserver(t *testing.T) {
+	testplanet.Run(t, testplanet.Config{
+		SatelliteCount: 1, StorageNodeCount: 0, UplinkCount: 0,
+	}, func(t *testing.T, ctx *testcontext.Context, planet *testplanet.Planet) {
+		sat := planet.Satellites[0]
+		db := sat.DB
+		consoleDB := db.Console()
+		invoicesDB := sat.Core.Payments.Accounts.Invoices()
+		stripeClient := sat.API.Payments.StripeClient
+		customerDB := sat.Core.DB.StripeCoinPayments().Customers()
+		ts := makeTimestamp()
+
+		user, err := sat.AddUser(ctx, console.CreateUser{
+			FullName: "Test User",
+			Email:    "choreobserver@mail.test",
+		}, 1)
+		require.NoError(t, err)
+
+		cus, err := customerDB.GetCustomerID(ctx, user.ID)
+		require.NoError(t, err)
+
+		// setup storjscan wallet
+		address, err := blockchain.BytesToAddress(testrand.Bytes(20))
+		require.NoError(t, err)
+		userID := user.ID
+		err = sat.DB.Wallets().Add(ctx, userID, address)
+		require.NoError(t, err)
+
+		freezeService := console.NewAccountFreezeService(consoleDB, sat.Core.Analytics.Service, sat.Config.Console.AccountFreeze)
+
+		choreObservers := billing.ChoreObservers{
+			UpgradeUser: console.NewUpgradeUserObserver(consoleDB, db.Billing(), sat.Config.Console.UsageLimits, sat.Config.Console.UserBalanceForUpgrade, freezeService),
+			PayInvoices: console.NewInvoiceTokenPaymentObserver(consoleDB, sat.Core.Payments.Accounts.Invoices(), freezeService),
+		}
+
+		amount := int64(2000)  // $20
+		amount2 := int64(1000) // $10
+		transaction := makeFakeTransaction(user.ID, billing.StorjScanEthereumSource, billing.TransactionTypeCredit, amount, ts, `{"fake": "transaction"}`)
+		transaction2 := makeFakeTransaction(user.ID, billing.StorjScanEthereumSource, billing.TransactionTypeCredit, amount2, ts.Add(time.Second*2), `{"fake": "transaction2"}`)
+		paymentTypes := []billing.PaymentType{
+			newFakePaymentType(billing.StorjScanEthereumSource,
+				[]billing.Transaction{transaction},
+				[]billing.Transaction{},
+				[]billing.Transaction{transaction2},
+				[]billing.Transaction{},
+			),
+		}
+		chore := billing.NewChore(zaptest.NewLogger(t), paymentTypes, db.Billing(), time.Hour, false, 0, choreObservers)
+		ctx.Go(func() error {
+			return chore.Run(ctx)
+		})
+		defer ctx.Check(chore.Close)
+
+		// create invoice
+		inv, err := stripeClient.Invoices().New(&stripe.InvoiceParams{
+			Params:   stripe.Params{Context: ctx},
+			Customer: &cus,
+		})
+		require.NoError(t, err)
+
+		_, err = stripeClient.InvoiceItems().New(&stripe.InvoiceItemParams{
+			Params:   stripe.Params{Context: ctx},
+			Amount:   stripe.Int64(amount + amount2),
+			Currency: stripe.String(string(stripe.CurrencyUSD)),
+			Customer: &cus,
+			Invoice:  &inv.ID,
+		})
+		require.NoError(t, err)
+
+		inv, err = stripeClient.Invoices().FinalizeInvoice(inv.ID, nil)
+		require.NoError(t, err)
+		require.Equal(t, stripe.InvoiceStatusOpen, inv.Status)
+
+		invoices, err := invoicesDB.List(ctx, user.ID)
+		require.NoError(t, err)
+		require.NotEmpty(t, invoices)
+		require.Equal(t, inv.ID, invoices[0].ID)
+		require.Equal(t, inv.ID, invoices[0].ID)
+		require.Equal(t, string(inv.Status), invoices[0].Status)
+
+		err = freezeService.BillingFreezeUser(ctx, userID)
+		require.NoError(t, err)
+
+		chore.TransactionCycle.TriggerWait()
+
+		// user balance would've been the value of amount ($20) but
+		// PayInvoiceObserver will use this to pay part of this user's invoice.
+		balance, err := db.Billing().GetBalance(ctx, user.ID)
+		require.NoError(t, err)
+		require.Zero(t, balance.BaseUnits())
+
+		invoices, err = invoicesDB.List(ctx, user.ID)
+		require.NoError(t, err)
+		require.NotEmpty(t, invoices)
+		// invoice remains unpaid since only $20 was paid.
+		require.Equal(t, string(stripe.InvoiceStatusOpen), invoices[0].Status)
+
+		// user remains frozen since payment is not complete.
+		frozen, err := freezeService.IsUserBillingFrozen(ctx, userID)
+		require.NoError(t, err)
+		require.True(t, frozen)
+
+		chore.TransactionCycle.TriggerWait()
+
+		// the second transaction of $10 reflects at this point and
+		// is used to pay for the remaining invoice balance.
+		invoices, err = invoicesDB.List(ctx, user.ID)
+		require.NoError(t, err)
+		require.NotEmpty(t, invoices)
+		require.Equal(t, string(stripe.InvoiceStatusPaid), invoices[0].Status)
+
+		// user is not frozen since payment is complete.
+		frozen, err = freezeService.IsUserBillingFrozen(ctx, userID)
+		require.NoError(t, err)
+		require.False(t, frozen)
 	})
 }
 
@@ -284,9 +468,9 @@ func newFakePaymentType(source string, txBatches ...[]billing.Transaction) *fake
 	}
 }
 
-func (pt *fakePaymentType) Source() string                { return pt.source }
+func (pt *fakePaymentType) Sources() []string             { return []string{pt.source} }
 func (pt *fakePaymentType) Type() billing.TransactionType { return pt.txType }
-func (pt *fakePaymentType) GetNewTransactions(_ context.Context, lastTransactionTime time.Time, metadata []byte) ([]billing.Transaction, error) {
+func (pt *fakePaymentType) GetNewTransactions(_ context.Context, _ string, lastTransactionTime time.Time, metadata []byte) ([]billing.Transaction, error) {
 	// Ensure that the chore is passing up the expected fields
 	switch {
 	case !pt.lastTransactionTime.Equal(lastTransactionTime):

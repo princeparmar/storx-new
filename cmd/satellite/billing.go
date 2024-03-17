@@ -11,10 +11,11 @@ import (
 	"github.com/zeebo/errs"
 	"go.uber.org/zap"
 
+	"storj.io/common/process"
 	"storj.io/common/uuid"
-	"storj.io/private/process"
 	"storj.io/storj/satellite"
 	"storj.io/storj/satellite/analytics"
+	"storj.io/storj/satellite/emission"
 	"storj.io/storj/satellite/payments/stripe"
 	"storj.io/storj/satellite/satellitedb"
 )
@@ -79,6 +80,7 @@ func setupPayments(log *zap.Logger, db satellite.DB) (*stripe.Service, error) {
 		pc.PackagePlans.Packages,
 		pc.BonusRate,
 		analytics.NewService(log.Named("analytics:service"), runCfg.Analytics, runCfg.Console.SatelliteName),
+		emission.NewService(runCfg.Emission),
 	)
 }
 

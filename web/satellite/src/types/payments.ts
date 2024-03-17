@@ -1,8 +1,17 @@
-// Copyright (C) 2019 Storx Labs, Inc.
+// Copyright (C) 2019 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 import { formatPrice, decimalShift } from '@/utils/strings';
 import { JSONRepresentable } from '@/types/json';
+
+/**
+ * Page parameters for listing payments history.
+ */
+export interface PaymentHistoryParam {
+    limit: number;
+    startingAfter: string;
+    endingBefore: string;
+}
 
 /**
  * Exposes all payments-related functionality
@@ -41,6 +50,13 @@ export interface PaymentsApi {
     addCreditCard(token: string): Promise<void>;
 
     /**
+     * Add payment method.
+     * @param pmID - stripe payment method id of the credit card
+     * @throws Error
+     */
+    addCardByPaymentMethodID(pmID: string): Promise<void>;
+
+    /**
      * Detach credit card from payment account.
      * @param cardId
      * @throws Error
@@ -68,7 +84,7 @@ export interface PaymentsApi {
      * @returns list of payments history items
      * @throws Error
      */
-    paymentsHistory(): Promise<PaymentsHistoryItem[]>;
+    paymentsHistory(param: PaymentHistoryParam): Promise<PaymentHistoryPage>;
 
     /**
      * Returns a list of invoices, transactions and all others payments history items for payment account.
@@ -119,10 +135,11 @@ export interface PaymentsApi {
     /**
      * Purchases the pricing package associated with the user's partner.
      *
-     * @param token - the Stripe token used to add a credit card as a payment method
+     * @param dataStr - the Stripe payment method id or token of the credit card
+     * @param isPMID - whether the dataStr is a payment method id or token
      * @throws Error
      */
-    purchasePricingPackage(token: string): Promise<void>;
+    purchasePricingPackage(dataStr: string, isPMID: boolean): Promise<void>;
 
     /**
      * Returns whether there is a pricing package configured for the user's partner.
@@ -135,7 +152,7 @@ export interface PaymentsApi {
 export class AccountBalance {
     constructor(
         public freeCredits: number = 0,
-        // STORJ token balance from storjscan.
+        // STORJ token balance (in dollars) from storjscan.
         private _coins: string = '0',
         // STORJ balance (in cents) from stripe. This may include the following.
         // 1. legacy Coinpayments deposit.
@@ -149,6 +166,10 @@ export class AccountBalance {
         return parseFloat(this._coins);
     }
 
+    public get credits(): number {
+        return parseFloat(this._credits);
+    }
+
     public get formattedCredits(): string {
         return formatPrice(decimalShift(this._credits, 2));
     }
@@ -157,10 +178,14 @@ export class AccountBalance {
         return formatPrice(this._coins);
     }
 
+    // Returns sum of storjscan and legacy (stripe) balances in cents.
     public get sum(): number {
-        return this.freeCredits + this.coins;
+        return this.credits + (this.coins * 100);
     }
 
+    public get formattedSum(): string {
+        return formatPrice((this.sum / 100).toString());
+    }
     public hasCredits(): boolean {
         return parseFloat(this._credits) !== 0;
     }
@@ -179,10 +204,14 @@ export class CreditCard {
     ) { }
 }
 
-export class PaymentAmountOption {
+/**
+ * PaymentHistoryPage holds a paged list of PaymentsHistoryItem.
+ */
+export class PaymentHistoryPage {
     public constructor(
-        public value: number,
-        public label: string = '',
+        public readonly items: PaymentsHistoryItem[],
+        public readonly hasNext = false,
+        public readonly hasPrevious = false,
     ) { }
 }
 
@@ -594,8 +623,8 @@ export enum CouponDuration {
  */
 export class Wallet {
     public constructor(
-      public address: string = '',
-      public balance: TokenAmount = new TokenAmount(),
+        public address: string = '',
+        public balance: TokenAmount = new TokenAmount(),
     ) { }
 }
 

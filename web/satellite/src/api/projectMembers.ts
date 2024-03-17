@@ -1,12 +1,11 @@
-// Copyright (C) 2019 Storx Labs, Inc.
+// Copyright (C) 2019 Storj Labs, Inc.
 // See LICENSE for copying information.
 
-import { BaseGql } from '@/api/baseGql';
 import { ProjectInvitationItemModel, ProjectMember, ProjectMemberCursor, ProjectMembersApi, ProjectMembersPage } from '@/types/projectMembers';
 import { HttpClient } from '@/utils/httpClient';
 import { APIError } from '@/utils/error';
 
-export class ProjectMembersApiGql extends BaseGql implements ProjectMembersApi {
+export class ProjectMembersHttpApi implements ProjectMembersApi {
     private readonly http: HttpClient = new HttpClient();
     private readonly ROOT_PATH: string = '/api/v0/projects';
 
@@ -51,12 +50,31 @@ export class ProjectMembersApiGql extends BaseGql implements ProjectMembersApi {
     }
 
     /**
-     * Handles inviting users to a project.
+     * Handles inviting a user to a project.
      *
      * @throws Error
      */
-    public async invite(projectID: string, emails: string[]): Promise<void> {
-        const path = `${this.ROOT_PATH}/${projectID}/invite`;
+    public async invite(projectID: string, email: string): Promise<void> {
+        const path = `${this.ROOT_PATH}/${projectID}/invite/${encodeURIComponent(email)}`;
+        const httpResponse = await this.http.post(path, null);
+
+        if (httpResponse.ok) return;
+
+        const result = await httpResponse.json();
+        throw new APIError({
+            status: httpResponse.status,
+            message: result.error || 'Failed to send project invitations',
+            requestID: httpResponse.headers.get('x-request-id'),
+        });
+    }
+
+    /**
+     * Handles resending invitations to project.
+     *
+     * @throws Error
+     */
+    public async reinvite(projectID: string, emails: string[]): Promise<void> {
+        const path = `${this.ROOT_PATH}/${projectID}/reinvite`;
         const body = { emails };
         const httpResponse = await this.http.post(path, JSON.stringify(body));
 
@@ -65,7 +83,7 @@ export class ProjectMembersApiGql extends BaseGql implements ProjectMembersApi {
         const result = await httpResponse.json();
         throw new APIError({
             status: httpResponse.status,
-            message: result.error || 'Failed to send project invitations',
+            message: result.error || 'Failed to resend project invitations',
             requestID: httpResponse.headers.get('x-request-id'),
         });
     }
@@ -102,11 +120,11 @@ export class ProjectMembersApiGql extends BaseGql implements ProjectMembersApi {
 
         const projectMembersPage: ProjectMembersPage = new ProjectMembersPage();
         projectMembersPage.projectMembers = projectMembers.projectMembers.map(key => new ProjectMember(
-            key.user.fullName,
-            key.user.shortName,
-            key.user.email,
+            key.fullName,
+            key.shortName,
+            key.email,
             new Date(key.joinedAt),
-            key.user.id,
+            key.id,
         ));
         projectMembersPage.projectInvitations = projectMembers.projectInvitations.map(key => new ProjectInvitationItemModel(
             key.email,

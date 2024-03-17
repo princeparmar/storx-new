@@ -6,9 +6,12 @@ package satellitedb
 import (
 	"context"
 	"encoding/json"
+	"strconv"
+	"strings"
 
 	"github.com/zeebo/errs"
 
+	"storj.io/common/tagsql"
 	"storj.io/common/uuid"
 	"storj.io/storj/satellite/console"
 	"storj.io/storj/satellite/satellitedb/dbx"
@@ -31,6 +34,9 @@ func (events *accountFreezeEvents) Upsert(ctx context.Context, event *console.Ac
 	}
 
 	createFields := dbx.AccountFreezeEvent_Create_Fields{}
+	if event.DaysTillEscalation != nil {
+		createFields.DaysTillEscalation = dbx.AccountFreezeEvent_DaysTillEscalation(*event.DaysTillEscalation)
+	}
 	if event.Limits != nil {
 		limitBytes, err := json.Marshal(event.Limits)
 		if err != nil {
@@ -66,8 +72,8 @@ func (events *accountFreezeEvents) Get(ctx context.Context, userID uuid.UUID, ev
 	return fromDBXAccountFreezeEvent(dbxEvent)
 }
 
-// GetAllEvents is a method for querying all account freeze events from the database.
-func (events *accountFreezeEvents) GetAllEvents(ctx context.Context, cursor console.FreezeEventsCursor) (freezeEvents *console.FreezeEventsPage, err error) {
+// GetAllEvents is a method for querying all account freeze events or events of particular types from the database.
+func (events *accountFreezeEvents) GetAllEvents(ctx context.Context, cursor console.FreezeEventsCursor, optionalEventTypes []console.AccountFreezeEventType) (freezeEvents *console.FreezeEventsPage, err error) {
 	defer mon.Task()(&ctx)(&err)
 
 	if cursor.Limit <= 0 {
@@ -82,12 +88,27 @@ func (events *accountFreezeEvents) GetAllEvents(ctx context.Context, cursor cons
 		cursor.StartingAfter = &uuid.UUID{}
 	}
 
-	rows, err := events.db.Query(ctx, events.db.Rebind(`
-		SELECT user_id, event
+	var rows tagsql.Rows
+	if len(optionalEventTypes) == 0 {
+		rows, err = events.db.Query(ctx, events.db.Rebind(`
+		SELECT user_id, event, days_till_escalation, created_at
 		FROM account_freeze_events
 			WHERE user_id > ? 
 			ORDER BY user_id LIMIT ?
 		`), cursor.StartingAfter, cursor.Limit+1)
+	} else {
+		types := make([]string, 0, len(optionalEventTypes))
+		for _, t := range optionalEventTypes {
+			types = append(types, strconv.Itoa(int(t)))
+		}
+		rows, err = events.db.Query(ctx, events.db.Rebind(`
+		SELECT user_id, event, days_till_escalation, created_at
+		FROM account_freeze_events
+			WHERE user_id > ? AND event IN (`+strings.Join(types, ",")+`)
+			ORDER BY user_id LIMIT ?
+		`), cursor.StartingAfter, cursor.Limit+1)
+	}
+
 	if err != nil {
 		return nil, Error.Wrap(err)
 	}
@@ -103,7 +124,7 @@ func (events *accountFreezeEvents) GetAllEvents(ctx context.Context, cursor cons
 			break
 		}
 		var event dbx.AccountFreezeEvent
-		err = rows.Scan(&event.UserId, &event.Event)
+		err = rows.Scan(&event.UserId, &event.Event, &event.DaysTillEscalation, &event.CreatedAt)
 		if err != nil {
 			return nil, err
 		}
@@ -120,33 +141,69 @@ func (events *accountFreezeEvents) GetAllEvents(ctx context.Context, cursor cons
 }
 
 // GetAll is a method for querying all account freeze events from the database by user ID.
-func (events *accountFreezeEvents) GetAll(ctx context.Context, userID uuid.UUID) (freeze *console.AccountFreezeEvent, warning *console.AccountFreezeEvent, err error) {
+func (events *accountFreezeEvents) GetAll(ctx context.Context, userID uuid.UUID) (freezes *console.UserFreezeEvents, err error) {
 	defer mon.Task()(&ctx)(&err)
 
-	// dbxEvents will have a max length of 2.
-	// because there's at most 1 instance each of 2 types of events for a user.
+	// dbxEvents will have a max length of 6.
+	// because there's at most 1 instance each of 6 types of events for a user.
 	dbxEvents, err := events.db.All_AccountFreezeEvent_By_UserId(ctx,
 		dbx.AccountFreezeEvent_UserId(userID.Bytes()),
 	)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
+	freezes = &console.UserFreezeEvents{}
 	for _, event := range dbxEvents {
-		if console.AccountFreezeEventType(event.Event) == console.Freeze {
-			freeze, err = fromDBXAccountFreezeEvent(event)
+		eventType := console.AccountFreezeEventType(event.Event)
+		if eventType == console.BillingFreeze {
+			freezes.BillingFreeze, err = fromDBXAccountFreezeEvent(event)
 			if err != nil {
-				return nil, nil, err
+				return nil, err
 			}
 			continue
 		}
-		warning, err = fromDBXAccountFreezeEvent(event)
-		if err != nil {
-			return nil, nil, err
+		if eventType == console.ViolationFreeze {
+			freezes.ViolationFreeze, err = fromDBXAccountFreezeEvent(event)
+			if err != nil {
+				return nil, err
+			}
+			continue
+		}
+		if eventType == console.LegalFreeze {
+			freezes.LegalFreeze, err = fromDBXAccountFreezeEvent(event)
+			if err != nil {
+				return nil, err
+			}
+			continue
+		}
+		if eventType == console.BillingWarning {
+			freezes.BillingWarning, err = fromDBXAccountFreezeEvent(event)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if eventType == console.DelayedBotFreeze {
+			freezes.DelayedBotFreeze, err = fromDBXAccountFreezeEvent(event)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if eventType == console.BotFreeze {
+			freezes.BotFreeze, err = fromDBXAccountFreezeEvent(event)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if eventType == console.TrialExpirationFreeze {
+			freezes.TrialExpirationFreeze, err = fromDBXAccountFreezeEvent(event)
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
 
-	return freeze, warning, nil
+	return freezes, nil
 }
 
 // DeleteAllByUserID is a method for deleting all account freeze events from the database by user ID.
@@ -180,9 +237,10 @@ func fromDBXAccountFreezeEvent(dbxEvent *dbx.AccountFreezeEvent) (_ *console.Acc
 		return nil, err
 	}
 	event := &console.AccountFreezeEvent{
-		UserID:    userID,
-		Type:      console.AccountFreezeEventType(dbxEvent.Event),
-		CreatedAt: dbxEvent.CreatedAt,
+		UserID:             userID,
+		Type:               console.AccountFreezeEventType(dbxEvent.Event),
+		DaysTillEscalation: dbxEvent.DaysTillEscalation,
+		CreatedAt:          dbxEvent.CreatedAt,
 	}
 	if dbxEvent.Limits != nil {
 		err := json.Unmarshal(dbxEvent.Limits, &event.Limits)

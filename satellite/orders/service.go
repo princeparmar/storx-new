@@ -5,8 +5,10 @@ package orders
 
 import (
 	"context"
-	"math"
+	"fmt"
 	mathrand "math/rand"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -37,6 +39,8 @@ type Config struct {
 	FlushInterval       time.Duration  `help:"how often to flush the rollups write cache to the database" devDefault:"30s" releaseDefault:"1m" testDefault:"$TESTINTERVAL"`
 	NodeStatusLogging   bool           `hidden:"true" help:"deprecated, log the offline/disqualification status of nodes" default:"false" testDefault:"true"`
 	OrdersSemaphoreSize int            `help:"how many concurrent orders to process at once. zero is unlimited" default:"2"`
+
+	DownloadTailToleranceOverrides string `help:"how many nodes should be used for downloads for certain k. must be >= k. if not specified, this is calculated from long tail tolerance. format is comma separated like k-d,k-d,k-d e.g. 29-35,3-5." default:""`
 }
 
 // Overlay defines the overlay dependency of orders.Service.
@@ -58,11 +62,13 @@ type Service struct {
 	satellite      signing.Signer
 	overlay        Overlay
 	orders         DB
-	placementRules overlay.PlacementRules
+	placementRules nodeselection.PlacementRules
 
 	encryptionKeys EncryptionKeys
 
 	orderExpiration time.Duration
+
+	downloadOverrides map[int16]int32
 
 	rngMu sync.Mutex
 	rng   *mathrand.Rand
@@ -71,10 +77,15 @@ type Service struct {
 // NewService creates new service for creating order limits.
 func NewService(
 	log *zap.Logger, satellite signing.Signer, overlay Overlay,
-	orders DB, placementRules overlay.PlacementRules, config Config,
+	orders DB, placementRules nodeselection.PlacementRules, config Config,
 ) (*Service, error) {
 	if config.EncryptionKeys.Default.IsZero() {
 		return nil, Error.New("encryption keys must be specified to include encrypted metadata")
+	}
+
+	downloadOverrides, err := parseDownloadOverrides(config.DownloadTailToleranceOverrides)
+	if err != nil {
+		return nil, err
 	}
 
 	return &Service{
@@ -87,6 +98,8 @@ func NewService(
 		encryptionKeys: config.EncryptionKeys,
 
 		orderExpiration: config.Expiration,
+
+		downloadOverrides: downloadOverrides,
 
 		rng: mathrand.New(mathrand.NewSource(time.Now().UnixNano())),
 	}, nil
@@ -127,6 +140,32 @@ func (service *Service) updateBandwidth(ctx context.Context, bucket metabase.Buc
 	return nil
 }
 
+// DownloadNodes calculates the number of nodes needed to download in the
+// presence of node failure based on t = k + (n-o)k/o.
+func (service *Service) DownloadNodes(scheme storj.RedundancyScheme) int32 {
+	if needed, found := service.downloadOverrides[scheme.RequiredShares]; found {
+		return needed
+	}
+
+	extra := int32(1)
+
+	if scheme.OptimalShares > 0 {
+		extra = int32(((scheme.TotalShares - scheme.OptimalShares) * scheme.RequiredShares) / scheme.OptimalShares)
+		if extra == 0 {
+			// ensure there is at least one extra node, so we can have error detection/correction
+			// N.B.: we actually need two for this, but the uplink doesn't make appropriate use of it (yet)
+			extra = 1
+		}
+	}
+
+	needed := int32(scheme.RequiredShares) + extra
+
+	if needed > int32(scheme.TotalShares) {
+		needed = int32(scheme.TotalShares)
+	}
+	return needed
+}
+
 // CreateGetOrderLimits creates the order limits for downloading the pieces of a segment.
 func (service *Service) CreateGetOrderLimits(ctx context.Context, bucket metabase.BucketLocation, segment metabase.Segment, desiredNodes int32, overrideLimit int64) (_ []*pb.AddressedOrderLimit, privateKey storj.PiecePrivateKey, err error) {
 	defer mon.Task()(&ctx)(&err)
@@ -149,7 +188,7 @@ func (service *Service) CreateGetOrderLimits(ctx context.Context, bucket metabas
 
 	filter := service.placementRules(segment.Placement)
 	for id, node := range nodes {
-		if !filter.MatchInclude(node) {
+		if !filter.Match(node) {
 			delete(nodes, id)
 		}
 	}
@@ -159,7 +198,7 @@ func (service *Service) CreateGetOrderLimits(ctx context.Context, bucket metabas
 		return nil, storj.PiecePrivateKey{}, Error.Wrap(err)
 	}
 
-	neededLimits := segment.Redundancy.DownloadNodes()
+	neededLimits := service.DownloadNodes(segment.Redundancy)
 	if desiredNodes > neededLimits {
 		neededLimits = desiredNodes
 	}
@@ -459,18 +498,12 @@ func (service *Service) CreateGetRepairOrderLimits(ctx context.Context, segment 
 }
 
 // CreatePutRepairOrderLimits creates the order limits for uploading the repaired pieces of segment to newNodes.
-func (service *Service) CreatePutRepairOrderLimits(ctx context.Context, segment metabase.Segment, getOrderLimits []*pb.AddressedOrderLimit, healthySet map[int32]struct{}, newNodes []*nodeselection.SelectedNode, optimalThresholdMultiplier float64, numPiecesInExcludedCountries int) (_ []*pb.AddressedOrderLimit, _ storj.PiecePrivateKey, err error) {
+func (service *Service) CreatePutRepairOrderLimits(ctx context.Context, segment metabase.Segment, getOrderLimits []*pb.AddressedOrderLimit, healthySet map[uint16]struct{}, newNodes []*nodeselection.SelectedNode) (_ []*pb.AddressedOrderLimit, _ storj.PiecePrivateKey, err error) {
 	defer mon.Task()(&ctx)(&err)
 
 	// Create the order limits for being used to upload the repaired pieces
 	pieceSize := segment.PieceSize()
-
 	totalPieces := int(segment.Redundancy.TotalShares)
-	totalPiecesAfterRepair := int(math.Ceil(float64(segment.Redundancy.OptimalShares)*optimalThresholdMultiplier)) + numPiecesInExcludedCountries
-
-	if totalPiecesAfterRepair > totalPieces {
-		totalPiecesAfterRepair = totalPieces
-	}
 
 	var numRetrievablePieces int
 	for _, o := range getOrderLimits {
@@ -478,8 +511,6 @@ func (service *Service) CreatePutRepairOrderLimits(ctx context.Context, segment 
 			numRetrievablePieces++
 		}
 	}
-
-	totalPiecesToRepair := totalPiecesAfterRepair - len(healthySet)
 
 	limits := make([]*pb.AddressedOrderLimit, totalPieces)
 
@@ -493,7 +524,7 @@ func (service *Service) CreatePutRepairOrderLimits(ctx context.Context, segment 
 		return nil, storj.PiecePrivateKey{}, Error.Wrap(err)
 	}
 
-	var pieceNum int32
+	var pieceNum uint16
 	for _, node := range newNodes {
 		for int(pieceNum) < totalPieces {
 			_, isHealthy := healthySet[pieceNum]
@@ -507,18 +538,13 @@ func (service *Service) CreatePutRepairOrderLimits(ctx context.Context, segment 
 			return nil, storj.PiecePrivateKey{}, Error.New("piece num greater than total pieces: %d >= %d", pieceNum, totalPieces)
 		}
 
-		limit, err := signer.Sign(ctx, resolveStorageNode_Selected(node, false), pieceNum)
+		limit, err := signer.Sign(ctx, resolveStorageNode_Selected(node, false), int32(pieceNum))
 		if err != nil {
 			return nil, storj.PiecePrivateKey{}, Error.Wrap(err)
 		}
 
 		limits[pieceNum] = limit
 		pieceNum++
-		totalPiecesToRepair--
-
-		if totalPiecesToRepair == 0 {
-			break
-		}
 	}
 
 	return limits, signer.PrivateKey, nil
@@ -528,7 +554,6 @@ func (service *Service) CreatePutRepairOrderLimits(ctx context.Context, segment 
 func (service *Service) CreateGracefulExitPutOrderLimit(ctx context.Context, bucket metabase.BucketLocation, nodeID storj.NodeID, pieceNum int32, rootPieceID storj.PieceID, shareSize int32) (limit *pb.AddressedOrderLimit, _ storj.PiecePrivateKey, err error) {
 	defer mon.Task()(&ctx)(&err)
 
-	// should this use KnownReliable or similar?
 	node, err := service.overlay.Get(ctx, nodeID)
 	if err != nil {
 		return nil, storj.PiecePrivateKey{}, Error.Wrap(err)
@@ -612,4 +637,33 @@ func resolveStorageNode(node *pb.Node, lastIPPort string, resolveDNS bool) *pb.N
 		node.Address.Address = lastIPPort
 	}
 	return node
+}
+
+func parseDownloadOverrides(val string) (map[int16]int32, error) {
+	rv := map[int16]int32{}
+	val = strings.TrimSpace(val)
+	if val != "" {
+		for _, entry := range strings.Split(val, ",") {
+			parts := strings.Split(entry, "-")
+			if len(parts) != 2 {
+				return nil, fmt.Errorf("invalid download override value %q", val)
+			}
+			required, err := strconv.ParseInt(parts[0], 10, 16)
+			if err != nil {
+				return nil, fmt.Errorf("invalid download override value %q: %w", val, err)
+			}
+			download, err := strconv.ParseInt(parts[1], 10, 32)
+			if err != nil {
+				return nil, fmt.Errorf("invalid download override value %q: %w", val, err)
+			}
+			if required > download {
+				return nil, fmt.Errorf("invalid download override value %q: required > download", val)
+			}
+			if _, found := rv[int16(required)]; found {
+				return nil, fmt.Errorf("invalid download override value %q: duplicate key", val)
+			}
+			rv[int16(required)] = int32(download)
+		}
+	}
+	return rv, nil
 }

@@ -9,48 +9,35 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/zeebo/errs"
+
 	"storj.io/common/storj"
-	"storj.io/common/storj/location"
-	"storj.io/storj/satellite/metabase"
 	"storj.io/storj/satellite/nodeselection"
 	"storj.io/storj/satellite/overlay"
 )
 
-// ReliabilityCache caches the reliable nodes for the specified staleness duration
+// ReliabilityCache caches known nodes for the specified staleness duration
 // and updates automatically from overlay.
 //
 // architecture: Service
 type ReliabilityCache struct {
 	overlay   *overlay.Service
 	staleness time.Duration
-	// define from which countries nodes should be marked as offline
-	excludedCountryCodes map[location.CountryCode]struct{}
-	mu                   sync.Mutex
-	state                atomic.Value // contains immutable *reliabilityState
-	placementRules       overlay.PlacementRules
+	mu        sync.Mutex
+	state     atomic.Value // contains immutable *reliabilityState
 }
 
 // reliabilityState.
 type reliabilityState struct {
-	reliableOnline map[storj.NodeID]nodeselection.SelectedNode
-	reliableAll    map[storj.NodeID]nodeselection.SelectedNode
-	created        time.Time
+	nodeByID map[storj.NodeID]nodeselection.SelectedNode
+	created  time.Time
 }
 
 // NewReliabilityCache creates a new reliability checking cache.
-func NewReliabilityCache(overlay *overlay.Service, staleness time.Duration, placementRules overlay.PlacementRules, excludedCountries []string) *ReliabilityCache {
-	excludedCountryCodes := make(map[location.CountryCode]struct{})
-	for _, countryCode := range excludedCountries {
-		if cc := location.ToCountryCode(countryCode); cc != location.None {
-			excludedCountryCodes[cc] = struct{}{}
-		}
-	}
-
+func NewReliabilityCache(overlay *overlay.Service, staleness time.Duration) *ReliabilityCache {
 	return &ReliabilityCache{
-		overlay:              overlay,
-		staleness:            staleness,
-		placementRules:       placementRules,
-		excludedCountryCodes: excludedCountryCodes,
+		overlay:   overlay,
+		staleness: staleness,
 	}
 }
 
@@ -73,72 +60,29 @@ func (cache *ReliabilityCache) NumNodes(ctx context.Context) (numNodes int, err 
 		return 0, err
 	}
 
-	return len(state.reliableOnline), nil
+	return len(state.nodeByID), nil
 }
 
-// MissingPieces returns piece indices that are unreliable with the given staleness period.
-func (cache *ReliabilityCache) MissingPieces(ctx context.Context, created time.Time, pieces metabase.Pieces) (_ metabase.Pieces, err error) {
-	state, err := cache.loadFast(ctx, created)
-	if err != nil {
-		return nil, err
-	}
-	var unreliable metabase.Pieces
-	for _, p := range pieces {
-		node, ok := state.reliableOnline[p.StorageNode]
-		if !ok {
-			unreliable = append(unreliable, p)
-		} else if _, excluded := cache.excludedCountryCodes[node.CountryCode]; excluded {
-			unreliable = append(unreliable, p)
-		}
-	}
-	return unreliable, nil
-}
-
-// OutOfPlacementPieces checks which pieces are out of segment placement. Piece placement is defined by node location which is storing it.
-func (cache *ReliabilityCache) OutOfPlacementPieces(ctx context.Context, created time.Time, pieces metabase.Pieces, placement storj.PlacementConstraint) (_ metabase.Pieces, err error) {
-	defer mon.Task()(&ctx)(nil)
-
-	if len(pieces) == 0 {
-		return metabase.Pieces{}, nil
-	}
-
-	state, err := cache.loadFast(ctx, created)
-	if err != nil {
-		return nil, err
-	}
-	var outOfPlacementPieces metabase.Pieces
-	nodeFilters := cache.placementRules(placement)
-	for _, p := range pieces {
-		if node, ok := state.reliableAll[p.StorageNode]; ok && !nodeFilters.MatchInclude(&node) {
-			outOfPlacementPieces = append(outOfPlacementPieces, p)
-		}
-	}
-
-	return outOfPlacementPieces, nil
-}
-
-// PiecesNodesLastNetsInOrder returns the /24 subnet for each piece storage node, in order. If a
-// requested node is not in the database or it's unreliable, an empty string will be returned corresponding
-// to that node's last_net.
-func (cache *ReliabilityCache) PiecesNodesLastNetsInOrder(ctx context.Context, created time.Time, pieces metabase.Pieces) (lastNets []string, err error) {
-	defer mon.Task()(&ctx)(nil)
-
-	if len(pieces) == 0 {
-		return []string{}, nil
-	}
-
-	state, err := cache.loadFast(ctx, created)
+// GetNodes gets the cached SelectedNode records (valid as of the given time) for each of
+// the requested node IDs, and returns them in order. If a node is not in the reliability
+// cache (that is, it is unknown or disqualified), an empty SelectedNode will be returned
+// for the index corresponding to that node ID.
+// Slice selectedNodes will be filled with results nodes and returned. It's length must be
+// equal to nodeIDs slice.
+func (cache *ReliabilityCache) GetNodes(ctx context.Context, validUpTo time.Time, nodeIDs []storj.NodeID, selectedNodes []nodeselection.SelectedNode) ([]nodeselection.SelectedNode, error) {
+	state, err := cache.loadFast(ctx, validUpTo)
 	if err != nil {
 		return nil, err
 	}
 
-	lastNets = make([]string, len(pieces))
-	for i, piece := range pieces {
-		if node, ok := state.reliableAll[piece.StorageNode]; ok {
-			lastNets[i] = node.LastNet
-		}
+	if len(nodeIDs) != len(selectedNodes) {
+		return nil, errs.New("nodeIDs length must be equal to selectedNodes: want %d have %d", len(nodeIDs), len(selectedNodes))
 	}
-	return lastNets, nil
+
+	for i, nodeID := range nodeIDs {
+		selectedNodes[i] = state.nodeByID[nodeID]
+	}
+	return selectedNodes, nil
 }
 
 func (cache *ReliabilityCache) loadFast(ctx context.Context, validUpTo time.Time) (_ *reliabilityState, err error) {
@@ -180,22 +124,17 @@ func (cache *ReliabilityCache) Refresh(ctx context.Context) (err error) {
 func (cache *ReliabilityCache) refreshLocked(ctx context.Context) (_ *reliabilityState, err error) {
 	defer mon.Task()(&ctx)(&err)
 
-	online, offline, err := cache.overlay.Reliable(ctx)
+	selectedNodes, err := cache.overlay.GetParticipatingNodes(ctx)
 	if err != nil {
 		return nil, Error.Wrap(err)
 	}
 
 	state := &reliabilityState{
-		created:        time.Now(),
-		reliableOnline: make(map[storj.NodeID]nodeselection.SelectedNode, len(online)),
-		reliableAll:    make(map[storj.NodeID]nodeselection.SelectedNode, len(online)+len(offline)),
+		created:  time.Now(),
+		nodeByID: make(map[storj.NodeID]nodeselection.SelectedNode, len(selectedNodes)),
 	}
-	for _, node := range online {
-		state.reliableOnline[node.ID] = node
-		state.reliableAll[node.ID] = node
-	}
-	for _, node := range offline {
-		state.reliableAll[node.ID] = node
+	for _, node := range selectedNodes {
+		state.nodeByID[node.ID] = node
 	}
 
 	cache.state.Store(state)

@@ -8,14 +8,11 @@ import (
 	"database/sql"
 	"errors"
 
-	pgxerrcode "github.com/jackc/pgerrcode"
-
+	"storj.io/common/dbutil/pgutil"
+	"storj.io/common/dbutil/txutil"
 	"storj.io/common/storj"
+	"storj.io/common/tagsql"
 	"storj.io/common/uuid"
-	"storj.io/private/dbutil/pgutil"
-	"storj.io/private/dbutil/pgutil/pgerrcode"
-	"storj.io/private/dbutil/txutil"
-	"storj.io/private/tagsql"
 )
 
 // BeginMoveObjectResult holds data needed to begin move object.
@@ -46,7 +43,8 @@ type BeginMoveCopyResults struct {
 
 // BeginMoveObject collects all data needed to begin object move procedure.
 func (db *DB) BeginMoveObject(ctx context.Context, opts BeginMoveObject) (_ BeginMoveObjectResult, err error) {
-	result, err := db.beginMoveCopyObject(ctx, opts.ObjectLocation, MoveSegmentLimit, nil)
+	// TODO(ver) add support specifying move source object version
+	result, err := db.beginMoveCopyObject(ctx, opts.ObjectLocation, 0, MoveSegmentLimit, nil)
 	if err != nil {
 		return BeginMoveObjectResult{}, err
 	}
@@ -55,22 +53,30 @@ func (db *DB) BeginMoveObject(ctx context.Context, opts BeginMoveObject) (_ Begi
 }
 
 // beginMoveCopyObject collects all data needed to begin object move/copy procedure.
-func (db *DB) beginMoveCopyObject(ctx context.Context, location ObjectLocation, segmentLimit int64, verifyLimits func(encryptedObjectSize int64, nSegments int64) error) (result BeginMoveCopyResults, err error) {
+func (db *DB) beginMoveCopyObject(ctx context.Context, location ObjectLocation, version Version, segmentLimit int64, verifyLimits func(encryptedObjectSize int64, nSegments int64) error) (result BeginMoveCopyResults, err error) {
 	defer mon.Task()(&ctx)(&err)
 
 	if err := location.Verify(); err != nil {
 		return BeginMoveCopyResults{}, err
 	}
 
-	object, err := db.GetObjectLastCommitted(ctx, GetObjectLastCommitted{
-		ObjectLocation: ObjectLocation{
-			ProjectID:  location.ProjectID,
-			BucketName: location.BucketName,
-			ObjectKey:  location.ObjectKey,
-		},
-	})
+	var object Object
+	if version > 0 {
+		object, err = db.GetObjectExactVersion(ctx, GetObjectExactVersion{
+			ObjectLocation: location,
+			Version:        version,
+		})
+	} else {
+		object, err = db.GetObjectLastCommitted(ctx, GetObjectLastCommitted{
+			ObjectLocation: location,
+		})
+	}
 	if err != nil {
 		return BeginMoveCopyResults{}, err
+	}
+
+	if object.Status.IsDeleteMarker() {
+		return BeginMoveCopyResults{}, ErrObjectNotFound.New("")
 	}
 
 	if int64(object.SegmentCount) > segmentLimit {
@@ -121,12 +127,28 @@ func (db *DB) beginMoveCopyObject(ctx context.Context, location ObjectLocation, 
 // FinishMoveObject holds all data needed to finish object move.
 type FinishMoveObject struct {
 	ObjectStream
+
 	NewBucket             string
 	NewSegmentKeys        []EncryptedKeyAndNonce
-	NewEncryptedObjectKey []byte
+	NewEncryptedObjectKey ObjectKey
 	// Optional. Required if object has metadata.
 	NewEncryptedMetadataKeyNonce storj.Nonce
 	NewEncryptedMetadataKey      []byte
+
+	// NewDisallowDelete indicates whether the user is allowed to delete an existing unversioned object.
+	NewDisallowDelete bool
+
+	// NewVersioned indicates that the object allows multiple versions.
+	NewVersioned bool
+}
+
+// NewLocation returns the new object location.
+func (finishMove FinishMoveObject) NewLocation() ObjectLocation {
+	return ObjectLocation{
+		ProjectID:  finishMove.ProjectID,
+		BucketName: finishMove.NewBucket,
+		ObjectKey:  finishMove.NewEncryptedObjectKey,
+	}
 }
 
 // Verify verifies metabase.FinishMoveObject data.
@@ -153,80 +175,58 @@ func (db *DB) FinishMoveObject(ctx context.Context, opts FinishMoveObject) (err 
 		return err
 	}
 
+	var precommit precommitConstraintResult
 	err = txutil.WithTx(ctx, db.db, nil, func(ctx context.Context, tx tagsql.Tx) (err error) {
-		targetVersion := opts.Version
-
-		useNewVersion := false
-		highestVersion := Version(0)
-		err = withRows(tx.QueryContext(ctx, `
-			SELECT version, status
-			FROM objects
-			WHERE
-				project_id   = $1 AND
-				bucket_name  = $2 AND
-				object_key   = $3
-			ORDER BY version ASC
-			`, opts.ProjectID, []byte(opts.NewBucket), opts.NewEncryptedObjectKey))(func(rows tagsql.Rows) error {
-			for rows.Next() {
-				var status ObjectStatus
-				var version Version
-
-				err = rows.Scan(&version, &status)
-				if err != nil {
-					return Error.New("failed to scan objects: %w", err)
-				}
-
-				if status == Committed {
-					return ErrObjectAlreadyExists.New("")
-				} else if status == Pending && version == opts.Version {
-					useNewVersion = true
-				}
-				highestVersion = version
-			}
-
-			return nil
-		})
+		precommit, err = db.precommitConstraint(ctx, precommitConstraint{
+			Location:       opts.NewLocation(),
+			Versioned:      opts.NewVersioned,
+			DisallowDelete: opts.NewDisallowDelete,
+		}, tx)
 		if err != nil {
-			return Error.Wrap(err)
+			return err
 		}
 
-		if useNewVersion {
-			targetVersion = highestVersion + 1
-		}
-
-		updateObjectsQuery := `
-			UPDATE objects SET
-				bucket_name = $1,
-				object_key = $2,
-				version = $9,
-				encrypted_metadata_encrypted_key = CASE WHEN objects.encrypted_metadata IS NOT NULL
-				THEN $3
-				ELSE objects.encrypted_metadata_encrypted_key
-				END,
-				encrypted_metadata_nonce = CASE WHEN objects.encrypted_metadata IS NOT NULL
-				THEN $4
-				ELSE objects.encrypted_metadata_nonce
-				END
-			WHERE
-				project_id = $5 AND
-				bucket_name = $6 AND
-				object_key = $7 AND
-				version = $8
-			RETURNING
-				segment_count,
-				objects.encrypted_metadata IS NOT NULL AND LENGTH(objects.encrypted_metadata) > 0 AS has_metadata,
-				stream_id
-        `
-
+		var oldStatus ObjectStatus
 		var segmentsCount int
 		var hasMetadata bool
 		var streamID uuid.UUID
 
-		row := tx.QueryRowContext(ctx, updateObjectsQuery, []byte(opts.NewBucket), opts.NewEncryptedObjectKey, opts.NewEncryptedMetadataKey, opts.NewEncryptedMetadataKeyNonce, opts.ProjectID, []byte(opts.BucketName), opts.ObjectKey, opts.Version, targetVersion)
-		if err = row.Scan(&segmentsCount, &hasMetadata, &streamID); err != nil {
-			if code := pgerrcode.FromError(err); code == pgxerrcode.UniqueViolation {
-				return Error.Wrap(ErrObjectAlreadyExists.New(""))
-			} else if errors.Is(err, sql.ErrNoRows) {
+		newStatus := committedWhereVersioned(opts.NewVersioned)
+
+		err = tx.QueryRowContext(ctx, `
+			UPDATE objects SET
+				bucket_name = $1,
+				object_key = $2,
+				version = $10,
+				status = $9,
+				encrypted_metadata_encrypted_key =
+					CASE WHEN objects.encrypted_metadata IS NOT NULL
+						THEN $3
+						ELSE objects.encrypted_metadata_encrypted_key
+					END,
+				encrypted_metadata_nonce =
+					CASE WHEN objects.encrypted_metadata IS NOT NULL
+						THEN $4
+						ELSE objects.encrypted_metadata_nonce
+					END
+			WHERE
+				(project_id, bucket_name, object_key, version) = ($5, $6, $7, $8)
+			RETURNING
+				(
+					SELECT status
+					FROM objects
+					WHERE (project_id, bucket_name, object_key, version) = ($5, $6, $7, $8)
+				),
+				segment_count,
+				objects.encrypted_metadata IS NOT NULL AND LENGTH(objects.encrypted_metadata) > 0 AS has_metadata,
+				stream_id
+		`, []byte(opts.NewBucket), opts.NewEncryptedObjectKey, opts.NewEncryptedMetadataKey,
+			opts.NewEncryptedMetadataKeyNonce, opts.ProjectID, []byte(opts.BucketName),
+			opts.ObjectKey, opts.Version, newStatus, precommit.HighestVersion+1).
+			Scan(&oldStatus, &segmentsCount, &hasMetadata, &streamID)
+
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
 				return ErrObjectNotFound.New("object not found")
 			}
 			return Error.New("unable to update object: %w", err)
@@ -236,6 +236,9 @@ func (db *DB) FinishMoveObject(ctx context.Context, opts FinishMoveObject) (err 
 		}
 		if segmentsCount != len(opts.NewSegmentKeys) {
 			return ErrInvalidRequest.New("wrong number of segments keys received")
+		}
+		if oldStatus.IsDeleteMarker() {
+			return ErrMethodNotAllowed.New("moving delete marker is not allowed")
 		}
 		if hasMetadata {
 			switch {
@@ -259,14 +262,14 @@ func (db *DB) FinishMoveObject(ctx context.Context, opts FinishMoveObject) (err 
 		}
 
 		updateResult, err := tx.ExecContext(ctx, `
-					UPDATE segments SET
-						encrypted_key_nonce = P.encrypted_key_nonce,
-						encrypted_key = P.encrypted_key
-					FROM (SELECT unnest($2::INT8[]), unnest($3::BYTEA[]), unnest($4::BYTEA[])) as P(position, encrypted_key_nonce, encrypted_key)
-					WHERE
-						stream_id = $1 AND
-						segments.position = P.position
-			`, opts.StreamID, pgutil.Int8Array(newSegmentKeys.Positions), pgutil.ByteaArray(newSegmentKeys.EncryptedKeyNonces), pgutil.ByteaArray(newSegmentKeys.EncryptedKeys))
+			UPDATE segments SET
+				encrypted_key_nonce = P.encrypted_key_nonce,
+				encrypted_key = P.encrypted_key
+			FROM (SELECT unnest($2::INT8[]), unnest($3::BYTEA[]), unnest($4::BYTEA[])) as P(position, encrypted_key_nonce, encrypted_key)
+			WHERE
+				stream_id = $1 AND
+				segments.position = P.position
+		`, opts.StreamID, pgutil.Int8Array(newSegmentKeys.Positions), pgutil.ByteaArray(newSegmentKeys.EncryptedKeyNonces), pgutil.ByteaArray(newSegmentKeys.EncryptedKeys))
 		if err != nil {
 			return Error.Wrap(err)
 		}
@@ -285,6 +288,7 @@ func (db *DB) FinishMoveObject(ctx context.Context, opts FinishMoveObject) (err 
 		return err
 	}
 
+	precommit.submitMetrics()
 	mon.Meter("finish_move_object").Mark(1)
 
 	return nil

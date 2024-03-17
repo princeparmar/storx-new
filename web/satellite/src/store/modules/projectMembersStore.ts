@@ -1,18 +1,17 @@
-// Copyright (C) 2023 Storx Labs, Inc.
+// Copyright (C) 2023 Storj Labs, Inc.
 // See LICENSE for copying information.
 
 import { reactive } from 'vue';
 import { defineStore } from 'pinia';
 
 import {
-    ProjectMember,
     ProjectMemberCursor,
     ProjectMemberItemModel,
     ProjectMemberOrderBy,
     ProjectMembersApi,
     ProjectMembersPage,
 } from '@/types/projectMembers';
-import { ProjectMembersApiGql } from '@/api/projectMembers';
+import { ProjectMembersHttpApi } from '@/api/projectMembers';
 import { SortDirection } from '@/types/common';
 import { DEFAULT_PAGE_LIMIT } from '@/types/pagination';
 
@@ -26,17 +25,26 @@ export class ProjectMembersState {
 export const useProjectMembersStore = defineStore('projectMembers', () => {
     const state = reactive<ProjectMembersState>(new ProjectMembersState());
 
-    const api: ProjectMembersApi = new ProjectMembersApiGql();
+    const api: ProjectMembersApi = new ProjectMembersHttpApi();
 
-    async function inviteMembers(emails: string[], projectID: string): Promise<void> {
-        await api.invite(projectID, emails);
+    async function inviteMember(email: string, projectID: string): Promise<void> {
+        await api.invite(projectID, email);
+    }
+
+    async function reinviteMembers(emails: string[], projectID: string): Promise<void> {
+        await api.reinvite(projectID, emails);
     }
 
     async function getInviteLink(email: string, projectID: string): Promise<string> {
         return await api.getInviteLink(projectID, email);
     }
 
-    async function deleteProjectMembers(projectID: string): Promise<void> {
+    async function deleteProjectMembers(projectID: string, customSelected?: string[]): Promise<void> {
+        if (customSelected && customSelected.length) {
+            await api.delete(projectID, customSelected);
+            return;
+        }
+
         await api.delete(projectID, state.selectedProjectMembersEmails);
 
         clearProjectMemberSelection();
@@ -67,10 +75,6 @@ export const useProjectMembersStore = defineStore('projectMembers', () => {
 
     function setSearchQuery(search: string) {
         state.cursor.search = search;
-    }
-
-    function getSearchQuery() {
-        return state.cursor.search;
     }
 
     function setSortingBy(order: ProjectMemberOrderBy) {
@@ -115,12 +119,12 @@ export const useProjectMembersStore = defineStore('projectMembers', () => {
 
     return {
         state,
-        inviteMembers,
+        inviteMember,
+        reinviteMembers,
         getInviteLink,
         deleteProjectMembers,
         getProjectMembers,
         setSearchQuery,
-        getSearchQuery,
         setSortingBy,
         setSortingDirection,
         setPage,

@@ -17,6 +17,7 @@ import (
 	"storj.io/common/bloomfilter"
 	"storj.io/common/memory"
 	"storj.io/common/pb"
+	"storj.io/common/process"
 	"storj.io/common/storj"
 	"storj.io/storj/storagenode/blobstore"
 	"storj.io/storj/storagenode/blobstore/filestore"
@@ -244,7 +245,7 @@ func (store *Store) Writer(ctx context.Context, satellite storj.NodeID, pieceID 
 		return nil, Error.Wrap(err)
 	}
 
-	writer, err := NewWriter(store.log.Named("blob-writer"), blobWriter, store.blobs, satellite, hashAlgorithm)
+	writer, err := NewWriter(process.NamedLog(store.log, "blob-writer"), blobWriter, store.blobs, satellite, hashAlgorithm)
 	return writer, Error.Wrap(err)
 }
 
@@ -278,7 +279,7 @@ func (store StoreForTest) WriterForFormatVersion(ctx context.Context, satellite 
 	if err != nil {
 		return nil, Error.Wrap(err)
 	}
-	writer, err := NewWriter(store.log.Named("blob-writer"), blobWriter, store.blobs, satellite, hashAlgorithm)
+	writer, err := NewWriter(process.NamedLog(store.log, "blob-writer"), blobWriter, store.blobs, satellite, hashAlgorithm)
 	return writer, Error.Wrap(err)
 }
 
@@ -317,6 +318,20 @@ func (store *Store) Reader(ctx context.Context, satellite storj.NodeID, pieceID 
 
 	reader, err := NewReader(blob)
 	return reader, Error.Wrap(err)
+}
+
+// TryRestoreTrashPiece attempts to restore a piece from the trash.
+// It returns nil if the piece was restored, or an error if the piece was not in the trash.
+func (store *Store) TryRestoreTrashPiece(ctx context.Context, satellite storj.NodeID, pieceID storj.PieceID) (err error) {
+	defer mon.Task()(&ctx)(&err)
+	err = store.blobs.TryRestoreTrashBlob(ctx, blobstore.BlobRef{
+		Namespace: satellite.Bytes(),
+		Key:       pieceID.Bytes(),
+	})
+	if os.IsNotExist(err) {
+		return err
+	}
+	return Error.Wrap(err)
 }
 
 // Delete deletes the specified piece.
@@ -366,7 +381,7 @@ func (store *Store) DeleteSatelliteBlobs(ctx context.Context, satellite storj.No
 // Trash moves the specified piece to the blob trash. If necessary, it converts
 // the v0 piece to a v1 piece. It also marks the item as "trashed" in the
 // pieceExpirationDB.
-func (store *Store) Trash(ctx context.Context, satellite storj.NodeID, pieceID storj.PieceID) (err error) {
+func (store *Store) Trash(ctx context.Context, satellite storj.NodeID, pieceID storj.PieceID, timestamp time.Time) (err error) {
 	defer mon.Task()(&ctx)(&err)
 
 	// Check if the MaxFormatVersionSupported piece exists. If not, we assume
@@ -394,7 +409,7 @@ func (store *Store) Trash(ctx context.Context, satellite storj.NodeID, pieceID s
 	err = errs.Combine(err, store.blobs.Trash(ctx, blobstore.BlobRef{
 		Namespace: satellite.Bytes(),
 		Key:       pieceID.Bytes(),
-	}))
+	}, timestamp))
 
 	return Error.Wrap(err)
 }
@@ -403,20 +418,30 @@ func (store *Store) Trash(ctx context.Context, satellite storj.NodeID, pieceID s
 func (store *Store) EmptyTrash(ctx context.Context, satelliteID storj.NodeID, trashedBefore time.Time) (err error) {
 	defer mon.Task()(&ctx)(&err)
 
-	_, deletedIDs, err := store.blobs.EmptyTrash(ctx, satelliteID[:], trashedBefore)
-	if err != nil {
-		return Error.Wrap(err)
-	}
-
-	for _, deletedID := range deletedIDs {
-		pieceID, pieceIDErr := storj.PieceIDFromBytes(deletedID)
-		if pieceIDErr != nil {
-			return Error.Wrap(pieceIDErr)
+	var errList errs.Group
+	if store.config.EnableLazyFilewalker && store.lazyFilewalker != nil {
+		_, deletedIDs, err := store.lazyFilewalker.WalkCleanupTrash(ctx, satelliteID, trashedBefore)
+		errList.Add(err)
+		// the lazyfilewalker has already transmitted PieceIDs; we don't have to parse them
+		for _, deletedID := range deletedIDs {
+			_, err := store.expirationInfo.DeleteExpiration(ctx, satelliteID, deletedID)
+			errList.Add(err)
 		}
-		_, deleteErr := store.expirationInfo.DeleteExpiration(ctx, satelliteID, pieceID)
-		err = errs.Combine(err, deleteErr)
+	} else {
+		_, deletedIDs, err := store.blobs.EmptyTrash(ctx, satelliteID[:], trashedBefore)
+		errList.Add(err)
+		// we have this answer directly from the blobstore, and must translate the blob keys to PieceIDs
+		for _, deletedID := range deletedIDs {
+			pieceID, err := storj.PieceIDFromBytes(deletedID)
+			if err != nil {
+				store.log.Error("stored blob has invalid PieceID", zap.ByteString("deletedKey", deletedID), zap.Error(err))
+				continue
+			}
+			_, err = store.expirationInfo.DeleteExpiration(ctx, satelliteID, pieceID)
+			errList.Add(err)
+		}
 	}
-	return Error.Wrap(err)
+	return Error.Wrap(errList.Err())
 }
 
 // RestoreTrash restores all pieces in the trash.
@@ -533,25 +558,24 @@ func (store *Store) WalkSatellitePieces(ctx context.Context, satellite storj.Nod
 	return store.Filewalker.WalkSatellitePieces(ctx, satellite, walkFunc)
 }
 
-// SatellitePiecesToTrash returns a list of piece IDs that are trash for the given satellite.
+// WalkSatellitePiecesToTrash walks the satellite pieces and moves the pieces that are trash to the
+// trash using the trashFunc provided.
 //
 // If the lazy filewalker is enabled, it will be used to find the pieces to trash, otherwise
 // the regular filewalker will be used. If the lazy filewalker fails, the regular filewalker
 // will be used as a fallback.
-func (store *Store) SatellitePiecesToTrash(ctx context.Context, satelliteID storj.NodeID, createdBefore time.Time, filter *bloomfilter.Filter) (pieceIDs []storj.PieceID, piecesCount, piecesSkipped int64, err error) {
-	defer mon.Task()(&ctx)(&err)
+func (store *Store) WalkSatellitePiecesToTrash(ctx context.Context, satelliteID storj.NodeID, createdBefore time.Time, filter *bloomfilter.Filter, trashFunc func(pieceID storj.PieceID) error) (pieceIDs []storj.PieceID, piecesCount, piecesSkipped int64, err error) {
+	defer mon.Task()(&ctx, satelliteID, createdBefore)(&err)
 
 	if store.config.EnableLazyFilewalker && store.lazyFilewalker != nil {
-		pieceIDs, piecesCount, piecesSkipped, err = store.lazyFilewalker.WalkSatellitePiecesToTrash(ctx, satelliteID, createdBefore, filter)
+		pieceIDs, piecesCount, piecesSkipped, err = store.lazyFilewalker.WalkSatellitePiecesToTrash(ctx, satelliteID, createdBefore, filter, trashFunc)
 		if err == nil {
 			return pieceIDs, piecesCount, piecesSkipped, nil
 		}
 		store.log.Error("lazyfilewalker failed", zap.Error(err))
 	}
 	// fallback to the regular filewalker
-	pieceIDs, piecesCount, piecesSkipped, err = store.Filewalker.WalkSatellitePiecesToTrash(ctx, satelliteID, createdBefore, filter)
-
-	return pieceIDs, piecesCount, piecesSkipped, err
+	return store.Filewalker.WalkSatellitePiecesToTrash(ctx, satelliteID, createdBefore, filter, trashFunc)
 }
 
 // GetExpired gets piece IDs that are expired and were created before the given time.
@@ -738,7 +762,9 @@ func (store *Store) GetV0PieceInfo(ctx context.Context, satellite storj.NodeID, 
 
 // StorageStatus contains information about the disk store is using.
 type StorageStatus struct {
-	DiskUsed int64
+	// DiskTotal is the actual disk size (not just the allocated disk space), in bytes.
+	DiskTotal int64
+	DiskUsed  int64
 	// DiskFree is the actual amount of free space on the whole disk, not just allocated disk space, in bytes.
 	DiskFree int64
 }
@@ -746,13 +772,14 @@ type StorageStatus struct {
 // StorageStatus returns information about the disk.
 func (store *Store) StorageStatus(ctx context.Context) (_ StorageStatus, err error) {
 	defer mon.Task()(&ctx)(&err)
-	diskFree, err := store.blobs.FreeSpace(ctx)
+	info, err := store.blobs.DiskInfo(ctx)
 	if err != nil {
 		return StorageStatus{}, err
 	}
 	return StorageStatus{
-		DiskUsed: -1, // TODO set value
-		DiskFree: diskFree,
+		DiskTotal: info.TotalSpace,
+		DiskUsed:  -1, // TODO set value
+		DiskFree:  info.AvailableSpace,
 	}, nil
 }
 

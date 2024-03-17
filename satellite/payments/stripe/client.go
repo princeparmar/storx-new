@@ -12,16 +12,16 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/stripe/stripe-go/v72"
-	"github.com/stripe/stripe-go/v72/charge"
-	"github.com/stripe/stripe-go/v72/client"
-	"github.com/stripe/stripe-go/v72/customer"
-	"github.com/stripe/stripe-go/v72/customerbalancetransaction"
-	"github.com/stripe/stripe-go/v72/form"
-	"github.com/stripe/stripe-go/v72/invoice"
-	"github.com/stripe/stripe-go/v72/invoiceitem"
-	"github.com/stripe/stripe-go/v72/paymentmethod"
-	"github.com/stripe/stripe-go/v72/promotioncode"
+	"github.com/stripe/stripe-go/v75"
+	"github.com/stripe/stripe-go/v75/charge"
+	"github.com/stripe/stripe-go/v75/creditnote"
+	"github.com/stripe/stripe-go/v75/customer"
+	"github.com/stripe/stripe-go/v75/customerbalancetransaction"
+	"github.com/stripe/stripe-go/v75/form"
+	"github.com/stripe/stripe-go/v75/invoice"
+	"github.com/stripe/stripe-go/v75/invoiceitem"
+	"github.com/stripe/stripe-go/v75/paymentmethod"
+	"github.com/stripe/stripe-go/v75/promotioncode"
 	"go.uber.org/zap"
 
 	"storj.io/common/time2"
@@ -51,6 +51,7 @@ type Customers interface {
 type PaymentMethods interface {
 	List(listParams *stripe.PaymentMethodListParams) *paymentmethod.Iter
 	New(params *stripe.PaymentMethodParams) (*stripe.PaymentMethod, error)
+	Get(id string, params *stripe.PaymentMethodParams) (*stripe.PaymentMethod, error)
 	Attach(id string, params *stripe.PaymentMethodAttachParams) (*stripe.PaymentMethod, error)
 	Detach(id string, params *stripe.PaymentMethodDetachParams) (*stripe.PaymentMethod, error)
 }
@@ -60,12 +61,12 @@ type Invoices interface {
 	New(params *stripe.InvoiceParams) (*stripe.Invoice, error)
 	List(listParams *stripe.InvoiceListParams) *invoice.Iter
 	Update(id string, params *stripe.InvoiceParams) (*stripe.Invoice, error)
-	FinalizeInvoice(id string, params *stripe.InvoiceFinalizeParams) (*stripe.Invoice, error)
+	FinalizeInvoice(id string, params *stripe.InvoiceFinalizeInvoiceParams) (*stripe.Invoice, error)
 	Pay(id string, params *stripe.InvoicePayParams) (*stripe.Invoice, error)
 	Del(id string, params *stripe.InvoiceParams) (*stripe.Invoice, error)
 	Get(id string, params *stripe.InvoiceParams) (*stripe.Invoice, error)
 	MarkUncollectible(id string, params *stripe.InvoiceMarkUncollectibleParams) (*stripe.Invoice, error)
-	VoidInvoice(id string, params *stripe.InvoiceVoidParams) (*stripe.Invoice, error)
+	VoidInvoice(id string, params *stripe.InvoiceVoidInvoiceParams) (*stripe.Invoice, error)
 }
 
 // InvoiceItems Stripe InvoiceItems interface.
@@ -98,52 +99,54 @@ type CreditNotes interface {
 }
 
 type stripeClient struct {
-	client *client.API
+	// charges is the client used to invoke /charges APIs.
+	charges *charge.Client
+	// creditNotes is the client used to invoke /credit_notes APIs.
+	creditNotes *creditnote.Client
+	// customerBalanceTransactions is the client used to invoke /customers/{customer}/balance_transactions APIs.
+	customerBalanceTransactions *customerbalancetransaction.Client
+	// customers is the client used to invoke /customers APIs.
+	customers *customer.Client
+	// invoiceItems is the client used to invoke /invoiceitems APIs.
+	invoiceItems *invoiceitem.Client
+	// invoices is the client used to invoke /invoices APIs.
+	invoices *invoice.Client
+	// paymentMethods is the client used to invoke /payment_methods APIs.
+	paymentMethods *paymentmethod.Client
+	// promotionCodes is the client used to invoke /promotion_codes APIs.
+	promotionCodes *promotioncode.Client
 }
 
-func (s *stripeClient) Customers() Customers {
-	return s.client.Customers
-}
-
-func (s *stripeClient) PaymentMethods() PaymentMethods {
-	return s.client.PaymentMethods
-}
-
-func (s *stripeClient) Invoices() Invoices {
-	return s.client.Invoices
-}
-
-func (s *stripeClient) InvoiceItems() InvoiceItems {
-	return s.client.InvoiceItems
-}
-
+func (s *stripeClient) Charges() Charges         { return s.charges }
+func (s *stripeClient) CreditNotes() CreditNotes { return s.creditNotes }
 func (s *stripeClient) CustomerBalanceTransactions() CustomerBalanceTransactions {
-	return s.client.CustomerBalanceTransactions
+	return s.customerBalanceTransactions
 }
-
-func (s *stripeClient) Charges() Charges {
-	return s.client.Charges
-}
-
-func (s *stripeClient) PromoCodes() PromoCodes {
-	return s.client.PromotionCodes
-}
-
-func (s *stripeClient) CreditNotes() CreditNotes {
-	return s.client.CreditNotes
-}
+func (s *stripeClient) Customers() Customers           { return s.customers }
+func (s *stripeClient) InvoiceItems() InvoiceItems     { return s.invoiceItems }
+func (s *stripeClient) Invoices() Invoices             { return s.invoices }
+func (s *stripeClient) PaymentMethods() PaymentMethods { return s.paymentMethods }
+func (s *stripeClient) PromoCodes() PromoCodes         { return s.promotionCodes }
 
 // NewStripeClient creates Stripe client from configuration.
 func NewStripeClient(log *zap.Logger, config Config) Client {
-	sClient := client.New(config.StripeSecretKey,
-		&stripe.Backends{
-			API:     NewBackendWrapper(log, stripe.APIBackend, config.Retries),
-			Connect: NewBackendWrapper(log, stripe.ConnectBackend, config.Retries),
-			Uploads: NewBackendWrapper(log, stripe.UploadsBackend, config.Retries),
-		},
-	)
+	key := config.StripeSecretKey
+	backends := &stripe.Backends{
+		API:     NewBackendWrapper(log, stripe.APIBackend, config.Retries),
+		Connect: NewBackendWrapper(log, stripe.ConnectBackend, config.Retries),
+		Uploads: NewBackendWrapper(log, stripe.UploadsBackend, config.Retries),
+	}
 
-	return &stripeClient{client: sClient}
+	return &stripeClient{
+		charges:                     &charge.Client{B: backends.API, Key: key},
+		creditNotes:                 &creditnote.Client{B: backends.API, Key: key},
+		customerBalanceTransactions: &customerbalancetransaction.Client{B: backends.API, Key: key},
+		customers:                   &customer.Client{B: backends.API, Key: key},
+		invoiceItems:                &invoiceitem.Client{B: backends.API, Key: key},
+		invoices:                    &invoice.Client{B: backends.API, Key: key},
+		paymentMethods:              &paymentmethod.Client{B: backends.API, Key: key},
+		promotionCodes:              &promotioncode.Client{B: backends.API, Key: key},
+	}
 }
 
 // RetryConfig contains the configuration for an exponential backoff strategy when retrying Stripe API calls.

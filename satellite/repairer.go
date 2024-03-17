@@ -14,14 +14,14 @@ import (
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 
+	"storj.io/common/debug"
 	"storj.io/common/identity"
 	"storj.io/common/peertls/extensions"
 	"storj.io/common/peertls/tlsopts"
 	"storj.io/common/rpc"
 	"storj.io/common/signing"
 	"storj.io/common/storj"
-	"storj.io/private/debug"
-	"storj.io/private/version"
+	"storj.io/common/version"
 	"storj.io/storj/private/lifecycle"
 	version_checker "storj.io/storj/private/version/checker"
 	"storj.io/storj/satellite/audit"
@@ -94,8 +94,8 @@ func NewRepairer(log *zap.Logger, full *identity.FullIdentity,
 
 	{ // setup debug
 		var err error
-		if config.Debug.Address != "" {
-			peer.Debug.Listener, err = net.Listen("tcp", config.Debug.Address)
+		if config.Debug.Addr != "" {
+			peer.Debug.Listener, err = net.Listen("tcp", config.Debug.Addr)
 			if err != nil {
 				withoutStack := errors.New(err.Error())
 				peer.Log.Debug("failed to start debug endpoints", zap.Error(withoutStack))
@@ -140,8 +140,12 @@ func NewRepairer(log *zap.Logger, full *identity.FullIdentity,
 	}
 
 	{ // setup overlay
-		var err error
-		peer.Overlay, err = overlay.NewService(log.Named("overlay"), overlayCache, nodeEvents, config.Placement.CreateFilters, config.Console.ExternalAddress, config.Console.SatelliteName, config.Overlay)
+		placement, err := config.Placement.Parse(config.Overlay.Node.CreateDefaultPlacement)
+		if err != nil {
+			return nil, err
+		}
+
+		peer.Overlay, err = overlay.NewService(log.Named("overlay"), overlayCache, nodeEvents, placement, config.Console.ExternalAddress, config.Console.SatelliteName, config.Overlay)
 		if err != nil {
 			return nil, errs.Combine(err, peer.Close())
 		}
@@ -174,7 +178,11 @@ func NewRepairer(log *zap.Logger, full *identity.FullIdentity,
 	}
 
 	{ // setup orders
-		var err error
+		placement, err := config.Placement.Parse(config.Overlay.Node.CreateDefaultPlacement)
+		if err != nil {
+			return nil, err
+		}
+
 		peer.Orders.Service, err = orders.NewService(
 			log.Named("orders"),
 			signing.SignerFromFullIdentity(peer.Identity),
@@ -183,7 +191,7 @@ func NewRepairer(log *zap.Logger, full *identity.FullIdentity,
 			// PUT and GET actions which are not used by
 			// repairer so we can set noop implementation.
 			orders.NewNoopDB(),
-			config.Placement.CreateFilters,
+			placement.CreateFilters,
 			config.Orders,
 		)
 		if err != nil {
@@ -203,13 +211,20 @@ func NewRepairer(log *zap.Logger, full *identity.FullIdentity,
 	}
 
 	{ // setup repairer
+		placement, err := config.Placement.Parse(config.Overlay.Node.CreateDefaultPlacement)
+		if err != nil {
+			return nil, err
+		}
+
 		peer.EcRepairer = repairer.NewECRepairer(
 			log.Named("ec-repair"),
 			peer.Dialer,
 			signing.SigneeFromPeerIdentity(peer.Identity.PeerIdentity()),
 			config.Repairer.DialTimeout,
 			config.Repairer.DownloadTimeout,
-			config.Repairer.InMemoryRepair)
+			config.Repairer.InMemoryRepair,
+			config.Repairer.InMemoryUpload,
+		)
 
 		if len(config.Repairer.RepairExcludedCountryCodes) == 0 {
 			config.Repairer.RepairExcludedCountryCodes = config.Overlay.RepairExcludedCountryCodes
@@ -222,7 +237,7 @@ func NewRepairer(log *zap.Logger, full *identity.FullIdentity,
 			peer.Overlay,
 			peer.Audit.Reporter,
 			peer.EcRepairer,
-			config.Placement.CreateFilters,
+			placement,
 			config.Checker.RepairOverrides,
 			config.Repairer,
 		)
@@ -235,6 +250,7 @@ func NewRepairer(log *zap.Logger, full *identity.FullIdentity,
 		})
 		peer.Debug.Server.Panel.Add(
 			debug.Cycle("Repair Worker", peer.Repairer.Loop))
+
 	}
 
 	return peer, nil

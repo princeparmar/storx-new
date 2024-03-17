@@ -32,7 +32,7 @@ type BadDB struct {
 }
 
 // NewBadDB creates a new bad storage node DB.
-// Use SetError to manually configure the error returned by all piece operations.
+// Use SetError to manually configure the error returned by all blob operations.
 func NewBadDB(log *zap.Logger, db storagenode.DB) *BadDB {
 	return &BadDB{
 		DB:    db,
@@ -46,7 +46,7 @@ func (bad *BadDB) Pieces() blobstore.Blobs {
 	return bad.Blobs
 }
 
-// SetError sets an error to be returned for piece operations.
+// SetError sets an error to be returned for blob operations.
 func (bad *BadDB) SetError(err error) {
 	bad.Blobs.SetError(err)
 }
@@ -137,11 +137,11 @@ func (bad *BadBlobs) OpenWithStorageFormat(ctx context.Context, ref blobstore.Bl
 }
 
 // Trash deletes the blob with the namespace and key.
-func (bad *BadBlobs) Trash(ctx context.Context, ref blobstore.BlobRef) error {
+func (bad *BadBlobs) Trash(ctx context.Context, ref blobstore.BlobRef, timestamp time.Time) error {
 	if err := bad.err.Err(); err != nil {
 		return err
 	}
-	return bad.blobs.Trash(ctx, ref)
+	return bad.blobs.Trash(ctx, ref, timestamp)
 }
 
 // RestoreTrash restores all files in the trash.
@@ -158,6 +158,14 @@ func (bad *BadBlobs) EmptyTrash(ctx context.Context, namespace []byte, trashedBe
 		return 0, nil, err
 	}
 	return bad.blobs.EmptyTrash(ctx, namespace, trashedBefore)
+}
+
+// TryRestoreTrashBlob attempts to restore a blob from the trash.
+func (bad *BadBlobs) TryRestoreTrashBlob(ctx context.Context, ref blobstore.BlobRef) error {
+	if err := bad.err.Err(); err != nil {
+		return err
+	}
+	return bad.blobs.TryRestoreTrashBlob(ctx, ref)
 }
 
 // Delete deletes the blob with the namespace and key.
@@ -182,6 +190,14 @@ func (bad *BadBlobs) DeleteNamespace(ctx context.Context, ref []byte) (err error
 		return err
 	}
 	return bad.blobs.DeleteNamespace(ctx, ref)
+}
+
+// DeleteTrashNamespace deletes the trash folder for the namespace.
+func (bad *BadBlobs) DeleteTrashNamespace(ctx context.Context, namespace []byte) error {
+	if err := bad.err.Err(); err != nil {
+		return err
+	}
+	return bad.blobs.DeleteTrashNamespace(ctx, namespace)
 }
 
 // Stat looks up disk metadata on the blob file.
@@ -226,6 +242,14 @@ func (bad *BadBlobs) FreeSpace(ctx context.Context) (int64, error) {
 		return 0, err
 	}
 	return bad.blobs.FreeSpace(ctx)
+}
+
+// DiskInfo returns information about the disk.
+func (bad *BadBlobs) DiskInfo(ctx context.Context) (blobstore.DiskInfo, error) {
+	if err := bad.err.Err(); err != nil {
+		return blobstore.DiskInfo{}, err
+	}
+	return bad.blobs.DiskInfo(ctx)
 }
 
 // SpaceUsedForBlobs adds up how much is used in all namespaces.
