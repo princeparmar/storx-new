@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -232,6 +233,14 @@ func (users *users) Insert(ctx context.Context, user *console.User) (_ *console.
 
 	if err != nil {
 		return nil, err
+	}
+
+	if user.Status == console.Active {
+		fmt.Println("updating user status in create request")
+		err := users.Update(ctx, user.ID, console.UpdateUserRequest{Status: &user.Status})
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	return userFromDBX(ctx, createdUser)

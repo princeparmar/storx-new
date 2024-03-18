@@ -13253,7 +13253,7 @@ func (obj *pgxImpl) Create_User(ctx context.Context,
 	__full_name_val := user_full_name.value()
 	__short_name_val := optional.ShortName.value()
 	__password_hash_val := user_password_hash.value()
-	__status_val := int(1)
+	__status_val := int(0)
 	__user_agent_val := optional.UserAgent.value()
 	__created_at_val := __now
 	__position_val := optional.Position.value()

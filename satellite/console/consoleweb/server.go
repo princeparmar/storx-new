@@ -364,7 +364,7 @@ func NewServer(logger *zap.Logger, config Config, service *console.Service, oidc
 	authRouter.Handle("/mfa/generate-recovery-codes", server.withAuth(http.HandlerFunc(authController.GenerateMFARecoveryCodes))).Methods(http.MethodPost, http.MethodOptions)
 	authRouter.Handle("/logout", server.withAuth(http.HandlerFunc(authController.Logout))).Methods(http.MethodPost, http.MethodOptions)
 	authRouter.Handle("/token", server.ipRateLimiter.Limit(http.HandlerFunc(authController.Token))).Methods(http.MethodPost, http.MethodOptions)
-	authRouter.Handle("/token_google", server.ipRateLimiter.Limit(http.HandlerFunc(authController.TokenGoogleWrapperHandler))).Methods(http.MethodPost, http.MethodOptions)
+	// authRouter.Handle("/token_google", server.ipRateLimiter.Limit(http.HandlerFunc(authController.TokenGoogleWrapperHandler))).Methods(http.MethodPost, http.MethodOptions)
 	authRouter.Handle("/token-by-api-key", server.ipRateLimiter.Limit(http.HandlerFunc(authController.TokenByAPIKey))).Methods(http.MethodPost, http.MethodOptions)
 	authRouter.Handle("/register", server.ipRateLimiter.Limit(http.HandlerFunc(authController.Register))).Methods(http.MethodPost, http.MethodOptions)
 	authRouter.Handle("/register-google", server.ipRateLimiter.Limit(http.HandlerFunc(authController.RegisterGoogle))).Methods(http.MethodGet, http.MethodOptions)
