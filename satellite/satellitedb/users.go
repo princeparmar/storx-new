@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -87,6 +88,27 @@ func (users *users) GetByEmailWithUnverified(ctx context.Context, email string) 
 	return verified, unverified, errors.Err()
 }
 
+func (users *users) GetByEmailWithUnverified_google(ctx context.Context, email string) (verified *console.User, unverified []console.User, err error) {
+	defer mon.Task()(&ctx)(&err)
+	usersDbx, err := users.db.All_User_By_NormalizedEmail(ctx, dbx.User_NormalizedEmail(normalizeEmail(email)))
+
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var errors errs.Group
+	for _, userDbx := range usersDbx {
+		u, err := userFromDBX(ctx, userDbx)
+		if err != nil {
+			errors.Add(err)
+			continue
+		}
+		verified = u
+	}
+
+	return verified, unverified, errors.Err()
+}
+
 // GetByEmail is a method for querying user by verified email from the database.
 func (users *users) GetByEmail(ctx context.Context, email string) (_ *console.User, err error) {
 	defer mon.Task()(&ctx)(&err)
@@ -97,6 +119,27 @@ func (users *users) GetByEmail(ctx context.Context, email string) (_ *console.Us
 	}
 
 	return userFromDBX(ctx, user)
+}
+
+// boris: Get all users from the database
+func (users *users) GetAllUsers(ctx context.Context) (usersFromDB []*console.User, err error) {
+	defer mon.Task()(&ctx)(&err)
+
+	allUsers, err := users.db.Get_All_Users(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// var usersFromDB []*console.User
+	for _, user := range allUsers {
+		userFromDB, err := userFromDBX(ctx, user)
+		if err != nil {
+			return nil, err
+		}
+		usersFromDB = append(usersFromDB, userFromDB)
+	}
+
+	return usersFromDB, nil
 }
 
 // GetUnverifiedNeedingReminder returns users in need of a reminder to verify their email.
@@ -190,6 +233,14 @@ func (users *users) Insert(ctx context.Context, user *console.User) (_ *console.
 
 	if err != nil {
 		return nil, err
+	}
+
+	if user.Status == console.Active {
+		fmt.Println("updating user status in create request")
+		err := users.Update(ctx, user.ID, console.UpdateUserRequest{Status: &user.Status})
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	return userFromDBX(ctx, createdUser)
@@ -299,6 +350,21 @@ func (users *users) UpdatePaidTier(ctx context.Context, id uuid.UUID, paidTier b
 			ProjectBandwidthLimit: dbx.User_ProjectBandwidthLimit(projectBandwidthLimit.Int64()),
 			ProjectStorageLimit:   dbx.User_ProjectStorageLimit(projectStorageLimit.Int64()),
 			ProjectSegmentLimit:   dbx.User_ProjectSegmentLimit(projectSegmentLimit),
+		},
+	)
+
+	return err
+}
+
+// boris
+func (users *users) UpdatePaidTiers(ctx context.Context, id uuid.UUID, paidTier bool) (err error) {
+	defer mon.Task()(&ctx)(&err)
+
+	_, err = users.db.Update_User_By_Id(
+		ctx,
+		dbx.User_Id(id[:]),
+		dbx.User_Update_Fields{
+			PaidTier: dbx.User_PaidTier(paidTier),
 		},
 	)
 
