@@ -1,0 +1,285 @@
+{
+	"info": {
+		"_postman_id": "c5910491-2554-4881-8adf-7275a09aed2b",
+		"name": "Storx Access Creation",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+		"_exporter_id": "610879"
+	},
+	"item": [
+		{
+			"name": "Login",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"email\": \"prince.soamedia+12@gmail.com\",\n    \"password\": \"Prince@143$\",\n    \"captchaResponse\": \"\",\n    \"mfaPasscode\": null,\n    \"mfaRecoveryCode\": null\n}"
+				},
+				"url": {
+					"raw": "{{storxHost}}/api/v0/auth/token",
+					"host": [
+						"{{storxHost}}"
+					],
+					"path": [
+						"api",
+						"v0",
+						"auth",
+						"token"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Get Prject",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{storxHost}}/api/v0/projects",
+					"host": [
+						"{{storxHost}}"
+					],
+					"path": [
+						"api",
+						"v0",
+						"projects"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Get API Key",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{storxHost}}/api/v0/api-keys/list-paged?projectID={{projectID}}&search=&limit=10&page=1&order=1&orderDirection=1",
+					"host": [
+						"{{storxHost}}"
+					],
+					"path": [
+						"api",
+						"v0",
+						"api-keys",
+						"list-paged"
+					],
+					"query": [
+						{
+							"key": "projectID",
+							"value": "{{projectID}}"
+						},
+						{
+							"key": "search",
+							"value": ""
+						},
+						{
+							"key": "limit",
+							"value": "10"
+						},
+						{
+							"key": "page",
+							"value": "1"
+						},
+						{
+							"key": "order",
+							"value": "1"
+						},
+						{
+							"key": "orderDirection",
+							"value": "1"
+						}
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Create API Key",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "testing6"
+				},
+				"url": {
+					"raw": "{{storxHost}}/api/v0/api-keys/create/:id",
+					"host": [
+						"{{storxHost}}"
+					],
+					"path": [
+						"api",
+						"v0",
+						"api-keys",
+						"create",
+						":id"
+					],
+					"variable": [
+						{
+							"key": "id",
+							"value": "{{projectID}}"
+						}
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Create Access Grant",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{storxHost}}/api/v0/projects/:id/access-grant?api-key=13YqecSz3tHRhWE2iuaSGCMEUCPx3LAw2CgTZRdfDRyUttHSX8iyU3jhyEfg3ZeGYPjrDKih5NpiggwA7ZwVmh3dfSHMeag6wf5NtTw&passphrase=testing",
+					"host": [
+						"{{storxHost}}"
+					],
+					"path": [
+						"api",
+						"v0",
+						"projects",
+						":id",
+						"access-grant"
+					],
+					"query": [
+						{
+							"key": "api-key",
+							"value": "13YqecSz3tHRhWE2iuaSGCMEUCPx3LAw2CgTZRdfDRyUttHSX8iyU3jhyEfg3ZeGYPjrDKih5NpiggwA7ZwVmh3dfSHMeag6wf5NtTw"
+						},
+						{
+							"key": "passphrase",
+							"value": "testing"
+						}
+					],
+					"variable": [
+						{
+							"key": "id",
+							"value": "{{projectID}}"
+						}
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Generate access",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Accept",
+						"value": "*/*"
+					},
+					{
+						"key": "Accept-Language",
+						"value": "en-US,en;q=0.9,hi;q=0.8,da;q=0.7"
+					},
+					{
+						"key": "Cache-Control",
+						"value": "no-cache"
+					},
+					{
+						"key": "Connection",
+						"value": "keep-alive"
+					},
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					},
+					{
+						"key": "Origin",
+						"value": "http://localhost:10002"
+					},
+					{
+						"key": "Pragma",
+						"value": "no-cache"
+					},
+					{
+						"key": "Sec-Fetch-Dest",
+						"value": "empty"
+					},
+					{
+						"key": "Sec-Fetch-Mode",
+						"value": "cors"
+					},
+					{
+						"key": "Sec-Fetch-Site",
+						"value": "same-site"
+					},
+					{
+						"key": "User-Agent",
+						"value": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+					},
+					{
+						"key": "sec-ch-ua",
+						"value": "\"Chromium\";v=\"124\", \"Google Chrome\";v=\"124\", \"Not-A.Brand\";v=\"99\""
+					},
+					{
+						"key": "sec-ch-ua-mobile",
+						"value": "?0"
+					},
+					{
+						"key": "sec-ch-ua-platform",
+						"value": "\"macOS\""
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"access_grant\": \"1piRcPdqgiSkvGgnHBVsATSLhiNiiR8bZVpTmR7KsQzDkm3DPfDyrmDsap4oQf1FV2zgkKUJJ9W87xvDoy1jX8G69z2mPvjZsRucpDvwi8iExn5yCouNK1Rj8VqGpum9zbRBqmdBshhd78AxGkoTYNyy5xHrG8gzhgDtjy4uVZXn6cYy2Art38WQuGMVZwRZ4GVhbMULuqNuZKVjeojcJtwu8mVWhi49hJvibhuy9nrFNV6yMvaRje82EhgvNKWu7\",\n    \"public\": false\n}"
+				},
+				"url": {
+					"raw": "{{storxAuthHost}}/v1/access",
+					"host": [
+						"{{storxAuthHost}}"
+					],
+					"path": [
+						"v1",
+						"access"
+					]
+				}
+			},
+			"response": []
+		}
+	],
+	"event": [
+		{
+			"listen": "prerequest",
+			"script": {
+				"type": "text/javascript",
+				"packages": {},
+				"exec": [
+					""
+				]
+			}
+		},
+		{
+			"listen": "test",
+			"script": {
+				"type": "text/javascript",
+				"packages": {},
+				"exec": [
+					""
+				]
+			}
+		}
+	],
+	"variable": [
+		{
+			"key": "storxHost",
+			"value": "https://b2.storx.io",
+			"type": "string"
+		},
+		{
+			"key": "projectID",
+			"value": "589d7484-d2e5-49a1-8ede-0c3cfbb0e62a",
+			"type": "string"
+		},
+		{
+			"key": "storxAuthHost",
+			"value": "https://auth.storx.io",
+			"type": "string"
+		}
+	]
+}
