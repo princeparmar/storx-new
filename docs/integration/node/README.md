@@ -30,6 +30,16 @@ Below are functions and examples demonstrating basic operations like creating a 
 ```javascript
 const { S3Client, CreateBucketCommand } = require("@aws-sdk/client-s3");
 
+const bucketProps = {
+    region: 'auto',
+    endpoint: 'https://gateway.storx.io',
+    credentials: {
+        accessKeyId: 'jvt5fdhbyo6c7mz***************',
+        secretAccessKey: 'jyk6mie3ddtqx7xbskec427c6s2lwo***************'
+    },
+    forcePathStyle: true
+}
+
 const client = new S3Client(bucketProps);
 
 const createBucket = async (bucketName) => {
