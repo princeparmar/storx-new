@@ -1,30 +1,96 @@
 {
 	"info": {
-		"_postman_id": "c5910491-2554-4881-8adf-7275a09aed2b",
-		"name": "Storx Access Creation",
+		"_postman_id": "fde86bd9-cf11-4ef3-8aba-70ab146aea6d",
+		"name": "Storx Access Creation For Developer",
 		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
 		"_exporter_id": "610879"
 	},
 	"item": [
 		{
-			"name": "Login",
+			"name": "Developer Login",
 			"request": {
 				"method": "POST",
 				"header": [],
 				"body": {
 					"mode": "raw",
-					"raw": "{\n    \"email\": \"prince.soamedia+12@gmail.com\",\n    \"password\": \"Prince@143$\",\n    \"captchaResponse\": \"\",\n    \"mfaPasscode\": null,\n    \"mfaRecoveryCode\": null\n}"
+					"raw": "{\n    \"email\": \"prince.soamedi12334@gmail.com\",\n    \"password\": \"Prince@143$\"\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
 				},
 				"url": {
-					"raw": "{{storxHost}}/api/v0/auth/token",
+					"raw": "{{storxHost}}/api/v0/developer/auth/token",
 					"host": [
 						"{{storxHost}}"
 					],
 					"path": [
 						"api",
 						"v0",
+						"developer",
 						"auth",
 						"token"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "create user",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"email\": \"prince.soamedia55555@111gmail.com\",\n    \"fullName\": \"Pradip Parmar\"\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{storxHost}}/api/v0/developer/auth/create-user",
+					"host": [
+						"{{storxHost}}"
+					],
+					"path": [
+						"api",
+						"v0",
+						"developer",
+						"auth",
+						"create-user"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "User login",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"email\": \"prince.soamedia55555@111gmail.com\"\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{storxHost}}/api/v0/developer/auth/user-token",
+					"host": [
+						"{{storxHost}}"
+					],
+					"path": [
+						"api",
+						"v0",
+						"developer",
+						"auth",
+						"user-token"
 					]
 				}
 			},
@@ -132,21 +198,21 @@
 				"method": "GET",
 				"header": [],
 				"url": {
-					"raw": "{{storxHost}}/api/v0/projects/:id/access-grant?api-key=13YqecSz3tHRhWE2iuaSGCMEUCPx3LAw2CgTZRdfDRyUttHSX8iyU3jhyEfg3ZeGYPjrDKih5NpiggwA7ZwVmh3dfSHMeag6wf5NtTw&passphrase=testing",
+					"raw": "{{storxHost}}/api/v0/api-keys/:id/access-grant?api-key=13Yqefa5iqN6PLFZtyzrnd8uEXA94tdmWyf6bjDKNovrLKzb5CeANKFNCFRiroQK4ep2E9YBmqK9h1h1Nr9VXDvBfuLReiFwpXaSu6h&passphrase=testing",
 					"host": [
 						"{{storxHost}}"
 					],
 					"path": [
 						"api",
 						"v0",
-						"projects",
+						"api-keys",
 						":id",
 						"access-grant"
 					],
 					"query": [
 						{
 							"key": "api-key",
-							"value": "13YqecSz3tHRhWE2iuaSGCMEUCPx3LAw2CgTZRdfDRyUttHSX8iyU3jhyEfg3ZeGYPjrDKih5NpiggwA7ZwVmh3dfSHMeag6wf5NtTw"
+							"value": "13Yqefa5iqN6PLFZtyzrnd8uEXA94tdmWyf6bjDKNovrLKzb5CeANKFNCFRiroQK4ep2E9YBmqK9h1h1Nr9VXDvBfuLReiFwpXaSu6h"
 						},
 						{
 							"key": "passphrase",
@@ -164,7 +230,7 @@
 			"response": []
 		},
 		{
-			"name": "Generate access",
+			"name": "Token from access grant",
 			"request": {
 				"method": "POST",
 				"header": [
@@ -227,7 +293,7 @@
 				],
 				"body": {
 					"mode": "raw",
-					"raw": "{\n    \"access_grant\": \"1piRcPdqgiSkvGgnHBVsATSLhiNiiR8bZVpTmR7KsQzDkm3DPfDyrmDsap4oQf1FV2zgkKUJJ9W87xvDoy1jX8G69z2mPvjZsRucpDvwi8iExn5yCouNK1Rj8VqGpum9zbRBqmdBshhd78AxGkoTYNyy5xHrG8gzhgDtjy4uVZXn6cYy2Art38WQuGMVZwRZ4GVhbMULuqNuZKVjeojcJtwu8mVWhi49hJvibhuy9nrFNV6yMvaRje82EhgvNKWu7\",\n    \"public\": false\n}"
+					"raw": "{\n    \"access_grant\": \"18HGwKT4JMEGe7ft1QJDhRsAnhoLfq7iyez5YfKgYmJ2PjC45n6RccvsMT2c8PivoUWweguVDSfWEAt5Px9SQB2N99gmXTULxAbi2qZThUcyxcXvAH1wdAK9KnvdLJ9sPdcwmxfhs465zkwTQpBmCiNEQPBKswQaBaF8ubBnCJoFXa9UfgxdPnny8ZTWbGwNTkqse49jGw2E2HVQef3XdESXnMkCxiESjNGbE87oQTsEWXUNAhRU5qK7T6yB\",\n    \"public\": false\n}"
 				},
 				"url": {
 					"raw": "{{storxAuthHost}}/v1/access",

@@ -30,16 +30,6 @@ Below are functions and examples demonstrating basic operations like creating a 
 ```javascript
 const { S3Client, CreateBucketCommand } = require("@aws-sdk/client-s3");
 
-const bucketProps = {
-    region: 'auto',
-    endpoint: 'https://gateway.storx.io',
-    credentials: {
-        accessKeyId: 'jvt5fdhbyo6c7mz***************',
-        secretAccessKey: 'jyk6mie3ddtqx7xbskec427c6s2lwo***************'
-    },
-    forcePathStyle: true
-}
-
 const client = new S3Client(bucketProps);
 
 const createBucket = async (bucketName) => {
@@ -191,4 +181,88 @@ const deleteBucket = async ({ bucketName }) => {
 deleteBucket({ bucketName: "my-bucket" });
 ```
 
-Replace placeholders with your actual credentials and bucket names before running the code.
+### Function to Upload a File with Timestamped Path
+
+```javascript
+const { PutObjectCommand } = require("@aws-sdk/client-s3");
+
+const uploadFile = async ({ reader, bucketName, deviceID }) => {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = now.getMonth() + 1;
+  const day = now.getDate();
+  const hour = now.getHours();
+  const timestamp = now.getTime();
+
+  const key = `${deviceID}/${year}/${month}/${day}/${hour}/${timestamp}.log`;
+
+  const params = {
+    Bucket: bucketName,
+    Key: key,
+    Body: reader,  // Assuming reader is a readable stream or Buffer
+  };
+
+  try {
+    const data = await client.send(new PutObjectCommand(params));
+    console.log(`${key} uploaded successfully.`);
+    return data;
+  } catch (err) {
+    console.error('Error uploading file:', err);
+    throw err;
+  }
+};
+
+// Example usage:
+const reader = /* provide your readable stream or Buffer */;
+const bucketName = "my-bucket";
+const deviceID = "my-device";
+await uploadFile({ reader, bucketName, deviceID });
+```
+
+### Function to Download Files Based on Time Range
+
+```javascript
+const { ListObjectsCommand, GetObjectCommand } = require("@aws-sdk/client-s3");
+
+const downloadFiles = async ({ writer, bucketName, deviceID, startTime, endTime }) => {
+  const startPath = `${deviceID}/${startTime.getFullYear()}/${startTime.getMonth() + 1}/${startTime.getDate()}/${startTime.getHours()}`;
+  const endPath = `${deviceID}/${endTime.getFullYear()}/${endTime.getMonth() + 1}/${endTime.getDate()}/${endTime.getHours()}`;
+
+  // Determine common prefix
+  const commonPrefix = startPath.split('/')
+    .filter((part, i) => part === endPath.split('/')[i])
+    .join('/');
+
+  try {
+    const command = new ListObjectsCommand({
+      Bucket: bucketName,
+      Prefix: commonPrefix,
+    });
+
+    const { Contents } = await client.send(command);
+
+    for (const file of Contents) {
+      const obj = await client.send(
+        new GetObjectCommand({ Bucket: bucketName, Key: file.Key }),
+      );
+
+      writer.write(await obj.Body.transformToByteArray()); // Assuming writer is a writable stream
+    }
+
+    console.log('Files downloaded successfully.');
+  } catch (err) {
+    console.error('Error downloading files:', err);
+    throw err;
+  }
+};
+
+// Example usage:
+const writer = /* provide your writable stream */;
+const startTime = new Date('2024-06-17T08:00:00Z');
+const endTime = new Date('2024-06-17T10:00:00Z');
+await downloadFiles({ writer, bucketName: 'my-bucket', deviceID: 'my-device', startTime, endTime });
+```
+
+### Explanation:
+- **uploadFile**: Uploads a file to S3 with a path structured based on the current timestamp.
+- **downloadFiles**: Retrieves files from S3 within a specified time range, using a common prefix to list and download relevant files.
